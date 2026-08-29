@@ -1,0 +1,25 @@
+[project]
+name = "qldpc-fno"
+version = "0.1.0"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "ldpc==2.4.1",
+  "numpy==2.4.1",
+  "scipy==1.17.1",
+  "stim==1.16.0",
+  "torch==2.11.0",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ruff==0.16.5"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
