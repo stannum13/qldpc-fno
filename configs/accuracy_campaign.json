@@ -1,0 +1,19 @@
+{
+  "campaign_seed": 20260901,
+  "noise_grid": [0.003, 0.005, 0.008, 0.012, 0.018, 0.025],
+  "pilot_shots_per_point": 256,
+  "train_shots_cap": 50000,
+  "calibration_shots_cap": 10000,
+  "test_batch_shots": 2048,
+  "max_test_shots_per_point": 200000,
+  "target_failures": 200,
+  "training_epochs": 60,
+  "training_batch_size": 128,
+  "training_learning_rate": 0.001,
+  "training_seed": 1701,
+  "checkpoint_every_epochs": 1,
+  "cloud_cpu": 8,
+  "cloud_memory": "32Gi",
+  "cloud_timeout_seconds": 28800,
+  "checkpoint_grace_seconds": 600
+}
