@@ -16,7 +16,22 @@ class DecodeBatchResult:
     predicted_observables: np.ndarray
     syndrome_valid: np.ndarray
     converged: np.ndarray
+    iterations: np.ndarray
     latency_seconds: np.ndarray
+
+
+def _new_decoder(hx: sparse.spmatrix, error_channel: np.ndarray) -> BpLsdDecoder:
+    """Build a BP-LSD decoder with the campaign's pinned configuration."""
+    return BpLsdDecoder(
+        hx,
+        error_channel=error_channel,
+        max_iter=100,
+        bp_method="minimum_sum",
+        ms_scaling_factor=0.0,
+        schedule="serial",
+        lsd_method="LSD_E",
+        lsd_order=5,
+    )
 
 
 def decode_bplsd_batch(
@@ -43,21 +58,13 @@ def decode_bplsd_batch(
     if not 0.0 < error_rate < 0.5:
         raise ValueError("error_rate must be strictly between 0 and 0.5")
 
-    decoder = BpLsdDecoder(
-        hx_csr,
-        error_rate=error_rate,
-        max_iter=100,
-        bp_method="minimum_sum",
-        ms_scaling_factor=0.0,
-        schedule="serial",
-        lsd_method="LSD_E",
-        lsd_order=5,
-    )
+    decoder = _new_decoder(hx_csr, np.full(hx_csr.shape[1], error_rate, dtype=np.float64))
     shots = syndrome_array.shape[0]
     corrections = np.zeros((shots, hx_csr.shape[1]), dtype=np.uint8)
     predicted = np.zeros((shots, logical_csr.shape[0]), dtype=np.uint8)
     valid = np.zeros(shots, dtype=np.bool_)
     converged = np.zeros(shots, dtype=np.bool_)
+    iterations = np.zeros(shots, dtype=np.int64)
     latency = np.zeros(shots, dtype=np.float64)
     for shot, syndrome in enumerate(syndrome_array):
         started = perf_counter()
@@ -67,4 +74,5 @@ def decode_bplsd_batch(
         valid[shot] = np.array_equal(np.asarray(hx_csr @ correction).ravel() % 2, syndrome)
         predicted[shot] = np.asarray(logical_csr @ correction).ravel() % 2
         converged[shot] = bool(decoder.converge)
-    return DecodeBatchResult(corrections, predicted, valid, converged, latency)
+        iterations[shot] = int(decoder.iter)
+    return DecodeBatchResult(corrections, predicted, valid, converged, iterations, latency)

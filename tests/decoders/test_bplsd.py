@@ -12,6 +12,7 @@ def test_bp_lsd_corrections_match_syndrome() -> None:
     assert np.array_equal((result.corrections @ hx.T.toarray()) % 2, syndromes)
     assert result.predicted_observables.shape == (2, 1)
     assert result.syndrome_valid.tolist() == [True, True]
+    assert result.iterations.shape == (2,)
     assert result.latency_seconds.shape == (2,)
 
 
