@@ -49,6 +49,10 @@ def calibrated_probabilities(
         raise ValueError("error_rates must have one value per logit shot")
     if not np.all(np.isfinite(rates)) or not np.all((0.0 < rates) & (rates < 1.0)):
         raise ValueError("error_rates must be finite probabilities between zero and one")
+    if not np.isfinite(parameters.alpha):
+        raise ValueError("alpha must be finite")
+    if not np.isfinite(parameters.beta):
+        raise ValueError("beta must be finite")
     if not np.isfinite(parameters.temperature) or parameters.temperature <= 0.0:
         raise ValueError("temperature must be finite and positive")
 
@@ -66,6 +70,13 @@ def select_calibration(scores: Sequence[CalibrationScore]) -> CalibrationScore:
     """Select the lexicographically best calibration-split candidate."""
     if not scores:
         raise ValueError("at least one calibration score is required")
+    for score in scores:
+        if score.invalid_count < 0:
+            raise ValueError("invalid_count must be non-negative")
+        if score.block_errors < 0:
+            raise ValueError("block_errors must be non-negative")
+        if not np.isfinite(score.nll):
+            raise ValueError("nll must be finite")
     return min(
         scores,
         key=lambda score: (
