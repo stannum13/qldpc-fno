@@ -72,15 +72,11 @@ def test_selection_rejects_an_empty_score_sequence() -> None:
 
 
 @pytest.mark.parametrize("nll", [np.nan, np.inf, -np.inf])
-def test_selection_rejects_nonfinite_nll_in_either_input_order(nll: float) -> None:
+def test_calibration_score_rejects_nonfinite_nll(nll: float) -> None:
     parameters = CalibrationParameters(1.0, 1.0, 1.0)
-    valid = CalibrationScore(parameters, invalid_count=0, block_errors=0, nll=0.0)
-    invalid = CalibrationScore(parameters, invalid_count=0, block_errors=0, nll=nll)
 
     with pytest.raises(ValueError, match="nll"):
-        select_calibration([valid, invalid])
-    with pytest.raises(ValueError, match="nll"):
-        select_calibration([invalid, valid])
+        CalibrationScore(parameters, invalid_count=0, block_errors=0, nll=nll)
 
 
 @pytest.mark.parametrize("name", ["alpha", "beta"])
@@ -89,25 +85,42 @@ def test_calibration_parameters_reject_nonfinite_logit_scalars(name: str) -> Non
     kwargs[name] = np.nan
 
     with pytest.raises(ValueError, match=name):
-        calibrated_probabilities(
-            np.zeros((1, 1, 1)),
-            np.array([0.1]),
-            CalibrationParameters(**kwargs),
-        )
+        CalibrationParameters(**kwargs)
+
+
+def test_constructing_or_selecting_a_nan_alpha_score_fails() -> None:
+    with pytest.raises(ValueError, match="alpha"):
+        CalibrationScore(CalibrationParameters(np.nan, 1.0, 1.0), 0, 0, 0.0)
+    with pytest.raises(ValueError, match="alpha"):
+        select_calibration([CalibrationScore(CalibrationParameters(np.nan, 1.0, 1.0), 0, 0, 0.0)])
 
 
 def test_calibration_score_rejects_negative_failure_counts() -> None:
     parameters = CalibrationParameters(1.0, 1.0, 1.0)
-    valid = CalibrationScore(parameters, invalid_count=0, block_errors=0, nll=0.0)
 
     with pytest.raises(ValueError, match="invalid_count"):
-        select_calibration(
-            [valid, CalibrationScore(parameters, invalid_count=-1, block_errors=0, nll=0.0)]
-        )
+        CalibrationScore(parameters, invalid_count=-1, block_errors=0, nll=0.0)
     with pytest.raises(ValueError, match="block_errors"):
-        select_calibration(
-            [valid, CalibrationScore(parameters, invalid_count=0, block_errors=-1, nll=0.0)]
-        )
+        CalibrationScore(parameters, invalid_count=0, block_errors=-1, nll=0.0)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("invalid_count", 1.0),
+        ("block_errors", 1.0),
+        ("invalid_count", True),
+        ("block_errors", False),
+    ],
+)
+def test_calibration_score_rejects_non_integer_or_boolean_failure_counts(
+    field: str, value: float | bool
+) -> None:
+    kwargs = {"invalid_count": 0, "block_errors": 0}
+    kwargs[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        CalibrationScore(CalibrationParameters(1.0, 1.0, 1.0), nll=0.0, **kwargs)
 
 
 def test_calibration_grid_contains_every_fixed_parameter_combination() -> None:

@@ -16,6 +16,14 @@ class CalibrationParameters:
     beta: float
     temperature: float
 
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.alpha):
+            raise ValueError("alpha must be finite")
+        if not np.isfinite(self.beta):
+            raise ValueError("beta must be finite")
+        if not np.isfinite(self.temperature) or self.temperature <= 0.0:
+            raise ValueError("temperature must be finite and positive")
+
 
 @dataclass(frozen=True, slots=True)
 class CalibrationScore:
@@ -25,6 +33,16 @@ class CalibrationScore:
     invalid_count: int
     block_errors: int
     nll: float
+
+    def __post_init__(self) -> None:
+        for name, count in (
+            ("invalid_count", self.invalid_count),
+            ("block_errors", self.block_errors),
+        ):
+            if type(count) is not int or count < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if not np.isfinite(self.nll):
+            raise ValueError("nll must be finite")
 
 
 CALIBRATION_GRID = tuple(
@@ -49,13 +67,6 @@ def calibrated_probabilities(
         raise ValueError("error_rates must have one value per logit shot")
     if not np.all(np.isfinite(rates)) or not np.all((0.0 < rates) & (rates < 1.0)):
         raise ValueError("error_rates must be finite probabilities between zero and one")
-    if not np.isfinite(parameters.alpha):
-        raise ValueError("alpha must be finite")
-    if not np.isfinite(parameters.beta):
-        raise ValueError("beta must be finite")
-    if not np.isfinite(parameters.temperature) or parameters.temperature <= 0.0:
-        raise ValueError("temperature must be finite and positive")
-
     logit_rates = np.log(rates) - np.log1p(-rates)
     rate_shape = (rates.shape[0],) + (1,) * (logits_array.ndim - 1)
     calibrated_logits = (
@@ -70,13 +81,6 @@ def select_calibration(scores: Sequence[CalibrationScore]) -> CalibrationScore:
     """Select the lexicographically best calibration-split candidate."""
     if not scores:
         raise ValueError("at least one calibration score is required")
-    for score in scores:
-        if score.invalid_count < 0:
-            raise ValueError("invalid_count must be non-negative")
-        if score.block_errors < 0:
-            raise ValueError("block_errors must be non-negative")
-        if not np.isfinite(score.nll):
-            raise ValueError("nll must be finite")
     return min(
         scores,
         key=lambda score: (
