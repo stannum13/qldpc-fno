@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -76,12 +77,16 @@ class CampaignConfig:
                 raise ValueError(f"{field} must be an integer")
         if type(payload["training_learning_rate"]) not in (int, float):
             raise ValueError("training_learning_rate must be numeric")
+        if not math.isfinite(payload["training_learning_rate"]):
+            raise ValueError("training_learning_rate must be finite")
         if not isinstance(payload["cloud_memory"], str) or not payload["cloud_memory"]:
             raise ValueError("cloud_memory must be a non-empty string")
         if not isinstance(payload["noise_grid"], list) or not payload["noise_grid"]:
             raise ValueError("noise_grid must be a non-empty list")
         if any(type(probability) not in (int, float) for probability in payload["noise_grid"]):
             raise ValueError("noise_grid values must be numeric")
+        if any(not math.isfinite(probability) for probability in payload["noise_grid"]):
+            raise ValueError("noise_grid values must be finite")
 
         config = cls(
             noise_grid=tuple(payload["noise_grid"]),

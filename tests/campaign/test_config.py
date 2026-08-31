@@ -46,3 +46,27 @@ def test_config_rejects_missing_field(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="missing fields"):
         CampaignConfig.from_json(path)
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+def test_config_rejects_non_finite_noise_grid_entries(tmp_path: Path, non_finite: float) -> None:
+    payload = json.loads(Path("configs/accuracy_campaign.json").read_text())
+    payload["noise_grid"][2] = non_finite
+    path = tmp_path / "campaign.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="noise_grid values must be finite"):
+        CampaignConfig.from_json(path)
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf"), float("-inf")])
+def test_config_rejects_non_finite_training_learning_rate(
+    tmp_path: Path, non_finite: float
+) -> None:
+    payload = json.loads(Path("configs/accuracy_campaign.json").read_text())
+    payload["training_learning_rate"] = non_finite
+    path = tmp_path / "campaign.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="training_learning_rate must be finite"):
+        CampaignConfig.from_json(path)
