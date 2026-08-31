@@ -6,7 +6,7 @@ from pathlib import Path
 
 from scipy import sparse
 
-from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
 from qldpc_fno.codes.gf2 import logical_x_basis
 from qldpc_fno.stim.dem import build_z_error_dem
 
@@ -23,6 +23,8 @@ def main() -> None:
     code_metadata = json.loads(code_metadata_path.read_text())
     hx_path = args.code / "hx.npz"
     hz_path = args.code / "hz.npz"
+    verify_sha256(hx_path, code_metadata["hx_sha256"], label="Hx")
+    verify_sha256(hz_path, code_metadata["hz_sha256"], label="Hz")
     hx = sparse.load_npz(hx_path).tocsr()
     hz = sparse.load_npz(hz_path).tocsr()
     logical_x = logical_x_basis(hx, hz)

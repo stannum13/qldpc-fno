@@ -18,6 +18,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def verify_sha256(path: Path, expected: str, *, label: str) -> None:
+    """Fail if an artifact no longer matches its manifest digest."""
+    actual = sha256_file(path)
+    if actual != expected:
+        raise ValueError(f"{label} SHA-256 mismatch: expected {expected}, found {actual}")
+
+
 def write_canonical_json(path: Path, value: Mapping[str, object]) -> None:
     """Write stable, human-readable JSON for a scientific artifact."""
     path.parent.mkdir(parents=True, exist_ok=True)

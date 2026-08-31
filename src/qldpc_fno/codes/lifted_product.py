@@ -79,7 +79,12 @@ def validate_css(code: CSSCode) -> dict[str, object]:
     shift_equivariant = _matrix_shift_equivariant(code.hx, code.ell) and _matrix_shift_equivariant(
         code.hz, code.ell
     )
-    same_block_length = code.hx.shape[1] == code.hz.shape[1] == code.n
+    hx_rank = gf2_rank(code.hx)
+    hz_rank = gf2_rank(code.hz)
+    matrix_n = code.hx.shape[1]
+    same_block_length = matrix_n == code.hz.shape[1] == code.n
+    computed_k = matrix_n - hx_rank - hz_rank
+    dimension_matches = code.k == computed_k
     return {
         "name": code.name,
         "ell": code.ell,
@@ -88,11 +93,13 @@ def validate_css(code: CSSCode) -> dict[str, object]:
         "distance_upper_bound": code.distance_upper_bound,
         "hx_shape": list(code.hx.shape),
         "hz_shape": list(code.hz.shape),
-        "hx_rank": gf2_rank(code.hx),
-        "hz_rank": gf2_rank(code.hz),
+        "hx_rank": hx_rank,
+        "hz_rank": hz_rank,
+        "computed_k": computed_k,
+        "dimension_matches_matrices": dimension_matches,
         "hx_row_weights": {"min": int(hx_weights.min()), "max": int(hx_weights.max())},
         "hz_row_weights": {"min": int(hz_weights.min()), "max": int(hz_weights.max())},
         "commutes": commutes,
         "ring_shift_equivariant": shift_equivariant,
-        "valid": commutes and shift_equivariant and same_block_length,
+        "valid": commutes and shift_equivariant and same_block_length and dimension_matches,
     }

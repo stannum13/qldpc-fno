@@ -3,7 +3,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from qldpc_fno.artifacts import build_manifest, sha256_file, write_canonical_json
+import pytest
+
+from qldpc_fno.artifacts import build_manifest, sha256_file, verify_sha256, write_canonical_json
 
 
 def test_canonical_json_and_hash(tmp_path: Path) -> None:
@@ -32,6 +34,16 @@ def test_manifest_hashes_inputs_and_outputs(tmp_path: Path) -> None:
     assert manifest["outputs"][str(output_path)] == sha256_file(output_path)
     assert manifest["git_commit"]
     assert manifest["python"]
+
+
+def test_verify_sha256_rejects_corrupted_artifact(tmp_path: Path) -> None:
+    path = tmp_path / "artifact.bin"
+    path.write_bytes(b"original")
+    expected = sha256_file(path)
+    verify_sha256(path, expected, label="test artifact")
+    path.write_bytes(b"corrupted")
+    with pytest.raises(ValueError, match="test artifact SHA-256 mismatch"):
+        verify_sha256(path, expected, label="test artifact")
 
 
 def test_source_lock_cli_writes_verified_versions(tmp_path: Path) -> None:

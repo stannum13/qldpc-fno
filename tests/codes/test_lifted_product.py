@@ -1,6 +1,6 @@
 import numpy as np
 
-from qldpc_fno.codes.lifted_product import build_self_lifted_product, validate_css
+from qldpc_fno.codes.lifted_product import CSSCode, build_self_lifted_product, validate_css
 from qldpc_fno.codes.seeds import PAPER_LP_3_7_16, LPSeed
 
 
@@ -27,3 +27,20 @@ def test_paper_code_shapes_dimension_and_weights() -> None:
     assert checks["commutes"] is True
     assert checks["ring_shift_equivariant"] is True
     assert checks["hx_row_weights"] == {"min": 10, "max": 10}
+
+
+def test_validation_rejects_dimension_metadata_inconsistent_with_matrices() -> None:
+    code = build_self_lifted_product(LPSeed("tiny", 5, ((0, 1),), 25, 9, 2))
+    inconsistent = CSSCode(
+        name=code.name,
+        ell=code.ell,
+        hx=code.hx,
+        hz=code.hz,
+        n=code.n,
+        k=code.k + 1,
+        distance_upper_bound=code.distance_upper_bound,
+    )
+    checks = validate_css(inconsistent)
+    assert checks["computed_k"] == code.k
+    assert checks["dimension_matches_matrices"] is False
+    assert checks["valid"] is False

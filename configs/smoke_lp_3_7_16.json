@@ -1,0 +1,14 @@
+{
+  "code": "lp_3_7_16",
+  "ell": 45,
+  "error_rate": 0.005,
+  "sample_seed": 20260829,
+  "shots": 512,
+  "train_shots": 384,
+  "overfit_shots": 128,
+  "training_seed": 17,
+  "training_steps": 600,
+  "fno_width": 32,
+  "fno_modes": 12,
+  "fno_depth": 2
+}

@@ -8,8 +8,8 @@ import numpy as np
 import torch
 from scipy import sparse
 
-from qldpc_fno.artifacts import sha256_file, write_canonical_json
-from qldpc_fno.training.overfit import overfit_fno, predict_fno
+from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
+from qldpc_fno.training.overfit import enforce_training_gates, overfit_fno, predict_fno
 
 
 def main() -> None:
@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--shots", type=int, required=True)
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
+    parser.add_argument("--require-gates", action="store_true")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.out.exists():
@@ -26,11 +27,15 @@ def main() -> None:
     args.out.mkdir(parents=True)
 
     split = json.loads((args.tensors / "split.json").read_text())
+    syndrome_path = args.tensors / "syndromes.npy"
+    correction_path = args.tensors / "corrections.npy"
+    verify_sha256(syndrome_path, split["sha256"]["syndromes"], label="syndrome tensor")
+    verify_sha256(correction_path, split["sha256"]["corrections"], label="correction tensor")
     train_stop = int(split["train"]["stop"])
     if not 0 < args.shots <= train_stop:
         raise ValueError(f"shots must be between 1 and the training split size ({train_stop})")
-    syndromes = np.load(args.tensors / "syndromes.npy", mmap_mode="r")[: args.shots]
-    targets = np.load(args.tensors / "corrections.npy", mmap_mode="r")[: args.shots]
+    syndromes = np.load(syndrome_path, mmap_mode="r")[: args.shots]
+    targets = np.load(correction_path, mmap_mode="r")[: args.shots]
     model, metrics = overfit_fno(syndromes, targets, steps=args.steps, seed=args.seed)
 
     logits = predict_fno(model, syndromes)
@@ -67,6 +72,8 @@ def main() -> None:
         },
     )
     write_canonical_json(args.out / "train_metrics.json", metrics)
+    if args.require_gates:
+        enforce_training_gates(metrics["gates"])
 
 
 if __name__ == "__main__":

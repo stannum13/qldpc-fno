@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import numpy as np
 import torch
 from torch import nn
 
 from qldpc_fno.models.fno1d import RingFNO
+
+
+def enforce_training_gates(gates: Mapping[str, bool]) -> None:
+    """Fail before evaluation when any declared overfit gate is unmet."""
+    failed = sorted(name for name, passed in gates.items() if not passed)
+    if failed:
+        raise RuntimeError(f"training gates failed: {', '.join(failed)}")
 
 
 def _as_binary_field(values: np.ndarray, *, name: str) -> np.ndarray:

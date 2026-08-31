@@ -1,8 +1,9 @@
 import warnings
 
 import numpy as np
+import pytest
 
-from qldpc_fno.training.overfit import overfit_fno, predict_fno
+from qldpc_fno.training.overfit import enforce_training_gates, overfit_fno, predict_fno
 
 
 def test_overfit_is_deterministic_and_reduces_weighted_loss() -> None:
@@ -40,3 +41,14 @@ def test_prediction_safely_copies_read_only_inputs() -> None:
         logits = predict_fno(model, inputs)
     assert logits.shape == targets.shape
     assert not caught
+
+
+def test_required_training_gates_fail_fast() -> None:
+    with pytest.raises(RuntimeError, match="teacher_bit_accuracy_above_99_percent"):
+        enforce_training_gates(
+            {
+                "loss_decreased": True,
+                "syndrome_valid_at_least_90_percent": True,
+                "teacher_bit_accuracy_above_99_percent": False,
+            }
+        )
