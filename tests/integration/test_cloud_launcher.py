@@ -24,6 +24,7 @@ def _fake_tools(tmp_path: Path) -> tuple[Path, Path]:
         binary_dir / "git",
         """#!/usr/bin/env python3
 import os
+import subprocess
 import sys
 
 arguments = sys.argv[1:]
@@ -35,6 +36,15 @@ elif arguments == ["hash-object", "--stdin"]:
     print("abcdef0123456789abcdef0123456789abcdef01")
 elif arguments == ["status", "--porcelain=v1", "--untracked-files=all"]:
     print(os.environ.get("FAKE_GIT_STATUS", ""), end="")
+elif arguments and arguments[0] == "archive":
+    archive_arguments = [
+        "HEAD" if argument == os.environ["FAKE_GIT_COMMIT"] else argument
+        for argument in arguments
+    ]
+    subprocess.run(
+        ["/usr/bin/git", "-C", os.environ["FAKE_GIT_ROOT"], *archive_arguments],
+        check=True,
+    )
 else:
     raise SystemExit(f"unexpected git command: {arguments}")
 """,
@@ -45,41 +55,54 @@ else:
 import json
 import os
 import sys
+import tarfile
 from pathlib import Path
 
 arguments = sys.argv[1:]
 with Path(os.environ["FAKE_GCLOUD_LOG"]).open("a") as handle:
     handle.write(json.dumps(arguments) + "\\n")
+if arguments[:2] == ["builds", "submit"]:
+    with tarfile.open(arguments[-1]) as archive:
+        Path(os.environ["FAKE_ARCHIVE_MEMBERS"]).write_text(
+            "\\n".join(sorted(archive.getnames()))
+        )
 if arguments == ["config", "get-value", "project"]:
     print(os.environ.get("FAKE_GCLOUD_PROJECT", "science-project"))
     raise SystemExit(0)
 
 existing = os.environ.get("FAKE_GCLOUD_EXISTING", "")
+resume = os.environ.get("FAKE_GCLOUD_RESUME") == "1"
 describe_error = os.environ.get("FAKE_GCLOUD_DESCRIBE_ERROR") == "1"
 if arguments[:3] == ["artifacts", "repositories", "describe"]:
     if describe_error:
         print("PERMISSION_DENIED", file=sys.stderr)
     elif existing != "repository":
         print("NOT_FOUND", file=sys.stderr)
-    raise SystemExit(0 if existing == "repository" else 1)
+    raise SystemExit(0 if resume or existing == "repository" else 1)
 if arguments[:3] == ["storage", "buckets", "describe"]:
     if describe_error:
         print("PERMISSION_DENIED", file=sys.stderr)
     elif existing != "bucket":
         print("NOT_FOUND", file=sys.stderr)
-    raise SystemExit(0 if existing == "bucket" else 1)
+    raise SystemExit(0 if resume or existing == "bucket" else 1)
 if arguments[:3] == ["run", "jobs", "describe"]:
+    if any(argument == "--format=value(metadata.labels.qldpc-fno-identity)" for argument in arguments):
+        print(os.environ["FAKE_JOB_IDENTITY"])
+        raise SystemExit(0)
+    if any(argument == "--format=value(spec.template.spec.template.spec.containers[0].image)" for argument in arguments):
+        print(os.environ["FAKE_JOB_IMAGE"])
+        raise SystemExit(0)
     if describe_error:
         print("PERMISSION_DENIED", file=sys.stderr)
     elif existing != "job":
         print("NOT_FOUND", file=sys.stderr)
-    raise SystemExit(0 if existing == "job" else 1)
+    raise SystemExit(0 if resume or existing == "job" else 1)
 if arguments[:3] == ["iam", "service-accounts", "describe"]:
     if describe_error:
         print("PERMISSION_DENIED", file=sys.stderr)
     elif existing != "service-account":
         print("NOT_FOUND", file=sys.stderr)
-    raise SystemExit(0 if existing == "service-account" else 1)
+    raise SystemExit(0 if resume or existing == "service-account" else 1)
 raise SystemExit(0)
 """,
     )
@@ -98,8 +121,14 @@ def _launch(
             "CAMPAIGN_ID": CAMPAIGN_ID,
             "CLOUD_REGION": "us-central1",
             "FAKE_GCLOUD_LOG": str(log),
+            "FAKE_ARCHIVE_MEMBERS": str(tmp_path / "archive-members.txt"),
             "FAKE_GIT_COMMIT": COMMIT,
             "FAKE_GIT_ROOT": str(Path.cwd()),
+            "FAKE_JOB_IDENTITY": "abcdef0123456789abcdef0123456789abcdef01",
+            "FAKE_JOB_IMAGE": (
+                f"us-central1-docker.pkg.dev/science-project/qldpc-fno-{CAMPAIGN_ID}"
+                f"/accuracy-campaign:{COMMIT}"
+            ),
             "PATH": f"{binary_dir}:{environment['PATH']}",
         }
     )
@@ -156,7 +185,7 @@ def test_dry_run_resolves_every_resource_and_performs_no_mutation(tmp_path: Path
 
 
 def test_execute_creates_one_bounded_cpu_job_and_returns_after_submission(tmp_path: Path) -> None:
-    result, calls = _launch(tmp_path, "--execute")
+    result, calls = _launch(tmp_path, "--execute", "--multi-execution")
 
     assert result.returncode == 0, result.stderr
     assert calls[0] == ["config", "get-value", "project"]
@@ -207,6 +236,47 @@ def test_execute_creates_one_bounded_cpu_job_and_returns_after_submission(tmp_pa
     assert not any("delete" in call for call in calls)
 
 
+def test_canonical_execute_requires_multi_execution_acknowledgement(tmp_path: Path) -> None:
+    result, calls = _launch(tmp_path, "--execute")
+
+    assert result.returncode == 2
+    assert "--multi-execution" in result.stderr
+    assert not any("create" in call or call[:2] == ["builds", "submit"] for call in calls)
+
+
+def test_resume_verifies_exact_job_identity_and_never_recreates_resources(tmp_path: Path) -> None:
+    result, calls = _launch(
+        tmp_path,
+        "--execute",
+        "--resume",
+        environment_overrides={"FAKE_GCLOUD_RESUME": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "mode=resume" in result.stdout
+    mutation_calls = [
+        call
+        for call in calls
+        if "describe" not in call and call != ["config", "get-value", "project"]
+    ]
+    assert [call[:3] for call in mutation_calls] == [["run", "jobs", "execute"]]
+    assert "--async" in mutation_calls[0]
+    assert not any("create" in call or call[:2] == ["builds", "submit"] for call in calls)
+
+    mismatched, mismatch_calls = _launch(
+        tmp_path / "mismatch",
+        "--execute",
+        "--resume",
+        environment_overrides={
+            "FAKE_GCLOUD_RESUME": "1",
+            "FAKE_JOB_IDENTITY": "wrong-identity",
+        },
+    )
+    assert mismatched.returncode == 2
+    assert "identity" in mismatched.stderr
+    assert not any(call[:3] == ["run", "jobs", "execute"] for call in mismatch_calls)
+
+
 def test_reduced_execute_uses_non_scientific_config_and_waits(tmp_path: Path) -> None:
     result, calls = _launch(tmp_path, "--execute", "--reduced")
 
@@ -224,6 +294,23 @@ def test_reduced_execute_uses_non_scientific_config_and_waits(tmp_path: Path) ->
     assert "--async" not in execute_job
 
 
+def test_cloud_build_archive_excludes_ignored_worktree_sentinel(tmp_path: Path) -> None:
+    sentinel = Path("src/qldpc_fno/ignored-cloud-context-sentinel.secret")
+    sentinel.write_text("must never upload")
+    try:
+        result, calls = _launch(tmp_path, "--execute", "--reduced")
+    finally:
+        sentinel.unlink(missing_ok=True)
+
+    assert result.returncode == 0, result.stderr
+    build = next(call for call in calls if call[:2] == ["builds", "submit"])
+    assert build[-1].endswith(".tar.gz")
+    members = (tmp_path / "archive-members.txt").read_text().splitlines()
+    assert "src/qldpc_fno/ignored-cloud-context-sentinel.secret" not in members
+    assert "Dockerfile" in members
+    assert "src/qldpc_fno/campaign/runner.py" in members
+
+
 @pytest.mark.parametrize("existing", ["repository", "bucket", "job", "service-account"])
 def test_execute_refuses_existing_campaign_resources_before_mutation(
     tmp_path: Path, existing: str
@@ -231,6 +318,7 @@ def test_execute_refuses_existing_campaign_resources_before_mutation(
     result, calls = _launch(
         tmp_path,
         "--execute",
+        "--multi-execution",
         environment_overrides={"FAKE_GCLOUD_EXISTING": existing},
     )
 
@@ -252,6 +340,7 @@ def test_execute_fails_closed_when_resource_absence_cannot_be_verified(tmp_path:
     result, calls = _launch(
         tmp_path,
         "--execute",
+        "--multi-execution",
         environment_overrides={"FAKE_GCLOUD_DESCRIBE_ERROR": "1"},
     )
 
@@ -293,10 +382,11 @@ def test_container_is_pinned_bounded_and_starts_the_campaign_runner() -> None:
     assert 'CAMPAIGN_CONFIG="/app/configs/accuracy_campaign.json"' in dockerfile
     assert 'CAMPAIGN_CODE="/app/campaign-code"' in dockerfile
     assert 'ENTRYPOINT ["/app/.venv/bin/python", "-m", "qldpc_fno.campaign.runner"]' in dockerfile
-    assert ".git" in ignored
-    assert ".venv" in ignored
-    assert "artifacts" in ignored
-    assert "tests" in ignored
+    assert ignored[0] == "**"
+    assert "!Dockerfile" in ignored
+    assert "!src/qldpc_fno/**/*.py" in ignored
+    assert "!experiments/16_calibrate_hybrid_priors.py" in ignored
+    assert "COPY scripts ./scripts" not in dockerfile
     reduced_config = json.loads(Path("configs/accuracy_campaign_cloud_reduced.json").read_text())
     assert reduced_config["pilot_shots_per_point"] == 8
     assert reduced_config["train_shots_cap"] == 24

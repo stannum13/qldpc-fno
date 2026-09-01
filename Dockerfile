@@ -8,9 +8,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.9.17 /uv /uvx /bin/
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-COPY experiments ./experiments
-COPY configs ./configs
-COPY scripts ./scripts
+COPY experiments/01_build_lp_codes.py experiments/02_validate_lp_codes.py \
+    experiments/13_pilot_noise_grid.py experiments/14_generate_campaign_shards.py \
+    experiments/15_train_conditional_fno.py experiments/16_calibrate_hybrid_priors.py \
+    experiments/17_evaluate_hybrid_decoders.py ./experiments/
+COPY configs/accuracy_campaign.json configs/accuracy_campaign_cloud_reduced.json ./configs/
 
 RUN uv sync --frozen --no-dev \
     && /app/.venv/bin/python experiments/01_build_lp_codes.py --out /app/campaign-code \

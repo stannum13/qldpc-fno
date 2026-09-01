@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: bash scripts/launch_cloud_campaign.sh [--execute] [--reduced]" >&2
+  echo "usage: bash scripts/launch_cloud_campaign.sh [--execute] [--reduced] [--multi-execution] [--resume]" >&2
   echo "Dry-run is the default. Set CLOUD_REGION to override us-central1." >&2
 }
 
@@ -32,18 +32,40 @@ require_absent() {
   die "cannot verify campaign $label absence"
 }
 
+require_present() {
+  local label="$1"
+  local resource="$2"
+  shift 2
+  local output
+  if ! output="$("$@" 2>&1)"; then
+    [[ -z "$output" ]] || echo "$output" >&2
+    die "cannot verify existing campaign $label: $resource"
+  fi
+}
+
 execute=0
 reduced=0
+multi_execution=0
+resume=0
 for argument in "$@"; do
   case "$argument" in
     --execute) execute=1 ;;
+    --multi-execution) multi_execution=1 ;;
     --reduced) reduced=1 ;;
+    --resume) resume=1 ;;
     *)
       usage
       exit 2
       ;;
   esac
 done
+
+(( ! resume || execute )) || die "--resume requires the explicit --execute flag"
+(( ! resume || ! reduced )) || die "--resume targets canonical campaigns; omit --reduced"
+(( ! resume || ! multi_execution )) || die "--resume and --multi-execution are mutually exclusive"
+if (( execute && ! reduced && ! resume && ! multi_execution )); then
+  die "canonical execution cannot finish safely in one allocation; pass --multi-execution and plan to resume"
+fi
 
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v gcloud >/dev/null 2>&1 || die "gcloud is required"
@@ -64,6 +86,9 @@ region="${CLOUD_REGION:-us-central1}"
   || die "CLOUD_REGION is not a valid Google Cloud region"
 
 campaign_id="${CAMPAIGN_ID:-}"
+if (( resume )) && [[ -z "$campaign_id" ]]; then
+  die "CAMPAIGN_ID is required to resume the exact existing campaign"
+fi
 if [[ -z "$campaign_id" ]]; then
   random_hex="$(LC_ALL=C od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
   campaign_id="accuracy-$(date -u +%Y%m%d-%H%M%S)-${random_hex}"
@@ -97,6 +122,11 @@ if (( reduced )); then
   execution_completion=--wait
 fi
 
+if (( resume )); then
+  campaign_mode="canonical"
+  execution_completion=--async
+fi
+
 repo_describe=(
   gcloud artifacts repositories describe "$repository"
   "--location=$region" "--project=$project"
@@ -110,6 +140,39 @@ job_describe=(
 service_account_describe=(
   gcloud iam service-accounts describe "$service_account" "--project=$project"
 )
+
+context_archive=""
+temporary_root=""
+if (( ! resume )); then
+  temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/qldpc-fno-cloud-context.XXXXXX")"
+  cleanup_temporary() {
+    if [[ -n "$temporary_root" && -d "$temporary_root" ]]; then
+      rm -rf -- "$temporary_root"
+    fi
+  }
+  trap cleanup_temporary EXIT
+  context_archive="$temporary_root/qldpc-fno-${git_commit}.tar.gz"
+  build_context_paths=(
+    .dockerignore
+    Dockerfile
+    README.md
+    pyproject.toml
+    uv.lock
+    configs/accuracy_campaign.json
+    configs/accuracy_campaign_cloud_reduced.json
+    experiments/01_build_lp_codes.py
+    experiments/02_validate_lp_codes.py
+    experiments/13_pilot_noise_grid.py
+    experiments/14_generate_campaign_shards.py
+    experiments/15_train_conditional_fno.py
+    experiments/16_calibrate_hybrid_priors.py
+    experiments/17_evaluate_hybrid_decoders.py
+    src/qldpc_fno
+  )
+  git archive --format=tar.gz --output="$context_archive" "$git_commit" \
+    -- "${build_context_paths[@]}" \
+    || die "cannot create exact tracked cloud build context"
+fi
 repo_create=(
   gcloud artifacts repositories create "$repository"
   "--repository-format=docker" "--location=$region" "--project=$project"
@@ -134,14 +197,15 @@ grant_bucket_create_access=(
   "--project=$project"
 )
 build_image=(
-  gcloud builds submit --tag "$image" "--project=$project" "$repo_root"
+  gcloud builds submit --tag "$image" "--project=$project" "$context_archive"
 )
-environment_variables="CAMPAIGN_BUCKET=${bucket},CAMPAIGN_PREFIX=${prefix},CAMPAIGN_STORE=${store},CAMPAIGN_CONFIG=${config_path},CAMPAIGN_CODE=/app/campaign-code,CAMPAIGN_WORKDIR=/tmp/qldpc-fno-work,CAMPAIGN_GIT_COMMIT=${git_commit}"
+environment_variables="CAMPAIGN_BUCKET=${bucket},CAMPAIGN_PREFIX=${prefix},CAMPAIGN_STORE=${store},CAMPAIGN_CONFIG=${config_path},CAMPAIGN_CODE=/app/campaign-code,CAMPAIGN_WORKDIR=/tmp/qldpc-fno-work,CAMPAIGN_GIT_COMMIT=${git_commit},CAMPAIGN_CLOUD_JOB=${job},CAMPAIGN_CLOUD_REGION=${region},CAMPAIGN_CLOUD_PROJECT=${project}"
 create_job=(
   gcloud run jobs create "$job" "--image=$image"
   --cpu=8 --memory=32Gi --task-timeout=8h --max-retries=0 --tasks=1
   "--service-account=$service_account"
   "--set-env-vars=$environment_variables"
+  "--labels=qldpc-fno-identity=${resource_digest},qldpc-fno-mode=${campaign_mode}"
 )
 if (( reduced )); then
   create_job+=(
@@ -170,7 +234,9 @@ cleanup_service_account=(
   gcloud iam service-accounts delete "$service_account" "--project=$project"
 )
 
-if (( execute )); then
+if (( resume )); then
+  mode="resume"
+elif (( execute )); then
   mode="execute"
 else
   mode="dry-run"
@@ -189,17 +255,24 @@ echo "service_account=$service_account"
 echo "cpu=8"
 echo "memory=32Gi"
 echo "timeout=8h"
+echo "work_cutoff=7h15m"
+echo "finalization_reserve=45m"
+echo "multi_execution_required=$(( ! reduced ))"
 echo "retries=0"
 echo "tasks=1"
 echo "git_commit=$git_commit"
 echo "mutation commands:"
-print_command "${repo_create[@]}"
-print_command "${bucket_create[@]}"
-print_command "${service_account_create[@]}"
-print_command "${grant_bucket_read_access[@]}"
-print_command "${grant_bucket_create_access[@]}"
-print_command "${build_image[@]}"
-print_command "${create_job[@]}"
+if (( ! resume )); then
+  print_command "${repo_create[@]}"
+  print_command "${bucket_create[@]}"
+  print_command "${service_account_create[@]}"
+  print_command "${grant_bucket_read_access[@]}"
+  print_command "${grant_bucket_create_access[@]}"
+  print_command "${build_image[@]}"
+  print_command "${create_job[@]}"
+fi
+print_command "${execute_job[@]}"
+echo "verified resume command:"
 print_command "${execute_job[@]}"
 echo "cleanup commands (not executed):"
 print_command "${cleanup_job[@]}"
@@ -209,7 +282,32 @@ print_command "${cleanup_repository[@]}"
 print_command "${cleanup_service_account[@]}"
 
 if (( ! execute )); then
-  echo "dry-run only; pass --execute to create and run these unique resources"
+  if (( reduced )); then
+    echo "dry-run only; pass --execute to create and run the reduced non-scientific job"
+  else
+    echo "dry-run only; canonical creation requires --execute --multi-execution"
+  fi
+  exit 0
+fi
+
+if (( resume )); then
+  require_present repository "$repository" "${repo_describe[@]}"
+  require_present bucket "$bucket" "${bucket_describe[@]}"
+  require_present job "$job" "${job_describe[@]}"
+  require_present service-account "$service_account" "${service_account_describe[@]}"
+  job_identity="$(
+    gcloud run jobs describe "$job" "--region=$region" "--project=$project" \
+      "--format=value(metadata.labels.qldpc-fno-identity)"
+  )" || die "cannot read existing campaign job identity"
+  [[ "$job_identity" == "$resource_digest" ]] \
+    || die "existing campaign job identity does not match CAMPAIGN_ID and Git commit"
+  job_image="$(
+    gcloud run jobs describe "$job" "--region=$region" "--project=$project" \
+      "--format=value(spec.template.spec.template.spec.containers[0].image)"
+  )" || die "cannot read existing campaign job image"
+  [[ "$job_image" == "$image" ]] \
+    || die "existing campaign job image does not match the exact Git commit"
+  "${execute_job[@]}"
   exit 0
 fi
 
