@@ -6,9 +6,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 import stim
+from scipy import sparse
 
 from qldpc_fno.artifacts import sha256_file
-from qldpc_fno.campaign.shards import select_noise_points, write_role_shards
+from qldpc_fno.campaign.shards import (
+    allocate_total_shots,
+    run_pilot_grid,
+    select_noise_points,
+    validate_campaign_code,
+    write_role_shards,
+)
 from qldpc_fno.stim.b8 import read_b8
 
 
@@ -40,6 +47,50 @@ def test_selection_is_sorted_deduplicated_and_order_independent() -> None:
     expected = (0.003, 0.005, 0.008, 0.01)
     assert select_noise_points(rows) == expected
     assert select_noise_points(reversed(rows)) == expected
+
+
+def test_all_zero_pilot_grid_extends_geometrically_to_exact_cap() -> None:
+    observed: list[tuple[float, int]] = []
+
+    def evaluate(rate: float, rate_index: int) -> dict[str, object]:
+        observed.append((rate, rate_index))
+        return _row(rate, 0)
+
+    rows = run_pilot_grid((0.003, 0.025), evaluate)
+
+    assert [(row["error_rate"], row["rate_index"]) for row in rows] == [
+        (0.003, 0),
+        (0.025, 1),
+        (0.0375, 2),
+        (0.05625, 3),
+        (0.08, 4),
+    ]
+    assert observed == [(0.003, 0), (0.025, 1), (0.0375, 2), (0.05625, 3), (0.08, 4)]
+
+
+def test_total_shots_are_allocated_by_sorted_rate_with_remainder_first() -> None:
+    assert allocate_total_shots((0.2, 0.1, 0.3), total_shots=8) == (3, 3, 2)
+
+
+def test_allocated_shard_manifests_sum_to_exact_total(tmp_path: Path) -> None:
+    rates = (0.2, 0.1, 0.3)
+    manifests = write_role_shards(
+        role="train",
+        rates=rates,
+        shots_per_rate=allocate_total_shots(rates, total_shots=8),
+        shard_size=2,
+        campaign_seed=7,
+        output_dir=tmp_path / "train",
+        dem_factory=lambda rate: stim.DetectorErrorModel(f"error({rate}) D0 L0"),
+        source_code_sha256="c" * 64,
+    )
+
+    assert sum(int(manifest["shots"]) for manifest in manifests) == 8
+    assert [manifest["error_rate"] for manifest in manifests if manifest["shard_index"] == 0] == [
+        0.1,
+        0.2,
+        0.3,
+    ]
 
 
 def test_write_role_shards_are_role_separated_hashed_and_replayable(tmp_path: Path) -> None:
@@ -96,3 +147,54 @@ def test_write_role_shards_refuses_cross_role_path_and_completed_output(tmp_path
     (output_dir / "manifest.json").write_text(json.dumps({"complete": True}))
     with pytest.raises(FileExistsError, match="completion manifest"):
         write_role_shards(output_dir=output_dir, **kwargs)
+
+
+def test_write_role_shards_failure_leaves_no_published_output_and_can_retry(
+    tmp_path: Path,
+) -> None:
+    output_dir = tmp_path / "train"
+    calls = 0
+
+    def fail_second_rate(rate: float) -> stim.DetectorErrorModel:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected failure")
+        return stim.DetectorErrorModel(f"error({rate}) D0 L0")
+
+    kwargs = {
+        "role": "train",
+        "rates": (0.1, 0.2),
+        "shots_per_rate": 1,
+        "shard_size": 1,
+        "campaign_seed": 9,
+        "source_code_sha256": "c" * 64,
+    }
+    with pytest.raises(RuntimeError, match="injected failure"):
+        write_role_shards(output_dir=output_dir, dem_factory=fail_second_rate, **kwargs)
+    assert not output_dir.exists()
+
+    manifests = write_role_shards(
+        output_dir=output_dir,
+        dem_factory=lambda rate: stim.DetectorErrorModel(f"error({rate}) D0 L0"),
+        **kwargs,
+    )
+    assert len(manifests) == 2
+    assert (output_dir / "manifest.json").is_file()
+
+
+def test_campaign_code_validation_requires_canonical_metadata_and_shapes() -> None:
+    canonical = {
+        "name": "lp_3_7_16",
+        "ell": 45,
+        "n": 2610,
+        "k": 744,
+    }
+    hx = sparse.csr_matrix((945, 2610), dtype=np.uint8)
+    hz = sparse.csr_matrix((945, 2610), dtype=np.uint8)
+    validate_campaign_code(canonical, hx, hz)
+
+    with pytest.raises(ValueError, match="canonical lp_3_7_16"):
+        validate_campaign_code({**canonical, "name": "tiny"}, hx, hz)
+    with pytest.raises(ValueError, match="matrix dimensions"):
+        validate_campaign_code(canonical, sparse.csr_matrix((1, 2)), hz)
