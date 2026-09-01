@@ -12,11 +12,12 @@ accuracy-first campaign compares:
    operator (FNO); and
 3. a thresholded FNO proposal followed by BP-LSD repair of the residual syndrome.
 
-The initial smoke experiment established an important negative result: high
-agreement with BP-LSD's correction bits can coexist with **zero syndrome-valid
-predictions**. The campaign therefore treats teacher-bit accuracy as a training
-diagnostic, not decoder success. A correction must first reproduce the measured
-syndrome; logical block-error rate is then the principal accuracy measure. Speed
+Development smoke runs exposed an important failure mode: high agreement with
+BP-LSD's correction bits can coexist with failed syndrome checks. Those run
+artifacts are not committed, so a fresh clone cannot audit a particular numeric
+result. The durable lesson is encoded in the pipeline: teacher-bit accuracy is a
+training diagnostic, syndrome validity is reported explicitly, and the planned
+final comparison will count invalid corrections as block failures. Speed
 comparisons come only after those correctness checks.
 
 > **Status:** the smoke pipeline is complete. The accuracy campaign currently
@@ -175,16 +176,24 @@ and split provenance fixed while changing how the decoder receives its prior:
 | Soft-prior BP-LSD | Calibrated per-qubit FNO probabilities | BP-LSD |
 | Proposal + residual BP-LSD | Thresholded FNO correction; uncertainty prior on the residual problem | BP-LSD repair |
 
-The evaluation hierarchy is:
+The accuracy hierarchy used by learned smoke evaluation, hybrid calibration, and
+the planned final comparison is:
 
 1. **Syndrome validity:** does `Hx @ correction mod 2` equal the observed syndrome?
 2. **Logical block-error rate:** does any predicted logical observable differ from
-   the sampled one? Syndrome-invalid outputs count as block failures.
+   the sampled one? Learned smoke evaluation and hybrid calibration include
+   syndrome-invalid outputs among block failures; the planned final comparison
+   will apply that rule to every method.
 3. **Uncertainty:** report error counts and a 95% Wilson interval where implemented.
 4. **Diagnostics:** convergence, teacher-bit accuracy, negative log-likelihood,
    correction weights, and related intermediate measures.
 5. **Timing:** report the measured batch and decoder components only after the
    accuracy comparison is valid; do not generalize one machine's timing.
+
+The current pilot is a preselection stage, not the final comparison: its baseline
+`block_errors` field counts observable mismatches, while syndrome validity is
+reported separately. Pilot rows should therefore be used to select a noise range,
+not as final accuracy evidence.
 
 See [Experiment methodology](docs/experiment-methodology.md) for the exact model,
 decoder settings, data roles, and calibration rule.
@@ -227,17 +236,19 @@ and provenance chain.
 ## Artifacts, provenance, and restart behavior
 
 Every substantial array or binary artifact is accompanied by canonical JSON
-metadata and SHA-256 hashes. Downstream stages verify expected inputs and reject
-corrupted files, mismatched configs, cross-run shards, or incompatible code
-artifacts. Campaign shard roles are published only after their completion manifest
-is ready.
+metadata and SHA-256 hashes. Smoke stages verify their content and source hashes,
+but their manifests do not record a Git commit. Campaign shard provenance binds
+payload hashes to the config and code, role, and rate/seed coordinates; the role
+completion manifest hashes every shard manifest. Shard publication does not record
+Git identity.
 
 Smoke stages are immutable and have no resume mode: choose a new output path.
-Campaign training is the exception. It records source hashes and the Git commit,
-generates BP-LSD teacher corrections in verified chunks, writes atomic epoch
-checkpoints, and resumes only when `--resume` is explicit and all identities still
-match. See [Reproducibility](docs/reproducibility.md) for safe restart commands and
-the artifact contract.
+Campaign training introduces Git-commit binding in addition to config, code, and
+train-shard hashes. It generates BP-LSD teacher corrections in verified chunks,
+writes atomic epoch checkpoints, and resumes only when `--resume` is explicit and
+that training identity still matches. See
+[Reproducibility](docs/reproducibility.md) for safe restart commands and the
+artifact contract.
 
 ## Roadmap
 

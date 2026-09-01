@@ -43,15 +43,20 @@ X-check detectors and logical-X observables. Syndrome measurement is perfect.
 
 The committed campaign grid is
 `[0.003, 0.005, 0.008, 0.012, 0.018, 0.025]`, with 256 pilot shots at each point.
-Uniform-prior BP-LSD supplies pilot block-error measurements. If every configured
-point has zero failures, the pilot extends geometrically by a factor of 1.5, up to
-`p = 0.08`, until a failure is observed or the cap is reached.
+Uniform-prior BP-LSD supplies pilot measurements. In the current implementation,
+pilot `block_errors` count observable mismatches only; `syndrome_valid` and
+`syndrome_valid_rate` are reported separately and are not folded into that
+preselection score. If every configured point has zero observable failures, the
+pilot extends geometrically by a factor of 1.5, up to `p = 0.08`, until an
+observable failure is measured or the cap is reached.
 
 Selection always retains the two lowest measured points. It extends one point
 beyond an initial zero-failure prefix, retains measured points through 50%
 baseline block-error rate, and inserts the midpoint before the first
 majority-failure point. `selection.json` records the measurements, selected points,
-and source hashes.
+and source hashes. These rows select the campaign's noise range; they are not a
+final decoder comparison. The planned held-out evaluator must apply the same
+invalid-as-failure rule to all three methods.
 
 Subsequent samples are immutable, role-separated shards:
 

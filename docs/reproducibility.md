@@ -22,9 +22,12 @@ uv run ruff check .
 ```
 
 Keep the Git commit, config file, `source-lock.json`, and all JSON manifests with
-reported results. Campaign model identity includes the Git commit as well as
-SHA-256 hashes of the code, config, train-role completion manifest, and every
-train shard manifest.
+reported results. Smoke manifests and campaign shard manifests do not record Git
+identity, so retain it alongside those artifacts. Shards bind payload hashes to
+the config and code, role, and error-rate/seed coordinates; each role completion
+manifest hashes every shard manifest. Campaign training introduces Git-commit
+binding in addition to hashes of the code, config, train-role completion manifest,
+and every train shard manifest.
 
 ## Determinism and its limits
 
@@ -51,8 +54,10 @@ SMOKE_OUTPUT=artifacts/smoke-2026-09-01 bash scripts/run_smoke.sh
 
 Do not manually replace data underneath a manifest. Downstream readers verify
 hashes for code matrices, DEMs, packed samples, corrections, tensors, checkpoints,
-and their source manifests. They also reject role, config, seed, code-identity,
-and Git-identity mismatches.
+and their source manifests. Campaign shard loading additionally verifies config
+and code provenance, role, payload schema, rate coordinates, and deterministically
+derived seeds. Git identity is first enforced by training and is rechecked when
+the trained model is calibrated; smoke and shard publication do not enforce it.
 
 Pilot and shard-role publishers write into private staging directories and expose
 the final directory only after `manifest.json` is complete. A role directory with
@@ -82,14 +87,19 @@ A campaign rooted at `artifacts/accuracy-campaign/` publishes:
 
 | Path | Meaning |
 | --- | --- |
+| `source-lock.json` | Exact paper, Stim, `ldpc`, and Willow references |
+| `code/` | Canonical `Hx`/`Hz`, source metadata, validation, and hashes |
 | `pilot/selection.json` | Pilot rows and deterministic noise-point selection |
 | `pilot/manifest.json` | Pilot completion and shard hashes |
 | `{train,calibration,test}/manifest.json` | Immutable role completion manifest |
 | `{role}/rate-*/shard-*/samples.json` | Per-shard identity, dimensions, seed, rate, and file hashes |
 | `model/resume.json` | Current teacher/training restart state |
+| `model/teacher_progress.json` | Teacher-chunk completion and source identity |
 | `model/teacher_chunks/` | Verified, bounded BP-LSD teacher chunks |
+| `model/teacher_corrections.b8` | Assembled packed BP-LSD teacher corrections |
 | `model/teacher.json` | Assembled teacher cache identity and statistics |
 | `model/epoch-*.pt` | Atomic epoch checkpoint candidates |
+| `model/model.pt` | Completed frozen FNO state dictionary |
 | `model/model.json` | Completed model publication and full provenance |
 | `calibration/grid.json` | All evaluated checkpoint/parameter candidates |
 | `calibration/selected.json` | Frozen soft-prior and residual selections |
@@ -152,7 +162,8 @@ does not match. Preserve the exact checkout used to start a long run.
 - **Pilot or role generation:** incomplete staging is not a published role. Rerun
   with the intended final role path after diagnosing the failure.
 - **Training:** inspect `model/resume.json`; restart only with `--resume`. Existing
-  teacher chunks and the latest epoch checkpoint are verified before reuse.
+  teacher chunks and the checkpoint referenced by `resume.json` are verified
+  before reuse.
 - **Calibration:** `selected.json` marks completion and is never overwritten.
   Use a fresh campaign tree for a different calibration run.
 
