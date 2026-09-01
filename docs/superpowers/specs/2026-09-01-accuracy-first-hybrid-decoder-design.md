@@ -272,3 +272,47 @@ The campaign implementation is complete when:
 - README instructions reproduce the local path and explain the scientific boundary
   to all three target audiences;
 - commit history uses concise technical descriptions of repository changes and results.
+
+## Release-hardening amendment (2026-09-01)
+
+Final review found that the original exhaustive calibration grid and ten-minute
+shutdown grace could not support the stated cloud boundary. The benchmark in
+[`docs/calibration-throughput-benchmark.md`](../../calibration-throughput-benchmark.md)
+measured the real canonical-code hybrid path before this policy change.
+
+Calibration is now deterministic and two-stage. Stage 1 evaluates every declared
+checkpoint and parameter tuple on calibration-role shots using only FNO inference,
+correction NLL, threshold-proposal syndrome validity, and residual syndrome
+weight. It creates separate four-candidate shortlists: soft-prior ranks by NLL;
+residual ranks by proposal validity and residual weight, then NLL. Stage 2 runs
+both hybrid decoders on the union of those lists, at most eight candidates, using
+a 512-shot calibration-only subset selected by SHA-256 ranking independently
+within every noise rate. Soft-prior and residual winners are selected independently
+from their own declared shortlists. Test-role artifacts are neither read nor
+referenced by calibration.
+
+The screen policy, subset derivation and SHA-256, shortlist membership, config,
+model, checkpoint, code, and calibration-shard hashes are part of progress and
+selection provenance. Resume accepts only an exact ordered prefix of this policy;
+any policy or source change is rejected.
+
+The canonical campaign is not claimed to fit one execution. The pre-change
+benchmark proves only that the expensive revised calibration second stage has a
+conservative planning bound near 23 minutes; it does not validate whole-campaign
+speed. Canonical cloud creation therefore requires explicit acknowledgement that
+multiple executions may be necessary, and later executions reuse the same job and
+immutable store through a dedicated resume command.
+
+Cloud Run keeps an eight-hour outer task timeout. New scientific work stops at
+7h15m at the latest, reserving at least 45 minutes for a small immutable partial
+summary and, time permitting, checkpoint snapshots. Absolute monotonic deadlines
+are propagated into publication and materialization operations; a partial summary
+is attempted before optional large snapshots.
+
+Cloud build input is a Git archive of the exact committed runtime paths, not the
+working tree. The Docker ignore policy is default-deny as defense in depth, and
+an ignored sentinel regression must prove it is absent from the submitted archive.
+Runner-managed artifacts use `inputs/`, `pilot/`, `shards/`, `training/`,
+`calibration/`, `evaluation/`, and `summary/`. Manual stage layouts are documented
+separately. `source-lock.json` is not a runner-managed input and must not be listed
+in the runner artifact tree.

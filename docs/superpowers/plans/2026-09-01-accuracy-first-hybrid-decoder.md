@@ -771,6 +771,92 @@ or partial-deadline state.
 
 ---
 
+### Task 13: Release-hardening findings
+
+**Files:**
+- Modify: `.dockerignore`
+- Modify: `Dockerfile`
+- Modify: `configs/accuracy_campaign.json`
+- Modify: `configs/accuracy_campaign_cloud_reduced.json`
+- Modify: `experiments/16_calibrate_hybrid_priors.py`
+- Modify: `scripts/launch_cloud_campaign.sh`
+- Modify: `scripts/run_accuracy_campaign.sh`
+- Modify: `src/qldpc_fno/campaign/config.py`
+- Modify: `src/qldpc_fno/campaign/runner.py`
+- Modify: `src/qldpc_fno/campaign/storage.py`
+- Modify: focused campaign, calibration, and launcher tests
+- Modify: `README.md`, methodology and reproducibility documentation
+
+**Interfaces:**
+- Produces: deterministic calibration screening, method-specific shortlists, and
+  a rate-stratified decode subset whose complete policy is hash-bound on resume.
+- Produces: artifact-store operations with optional absolute monotonic deadlines.
+- Produces: canonical cloud `--multi-execution` creation and `--resume` execution
+  modes against one immutable job/store identity.
+
+- [ ] **Step 1: Preserve the pre-change benchmark**
+
+Run the existing `_score_candidate` path over verified calibration-role shots
+from the current-HEAD reduced artifact, with one warm-up and five timed trials.
+Record hardware, threads, artifact identity, timed region, raw samples, median,
+and scope limitations in `docs/calibration-throughput-benchmark.md`.
+
+- [ ] **Step 2: Write failing configuration and calibration tests**
+
+Assert a 512-shot deterministic stratified subset, four candidates per method,
+independent shortlist membership/selection, strict progress provenance, no test
+input, and a 45-minute finalization reserve. Run focused tests and confirm failure
+for missing fields and APIs.
+
+- [ ] **Step 3: Implement deterministic two-stage calibration**
+
+Screen all checkpoint/parameter pairs using calibration-only NLL and proposal
+validity/residual-weight proxies. Persist one bounded checkpoint screen or hybrid
+decode work unit per runner invocation. Decode the union of independent shortlists
+on the configured subset, then select each hybrid only from its own shortlist.
+
+- [ ] **Step 4: Write failing cloud-context and resume tests**
+
+Place an ignored sentinel under a normally copied directory. Assert cloud submit
+receives a temporary archive created by `git archive` from the exact clean commit,
+the sentinel is absent, `.dockerignore` starts with `**`, canonical execute refuses
+without `--multi-execution`, and `--resume` executes only an existing job.
+
+- [ ] **Step 5: Implement exact build context and cloud resume**
+
+Archive only Dockerfile, lock/package metadata, the two campaign configs, required
+numbered entry points, and `src/qldpc_fno` from the clean commit. Keep the eight-hour
+outer job limit, require explicit multi-execution acknowledgement for canonical
+creation, and execute the existing job for resume without recreating resources.
+
+- [ ] **Step 6: Write failing deadline/store tests**
+
+Assert the small partial summary is attempted before a changed-stage snapshot,
+all publication/materialization operations receive the absolute deadline, and
+delayed/failing stores return a bounded partial-deadline result without publishing
+an unverified completion.
+
+- [ ] **Step 7: Implement bounded finalization**
+
+Set `checkpoint_grace_seconds=2700`. Thread the absolute monotonic deadline through
+runner publications and storage APIs, convert it to bounded GCS request timeouts,
+publish a partial summary first, then attempt optional snapshots while time remains.
+
+- [ ] **Step 8: Correct operator documentation**
+
+Document prerequisites, local canonical/reduced/resume commands, cloud dry-run,
+multi-execution creation/resume, cleanup, billing, and exact CPU/memory/time bounds.
+Separate runner-store and manual layouts. Remove campaign runner source-lock claims
+and update the repository map.
+
+- [ ] **Step 9: Verify before release**
+
+Run focused red/green tests, the full suite, Ruff, Bash syntax checks, lock checks,
+Docker/build-context inspection, and a fresh reduced local campaign plus resume.
+Review `git diff --check` and request independent final re-review.
+
+---
+
 ## Completion audit
 
 - [ ] Uniform, soft-prior, and residual decoders see identical held-out shots.
