@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -85,7 +86,7 @@ class CampaignRunner:
         stages: Sequence[CampaignStage],
         checkpoint_grace_seconds: float,
         monotonic: Callable[[], float] = monotonic,
-        on_deadline: Callable[[str], None] | None = None,
+        on_deadline: Callable[[str, float | None], None] | None = None,
     ) -> None:
         if checkpoint_grace_seconds < 0:
             raise ValueError("checkpoint_grace_seconds must be non-negative")
@@ -101,33 +102,55 @@ class CampaignRunner:
         self._monotonic = monotonic
         self._on_deadline = on_deadline
 
-    def _checkpoint_count(self, stage: CampaignStage) -> int:
+    def _checkpoint_count(
+        self,
+        stage: CampaignStage,
+        deadline_monotonic: float | None = None,
+    ) -> int:
         count = 0
         while count < 1_000_000:
             prefix = f".checkpoints/{stage.name}/{count:08d}"
             completion_key = f"{prefix}/_COMPLETE.json"
-            if not self._store.exists(completion_key) and not self._store.verify_completion(prefix):
+            if not self._store.exists(completion_key) and not self._store.verify_completion(
+                prefix,
+                deadline_monotonic=deadline_monotonic,
+            ):
                 return count
-            if not self._store.verify_completion(prefix):
+            if not self._store.verify_completion(
+                prefix,
+                deadline_monotonic=deadline_monotonic,
+            ):
                 raise ValueError(f"checkpoint completion is corrupt: {prefix}")
             count += 1
         raise RuntimeError(f"too many checkpoint snapshots for stage {stage.name}")
 
-    def _restore_checkpoints(self, stage: CampaignStage, count: int) -> None:
+    def _restore_checkpoints(
+        self,
+        stage: CampaignStage,
+        count: int,
+        deadline_monotonic: float | None = None,
+    ) -> None:
         for index in range(count):
             materialize_completion(
                 self._store,
                 f".checkpoints/{stage.name}/{index:08d}",
                 stage.directory,
                 replace_existing=index > 0,
+                deadline_monotonic=deadline_monotonic,
             )
 
-    def _checkpoint_records(self, stage: CampaignStage, count: int) -> dict[str, object]:
+    def _checkpoint_records(
+        self,
+        stage: CampaignStage,
+        count: int,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, object]:
         records: dict[str, object] = {}
         for index in range(count):
             _, manifest = read_completion_manifest(
                 self._store,
                 f".checkpoints/{stage.name}/{index:08d}",
+                deadline_monotonic=deadline_monotonic,
             )
             files = manifest.get("files")
             if not isinstance(files, dict):
@@ -140,8 +163,13 @@ class CampaignRunner:
             records.update(files)
         return records
 
-    def _publish_checkpoint(self, stage: CampaignStage, count: int) -> None:
-        previous = self._checkpoint_records(stage, count)
+    def _publish_checkpoint(
+        self,
+        stage: CampaignStage,
+        count: int,
+        deadline_monotonic: float | None,
+    ) -> None:
+        previous = self._checkpoint_records(stage, count, deadline_monotonic)
         current_relatives = {
             path.relative_to(stage.directory).as_posix()
             for path in stage.directory.rglob("*")
@@ -169,10 +197,16 @@ class CampaignRunner:
                 delta,
                 f".checkpoints/{stage.name}/{count:08d}",
                 deleted=tuple(sorted(deleted)),
+                deadline_monotonic=deadline_monotonic,
             )
 
-    def _checkpoint_changed(self, stage: CampaignStage, count: int) -> bool:
-        previous = self._checkpoint_records(stage, count)
+    def _checkpoint_changed(
+        self,
+        stage: CampaignStage,
+        count: int,
+        deadline_monotonic: float | None = None,
+    ) -> bool:
+        previous = self._checkpoint_records(stage, count, deadline_monotonic)
         current = {
             path.relative_to(stage.directory).as_posix(): {
                 "sha256": sha256_file(path),
@@ -188,14 +222,19 @@ class CampaignRunner:
         reason: str,
         stage: CampaignStage,
         checkpoint_count: int,
+        deadline_monotonic: float | None,
     ) -> CampaignStatus:
-        if stage.directory.is_dir() and self._checkpoint_changed(stage, checkpoint_count):
-            self._publish_checkpoint(stage, checkpoint_count)
-            checkpoint_count += 1
         if self._on_deadline is not None:
-            self._on_deadline(reason)
-        if stage.directory.is_dir() and self._checkpoint_changed(stage, checkpoint_count):
-            self._publish_checkpoint(stage, checkpoint_count)
+            self._on_deadline(reason, deadline_monotonic)
+        try:
+            if stage.directory.is_dir() and self._checkpoint_changed(
+                stage,
+                checkpoint_count,
+                deadline_monotonic,
+            ):
+                self._publish_checkpoint(stage, checkpoint_count, deadline_monotonic)
+        except (OSError, TimeoutError):
+            pass
         return CampaignStatus.PARTIAL_DEADLINE
 
     def run(self, deadline_monotonic: float | None) -> CampaignStatus:
@@ -207,36 +246,61 @@ class CampaignRunner:
                 raise ValueError("deadline_monotonic must be finite")
         cutoff = None if deadline_monotonic is None else float(deadline_monotonic) - self._grace
         for stage in self._stages:
-            if self._store.verify_completion(stage.name):
-                materialize_completion(self._store, stage.name, stage.directory)
-                _, manifest = read_completion_manifest(self._store, stage.name)
+            if self._store.verify_completion(
+                stage.name,
+                deadline_monotonic=deadline_monotonic,
+            ):
+                materialize_completion(
+                    self._store,
+                    stage.name,
+                    stage.directory,
+                    deadline_monotonic=deadline_monotonic,
+                )
+                _, manifest = read_completion_manifest(
+                    self._store,
+                    stage.name,
+                    deadline_monotonic=deadline_monotonic,
+                )
                 if isinstance(manifest, dict) and manifest.get("status") == "partial_deadline":
                     return CampaignStatus.PARTIAL_DEADLINE
                 continue
 
-            checkpoint_count = self._checkpoint_count(stage)
-            self._restore_checkpoints(stage, checkpoint_count)
+            checkpoint_count = self._checkpoint_count(stage, deadline_monotonic)
+            self._restore_checkpoints(stage, checkpoint_count, deadline_monotonic)
             while True:
                 if cutoff is not None and self._monotonic() >= cutoff:
                     return self._deadline(
-                        f"deadline_before_{stage.name}_unit", stage, checkpoint_count
+                        f"deadline_before_{stage.name}_unit",
+                        stage,
+                        checkpoint_count,
+                        deadline_monotonic,
                     )
                 try:
                     result = stage.run_unit(cutoff)
                 except subprocess.TimeoutExpired:
                     return self._deadline(
-                        f"deadline_during_{stage.name}_unit", stage, checkpoint_count
+                        f"deadline_during_{stage.name}_unit",
+                        stage,
+                        checkpoint_count,
+                        deadline_monotonic,
                     )
                 if result is StageResult.COMPLETE:
-                    self._store.publish_directory(stage.directory, stage.name)
+                    self._store.publish_directory(
+                        stage.directory,
+                        stage.name,
+                        deadline_monotonic=deadline_monotonic,
+                    )
                     break
                 if result is StageResult.PARTIAL_DEADLINE:
                     return self._deadline(
-                        f"{stage.name}_requested_deadline", stage, checkpoint_count
+                        f"{stage.name}_requested_deadline",
+                        stage,
+                        checkpoint_count,
+                        deadline_monotonic,
                     )
                 if result is not StageResult.CHECKPOINTED:
                     raise ValueError(f"stage {stage.name} returned an invalid result: {result!r}")
-                self._publish_checkpoint(stage, checkpoint_count)
+                self._publish_checkpoint(stage, checkpoint_count, deadline_monotonic)
                 checkpoint_count += 1
         return CampaignStatus.COMPLETE
 
@@ -731,13 +795,14 @@ def _publish_partial_summary(
     code_path: Path | None = None,
     campaign_mode: str = "canonical",
     scientific_claims_permitted: bool = True,
+    deadline_monotonic: float | None = None,
 ) -> str:
     """Publish an immutable, versioned deadline report without completing summary."""
     for index in range(1_000_000):
         prefix = f".partial-summaries/{index:08d}"
         output = workspace / ".partial-summaries" / f"{index:08d}"
         completion_key = f"{prefix}/_COMPLETE.json"
-        if store.verify_completion(prefix):
+        if store.verify_completion(prefix, deadline_monotonic=deadline_monotonic):
             continue
         if store.exists(completion_key):
             raise ValueError(f"partial summary completion is corrupt: {prefix}")
@@ -754,7 +819,12 @@ def _publish_partial_summary(
             campaign_mode=campaign_mode,
             scientific_claims_permitted=scientific_claims_permitted,
         )
-        store.publish_directory(output, prefix, status="partial_deadline")
+        store.publish_directory(
+            output,
+            prefix,
+            status="partial_deadline",
+            deadline_monotonic=deadline_monotonic,
+        )
         return prefix
     raise RuntimeError("too many partial deadline summaries")
 
@@ -1048,11 +1118,15 @@ def build_campaign_runner(
         )
         return StageResult.COMPLETE
 
-    def deadline(reason: str) -> None:
-        try:
-            commands.finalize_evaluation(
-                _deadline_finalization_timeout(config.checkpoint_grace_seconds)
+    def deadline(reason: str, deadline_monotonic: float | None) -> None:
+        finalization_timeout = _deadline_finalization_timeout(config.checkpoint_grace_seconds)
+        if deadline_monotonic is not None:
+            finalization_timeout = min(
+                finalization_timeout,
+                max(0.0, deadline_monotonic - monotonic_clock()),
             )
+        try:
+            commands.finalize_evaluation(finalization_timeout)
         except subprocess.TimeoutExpired:
             pass
         _publish_partial_summary(
@@ -1064,6 +1138,7 @@ def build_campaign_runner(
             code_path=commands.code_path,
             campaign_mode=campaign_mode,
             scientific_claims_permitted=scientific_claims_permitted,
+            deadline_monotonic=deadline_monotonic,
         )
 
     stages = (
@@ -1088,6 +1163,37 @@ def _argument_or_environment(value: str | None, name: str) -> str:
     if not result:
         raise ValueError(f"provide the argument or set {name}")
     return result
+
+
+def _status_payload(status: CampaignStatus) -> dict[str, str]:
+    """Build terminal status and an injection-safe cloud resume hint when available."""
+    payload = {"status": status.value}
+    if status is not CampaignStatus.PARTIAL_DEADLINE:
+        return payload
+    identity = {
+        "CAMPAIGN_CLOUD_JOB": os.environ.get("CAMPAIGN_CLOUD_JOB"),
+        "CAMPAIGN_CLOUD_PROJECT": os.environ.get("CAMPAIGN_CLOUD_PROJECT"),
+        "CAMPAIGN_CLOUD_REGION": os.environ.get("CAMPAIGN_CLOUD_REGION"),
+    }
+    if not any(identity.values()):
+        return payload
+    if not all(identity.values()):
+        raise ValueError("cloud resume identity is incomplete")
+    patterns = {
+        "CAMPAIGN_CLOUD_JOB": r"[a-z][a-z0-9-]{0,62}",
+        "CAMPAIGN_CLOUD_PROJECT": r"[a-z][a-z0-9-]{4,28}[a-z0-9]",
+        "CAMPAIGN_CLOUD_REGION": r"[a-z][a-z0-9-]{0,30}[a-z0-9]",
+    }
+    for name, pattern in patterns.items():
+        value = identity[name]
+        if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
+            raise ValueError(f"{name} is invalid")
+    payload["resume_command"] = (
+        f"gcloud run jobs execute {identity['CAMPAIGN_CLOUD_JOB']} "
+        f"--region={identity['CAMPAIGN_CLOUD_REGION']} "
+        f"--project={identity['CAMPAIGN_CLOUD_PROJECT']} --async"
+    )
+    return payload
 
 
 def main() -> None:
@@ -1133,7 +1239,7 @@ def main() -> None:
         command_runner=command_runner,
     )
     status = runner.run(deadline)
-    print(json.dumps({"status": status.value}, sort_keys=True))
+    print(json.dumps(_status_payload(status), sort_keys=True))
 
 
 if __name__ == "__main__":

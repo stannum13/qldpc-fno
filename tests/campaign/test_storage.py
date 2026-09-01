@@ -35,6 +35,19 @@ def test_publish_directory_writes_verified_completion_manifest_last(tmp_path: Pa
     assert json.loads((tmp_path / "store/evaluation/_COMPLETE.json").read_text()) == completion
 
 
+def test_publication_refuses_to_start_after_its_absolute_deadline(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "result.json").write_text('{}')
+    store = RecordingLocalStore(tmp_path / "store")
+
+    with pytest.raises(TimeoutError, match="artifact persistence deadline"):
+        store.publish_directory(source, "evaluation", deadline_monotonic=0.0)
+
+    assert store.uploaded_keys == []
+    assert store.verify_completion("evaluation") is False
+
+
 def test_partial_files_and_corruption_never_verify_as_complete(tmp_path: Path) -> None:
     source = tmp_path / "payload.bin"
     source.write_bytes(b"partial")

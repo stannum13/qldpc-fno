@@ -19,6 +19,7 @@ from qldpc_fno.campaign.runner import (
     _CampaignCommands,
     _deadline_finalization_timeout,
     _publish_partial_summary,
+    _status_payload,
     _summary_markdown,
     _verified_calibration,
     _verified_model,
@@ -34,6 +35,7 @@ class FakeStore:
         self.valid: dict[str, bool] = {}
         self.manifests: dict[str, dict[str, object]] = {}
         self.publications: list[str] = []
+        self.publication_deadlines: list[float | None] = []
 
     def exists(self, key: str) -> bool:
         return key in self.manifests
@@ -54,8 +56,10 @@ class FakeStore:
         *,
         status: str = "complete",
         deleted: tuple[str, ...] = (),
+        deadline_monotonic: float | None = None,
     ) -> dict[str, object]:
         self.publications.append(prefix)
+        self.publication_deadlines.append(deadline_monotonic)
         files = {
             path.relative_to(source).as_posix(): {
                 "sha256": sha256_file(path),
@@ -75,7 +79,13 @@ class FakeStore:
         self.valid[prefix] = True
         return manifest
 
-    def verify_completion(self, prefix: str) -> bool:
+    def verify_completion(
+        self,
+        prefix: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bool:
+        del deadline_monotonic
         return self.valid.get(prefix, False)
 
 
@@ -122,6 +132,34 @@ def test_runner_rejects_an_invalid_image_bound_commit(monkeypatch: pytest.Monkey
 
     with pytest.raises(ValueError, match="CAMPAIGN_GIT_COMMIT"):
         runner_module._git_commit(Path("/image-without-git"))
+
+
+def test_partial_cloud_status_includes_exact_async_resume_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CAMPAIGN_CLOUD_JOB", "qldpc-fno-accuracy-20260901-a1b2c3")
+    monkeypatch.setenv("CAMPAIGN_CLOUD_PROJECT", "science-project")
+    monkeypatch.setenv("CAMPAIGN_CLOUD_REGION", "us-central1")
+
+    assert _status_payload(CampaignStatus.PARTIAL_DEADLINE) == {
+        "resume_command": (
+            "gcloud run jobs execute qldpc-fno-accuracy-20260901-a1b2c3 "
+            "--region=us-central1 --project=science-project --async"
+        ),
+        "status": "partial_deadline",
+    }
+    assert _status_payload(CampaignStatus.COMPLETE) == {"status": "complete"}
+
+
+def test_partial_cloud_status_rejects_unsafe_resume_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CAMPAIGN_CLOUD_JOB", "job;touch-pwned")
+    monkeypatch.setenv("CAMPAIGN_CLOUD_PROJECT", "science-project")
+    monkeypatch.setenv("CAMPAIGN_CLOUD_REGION", "us-central1")
+
+    with pytest.raises(ValueError, match="CAMPAIGN_CLOUD_JOB"):
+        _status_payload(CampaignStatus.PARTIAL_DEADLINE)
 
 
 def test_runner_skips_only_verified_stages_and_checkpoints_bounded_units(tmp_path: Path) -> None:
@@ -174,7 +212,7 @@ def test_real_store_supersedes_corrupt_completion_after_rerun(tmp_path: Path) ->
     original = tmp_path / "original"
     original.mkdir()
     (original / "artifact.txt").write_text("verified")
-    store = LocalArtifactStore(tmp_path / "store")
+    store = LocalArtifactStore(tmp_path / "store", monotonic_clock=lambda: 0.0)
     store.publish_directory(original, "pilot")
     (tmp_path / "store/pilot/artifact.txt").write_text("corrupt")
     rerun = FakeAction(StageResult.COMPLETE)
@@ -193,7 +231,7 @@ def test_real_store_supersedes_corrupt_completion_after_rerun(tmp_path: Path) ->
 
 
 def test_checkpoint_generations_upload_only_changed_files(tmp_path: Path) -> None:
-    store = LocalArtifactStore(tmp_path / "store")
+    store = LocalArtifactStore(tmp_path / "store", monotonic_clock=lambda: 0.0)
     directory = tmp_path / "training"
     directory.mkdir()
     (directory / "stable.bin").write_bytes(b"stable")
@@ -238,7 +276,7 @@ def test_runner_discovers_recovery_only_checkpoint_generation(tmp_path: Path) ->
 
 
 def test_checkpoint_tombstone_removes_deleted_file_on_resume(tmp_path: Path) -> None:
-    store = LocalArtifactStore(tmp_path / "store")
+    store = LocalArtifactStore(tmp_path / "store", monotonic_clock=lambda: 0.0)
     directory = tmp_path / "training"
     directory.mkdir()
     obsolete = directory / "obsolete.bin"
@@ -309,7 +347,7 @@ def test_runner_stops_before_next_unit_inside_checkpoint_grace(tmp_path: Path) -
         stages=(_stage(tmp_path, "evaluation", action),),
         checkpoint_grace_seconds=10,
         monotonic=lambda: next(times),
-        on_deadline=stopped.append,
+        on_deadline=lambda reason, deadline: stopped.append(reason),
     )
 
     status = runner.run(deadline_monotonic=100.0)
@@ -337,7 +375,7 @@ def test_subprocess_timeout_becomes_clean_partial_deadline(tmp_path: Path) -> No
         stages=(_stage(tmp_path, "calibration", timeout),),
         checkpoint_grace_seconds=10,
         monotonic=lambda: 0.0,
-        on_deadline=stopped.append,
+        on_deadline=lambda reason, deadline: stopped.append(reason),
     )
 
     assert runner.run(100.0) is CampaignStatus.PARTIAL_DEADLINE
@@ -345,7 +383,7 @@ def test_subprocess_timeout_becomes_clean_partial_deadline(tmp_path: Path) -> No
 
 
 def test_deadline_callback_changes_are_checkpointed_for_resume(tmp_path: Path) -> None:
-    store = LocalArtifactStore(tmp_path / "store")
+    store = LocalArtifactStore(tmp_path / "store", monotonic_clock=lambda: 0.0)
     directory = tmp_path / "evaluation"
     directory.mkdir()
     (directory / "progress.json").write_text("{}")
@@ -354,8 +392,9 @@ def test_deadline_callback_changes_are_checkpointed_for_resume(tmp_path: Path) -
         del deadline
         raise subprocess.TimeoutExpired(["evaluation"], timeout=1.0)
 
-    def finalize(reason: str) -> None:
+    def finalize(reason: str, deadline: float | None) -> None:
         assert reason == "deadline_during_evaluation_unit"
+        assert deadline == 100.0
         (directory / "manifest.json").write_text('{"status":"partial_deadline"}')
 
     runner = CampaignRunner(
@@ -368,9 +407,89 @@ def test_deadline_callback_changes_are_checkpointed_for_resume(tmp_path: Path) -
 
     assert runner.run(100.0) is CampaignStatus.PARTIAL_DEADLINE
     _, first = read_completion_manifest(store, ".checkpoints/evaluation/00000000")
-    _, second = read_completion_manifest(store, ".checkpoints/evaluation/00000001")
-    assert set(first["files"]) == {"progress.json"}
-    assert set(second["files"]) == {"manifest.json"}
+    assert set(first["files"]) == {"manifest.json", "progress.json"}
+
+
+def test_deadline_publishes_small_summary_before_optional_snapshot(tmp_path: Path) -> None:
+    store = FakeStore()
+    stage = _stage(tmp_path, "training", FakeAction(StageResult.CHECKPOINTED))
+
+    def publish_summary(reason: str, deadline: float | None) -> None:
+        assert reason == "deadline_before_training_unit"
+        summary = tmp_path / "partial-summary"
+        summary.mkdir()
+        (summary / "status.json").write_text('{"status":"partial_deadline"}')
+        store.publish_directory(
+            summary,
+            ".partial-summaries/00000000",
+            status="partial_deadline",
+            deadline_monotonic=deadline,
+        )
+
+    runner = CampaignRunner(
+        store=store,
+        stages=(stage,),
+        checkpoint_grace_seconds=10,
+        monotonic=lambda: 95.0,
+        on_deadline=publish_summary,
+    )
+
+    assert runner.run(100.0) is CampaignStatus.PARTIAL_DEADLINE
+    assert store.publications == [
+        ".partial-summaries/00000000",
+        ".checkpoints/training/00000000",
+    ]
+    assert store.publication_deadlines == [100.0, 100.0]
+
+
+def test_failing_optional_snapshot_does_not_erase_published_partial_status(
+    tmp_path: Path,
+) -> None:
+    class SnapshotFailingStore(FakeStore):
+        def publish_directory(
+            self,
+            source: Path,
+            prefix: str,
+            *,
+            status: str = "complete",
+            deleted: tuple[str, ...] = (),
+            deadline_monotonic: float | None = None,
+        ) -> dict[str, object]:
+            if prefix.startswith(".checkpoints/"):
+                raise TimeoutError("delayed snapshot store")
+            return super().publish_directory(
+                source,
+                prefix,
+                status=status,
+                deleted=deleted,
+                deadline_monotonic=deadline_monotonic,
+            )
+
+    store = SnapshotFailingStore()
+    stage = _stage(tmp_path, "training", FakeAction(StageResult.CHECKPOINTED))
+
+    def publish_summary(reason: str, deadline: float | None) -> None:
+        summary = tmp_path / "partial-summary"
+        summary.mkdir()
+        (summary / "status.json").write_text(json.dumps({"reason": reason}))
+        store.publish_directory(
+            summary,
+            ".partial-summaries/00000000",
+            status="partial_deadline",
+            deadline_monotonic=deadline,
+        )
+
+    runner = CampaignRunner(
+        store=store,
+        stages=(stage,),
+        checkpoint_grace_seconds=10,
+        monotonic=lambda: 95.0,
+        on_deadline=publish_summary,
+    )
+
+    assert runner.run(100.0) is CampaignStatus.PARTIAL_DEADLINE
+    assert store.verify_completion(".partial-summaries/00000000") is True
+    assert store.verify_completion(".checkpoints/training/00000000") is False
 
 
 def test_training_adapter_separates_teacher_chunk_from_epoch(tmp_path: Path) -> None:

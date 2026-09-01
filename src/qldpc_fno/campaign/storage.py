@@ -8,7 +8,9 @@ import shutil
 import tempfile
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
+from time import monotonic
 from typing import Protocol, runtime_checkable
 
 from google.cloud import storage as google_storage
@@ -79,9 +81,15 @@ class ArtifactStore(Protocol):
         *,
         status: str = "complete",
         deleted: tuple[str, ...] = (),
+        deadline_monotonic: float | None = None,
     ) -> dict[str, object]: ...
 
-    def verify_completion(self, prefix: str) -> bool: ...
+    def verify_completion(
+        self,
+        prefix: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bool: ...
 
 
 class _PublishingStore:
@@ -101,6 +109,33 @@ class _PublishingStore:
 
     def _copy(self, source_key: str, destination_key: str) -> None:
         raise NotImplementedError
+
+    def _remaining_timeout(self) -> float | None:
+        deadline = getattr(self, "_active_deadline_monotonic", None)
+        if deadline is None:
+            return None
+        clock = getattr(self, "_monotonic", monotonic)
+        remaining = float(deadline) - clock()
+        if remaining <= 0.0:
+            raise TimeoutError("artifact persistence deadline expired")
+        return remaining
+
+    @contextmanager
+    def _deadline_scope(self, deadline_monotonic: float | None):
+        previous = getattr(self, "_active_deadline_monotonic", None)
+        if deadline_monotonic is None:
+            effective = previous
+        elif previous is None:
+            effective = float(deadline_monotonic)
+        else:
+            effective = min(float(previous), float(deadline_monotonic))
+        self._active_deadline_monotonic = effective
+        try:
+            self._remaining_timeout()
+            yield
+            self._remaining_timeout()
+        finally:
+            self._active_deadline_monotonic = previous
 
     def _object_matches(self, key: str, record: Mapping[str, object]) -> bool:
         size = record.get("size")
@@ -169,11 +204,17 @@ class _PublishingStore:
             return latest if self._verify_exact_completion(latest) else None
         return prefix if self._verify_exact_completion(prefix) else None
 
-    def verify_completion(self, prefix: str) -> bool:
-        try:
-            return self._resolved_completion_prefix(prefix) is not None
-        except OSError, TypeError, ValueError:
-            return False
+    def verify_completion(
+        self,
+        prefix: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bool:
+        with self._deadline_scope(deadline_monotonic):
+            try:
+                return self._resolved_completion_prefix(prefix) is not None
+            except OSError, TypeError, ValueError:
+                return False
 
     def publish_directory(
         self,
@@ -182,6 +223,18 @@ class _PublishingStore:
         *,
         status: str = "complete",
         deleted: tuple[str, ...] = (),
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, object]:
+        with self._deadline_scope(deadline_monotonic):
+            return self._publish_directory(source, prefix, status=status, deleted=deleted)
+
+    def _publish_directory(
+        self,
+        source: Path,
+        prefix: str,
+        *,
+        status: str,
+        deleted: tuple[str, ...],
     ) -> dict[str, object]:
         logical_prefix = _safe_key(prefix, label="prefix")
         if status not in {"complete", "partial_deadline"}:
@@ -273,8 +326,9 @@ class _PublishingStore:
 class LocalArtifactStore(_PublishingStore):
     """Immutable artifact store rooted at a local directory."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, monotonic_clock=monotonic) -> None:
         self.root = root.resolve()
+        self._monotonic = monotonic_clock
         self.root.mkdir(parents=True, exist_ok=True)
 
     def _path(self, key: str) -> Path:
@@ -302,9 +356,11 @@ class LocalArtifactStore(_PublishingStore):
         return tuple(result)
 
     def exists(self, key: str) -> bool:
+        self._remaining_timeout()
         return self._path(key).is_file()
 
     def download(self, key: str, destination: Path) -> None:
+        self._remaining_timeout()
         source = self._path(key)
         if not source.is_file():
             raise FileNotFoundError(key)
@@ -312,8 +368,10 @@ class LocalArtifactStore(_PublishingStore):
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
         shutil.copyfile(source, temporary)
         os.replace(temporary, destination)
+        self._remaining_timeout()
 
     def upload(self, source: Path, key: str) -> None:
+        self._remaining_timeout()
         if not source.is_file() or source.is_symlink():
             raise FileNotFoundError(source)
         destination = self._path(key)
@@ -332,14 +390,17 @@ class LocalArtifactStore(_PublishingStore):
             raise FileExistsError(f"refusing to overwrite immutable artifact: {key}") from None
         finally:
             temporary.unlink(missing_ok=True)
+        self._remaining_timeout()
 
     def read_json(self, key: str) -> object:
+        self._remaining_timeout()
         path = self._path(key)
         if not path.is_file():
             raise FileNotFoundError(key)
         return json.loads(path.read_text())
 
     def _copy(self, source_key: str, destination_key: str) -> None:
+        self._remaining_timeout()
         self.upload(self._path(source_key), destination_key)
 
 
@@ -352,12 +413,14 @@ class GCSArtifactStore(_PublishingStore):
         prefix: str = "",
         *,
         client: google_storage.Client | None = None,
+        monotonic_clock=monotonic,
     ) -> None:
         if not bucket or "/" in bucket:
             raise ValueError("Cloud Storage bucket name is invalid")
         self._client = client or google_storage.Client()
         self._bucket = self._client.bucket(bucket)
         self._prefix = _safe_key(prefix, label="GCS base prefix") if prefix else ""
+        self._monotonic = monotonic_clock
 
     @classmethod
     def from_uri(
@@ -379,7 +442,8 @@ class GCSArtifactStore(_PublishingStore):
         relative_root = f"{_safe_key(prefix, label='prefix')}/.recovery/"
         object_root = self._name(relative_root.rstrip("/")) + "/"
         result: list[str] = []
-        for blob in self._client.list_blobs(self._bucket, prefix=object_root):
+        timeout = self._remaining_timeout()
+        for blob in self._client.list_blobs(self._bucket, prefix=object_root, timeout=timeout):
             relative = blob.name[len(object_root) :]
             generation, separator, leaf = relative.partition("/")
             if (
@@ -392,33 +456,43 @@ class GCSArtifactStore(_PublishingStore):
         return tuple(sorted(result))
 
     def exists(self, key: str) -> bool:
-        return bool(self._bucket.blob(self._name(key)).exists(client=self._client))
+        timeout = self._remaining_timeout()
+        return bool(
+            self._bucket.blob(self._name(key)).exists(client=self._client, timeout=timeout)
+        )
 
     def download(self, key: str, destination: Path) -> None:
         blob = self._bucket.blob(self._name(key))
-        if not blob.exists(client=self._client):
+        timeout = self._remaining_timeout()
+        if not blob.exists(client=self._client, timeout=timeout):
             raise FileNotFoundError(key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-        blob.download_to_filename(str(temporary))
+        blob.download_to_filename(str(temporary), timeout=self._remaining_timeout())
         os.replace(temporary, destination)
+        self._remaining_timeout()
 
     def upload(self, source: Path, key: str) -> None:
         if not source.is_file() or source.is_symlink():
             raise FileNotFoundError(source)
         blob = self._bucket.blob(self._name(key))
-        if blob.exists(client=self._client):
+        if blob.exists(client=self._client, timeout=self._remaining_timeout()):
             if self._object_matches(key, _file_record(source)):
                 return
             raise FileExistsError(f"refusing to overwrite immutable artifact: {key}")
         blob.metadata = {"sha256": sha256_file(source)}
-        blob.upload_from_filename(str(source), if_generation_match=0)
+        blob.upload_from_filename(
+            str(source),
+            if_generation_match=0,
+            timeout=self._remaining_timeout(),
+        )
+        self._remaining_timeout()
 
     def read_json(self, key: str) -> object:
         blob = self._bucket.blob(self._name(key))
-        if not blob.exists(client=self._client):
+        if not blob.exists(client=self._client, timeout=self._remaining_timeout()):
             raise FileNotFoundError(key)
-        return json.loads(blob.download_as_bytes())
+        return json.loads(blob.download_as_bytes(timeout=self._remaining_timeout()))
 
     def _copy(self, source_key: str, destination_key: str) -> None:
         source = self._bucket.blob(self._name(source_key))
@@ -427,7 +501,9 @@ class GCSArtifactStore(_PublishingStore):
             self._bucket,
             new_name=self._name(destination_key),
             if_generation_match=0,
+            timeout=self._remaining_timeout(),
         )
+        self._remaining_timeout()
 
 
 def open_artifact_store(location: str | Path) -> ArtifactStore:
@@ -441,8 +517,20 @@ def open_artifact_store(location: str | Path) -> ArtifactStore:
 def read_completion_manifest(
     store: ArtifactStore,
     prefix: str,
+    *,
+    deadline_monotonic: float | None = None,
 ) -> tuple[str, dict[str, object]]:
     """Resolve and read the latest verified immutable generation for *prefix*."""
+    if isinstance(store, _PublishingStore):
+        with store._deadline_scope(deadline_monotonic):
+            return _read_completion_manifest(store, prefix)
+    return _read_completion_manifest(store, prefix)
+
+
+def _read_completion_manifest(
+    store: ArtifactStore,
+    prefix: str,
+) -> tuple[str, dict[str, object]]:
     prefix = _safe_key(prefix, label="prefix")
     if isinstance(store, _PublishingStore):
         resolved = store._resolved_completion_prefix(prefix)
@@ -470,8 +558,28 @@ def materialize_completion(
     destination: Path,
     *,
     replace_existing: bool = False,
+    deadline_monotonic: float | None = None,
 ) -> None:
     """Restore a verified immutable publication without replacing different files."""
+    if isinstance(store, _PublishingStore):
+        with store._deadline_scope(deadline_monotonic):
+            _materialize_completion(
+                store,
+                prefix,
+                destination,
+                replace_existing=replace_existing,
+            )
+            return
+    _materialize_completion(store, prefix, destination, replace_existing=replace_existing)
+
+
+def _materialize_completion(
+    store: ArtifactStore,
+    prefix: str,
+    destination: Path,
+    *,
+    replace_existing: bool,
+) -> None:
     prefix = _safe_key(prefix, label="prefix")
     resolved, manifest = read_completion_manifest(store, prefix)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), dict):
