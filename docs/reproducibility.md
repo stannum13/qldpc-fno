@@ -11,7 +11,8 @@ Run commands from the repository root. The environment contract is:
 - Python `>=3.14,<3.15`;
 - the committed `uv.lock`;
 - runtime versions pinned in `pyproject.toml`; and
-- source references captured by `experiments/00_lock_sources.py`.
+- source references that can be captured by the smoke orchestrator or the
+  optional manual `experiments/00_lock_sources.py` step.
 
 Create the environment and verify the repository with:
 
@@ -21,13 +22,15 @@ uv run pytest -q
 uv run ruff check .
 ```
 
-Keep the Git commit, config file, `source-lock.json`, and all JSON manifests with
-reported results. Smoke manifests and campaign shard manifests do not record Git
-identity, so retain it alongside those artifacts. Shards bind payload hashes to
-the config and code, role, and error-rate/seed coordinates; each role completion
-manifest hashes every shard manifest. Campaign training introduces Git-commit
-binding in addition to hashes of the code, config, train-role completion manifest,
-and every train shard manifest.
+Keep the Git commit, config file, and all JSON manifests with reported results.
+Also keep `source-lock.json` when the smoke or optional manual source-lock step
+was run. The accuracy runner does not publish or verify that file. Smoke manifests
+and campaign shard manifests do not themselves record Git identity, so retain it
+alongside those artifacts. Shards bind payload hashes to the config and code,
+role, and error-rate/seed coordinates; each role completion manifest hashes every
+shard manifest. Campaign training introduces Git-commit binding in addition to
+hashes of the code, config, train-role completion manifest, and every train shard
+manifest.
 
 ## Determinism and its limits
 
@@ -81,37 +84,87 @@ For the default command, `artifacts/smoke/` contains:
 Packed `.b8` files use little-endian bit order. Array dimensions, shot counts, and
 hashes live in adjacent JSON rather than being inferred from file size alone.
 
-## Campaign artifact tree
+## Runner-store campaign artifact tree
 
-A campaign rooted at `artifacts/accuracy-campaign/` publishes:
+`scripts/run_accuracy_campaign.sh` and the Cloud Run job use the same artifact
+store contract. A local store rooted at `artifacts/accuracy-campaign/` (or the
+configured Cloud Storage prefix) publishes:
 
 | Path | Meaning |
 | --- | --- |
-| `source-lock.json` | Exact paper, Stim, `ldpc`, and Willow references |
-| `code/` | Canonical `Hx`/`Hz`, source metadata, validation, and hashes |
+| `inputs/config.json` | Immutable effective campaign configuration |
+| `inputs/run-mode.json` | Git commit, canonical-config hash, mode, and permitted claims |
+| `inputs/code/` | Canonical `Hx`/`Hz`, source metadata, validation, and hashes |
 | `pilot/selection.json` | Pilot rows and deterministic noise-point selection |
 | `pilot/manifest.json` | Pilot completion and shard hashes |
-| `{train,calibration,test}/manifest.json` | Immutable role completion manifest |
-| `{role}/rate-*/shard-*/samples.json` | Per-shard identity, dimensions, seed, rate, and file hashes |
-| `model/resume.json` | Current teacher/training restart state |
-| `model/teacher_progress.json` | Teacher-chunk completion and source identity |
-| `model/teacher_chunks/` | Verified, bounded BP-LSD teacher chunks |
-| `model/teacher_corrections.b8` | Assembled packed BP-LSD teacher corrections |
-| `model/teacher.json` | Assembled teacher cache identity and statistics |
-| `model/epoch-*.pt` | Atomic epoch checkpoint candidates |
-| `model/model.pt` | Completed frozen FNO state dictionary |
-| `model/model.json` | Completed model publication and full provenance |
-| `calibration/grid.json` | All evaluated checkpoint/parameter candidates |
-| `calibration/selected.json` | Frozen soft-prior and residual selections |
+| `shards/{train,calibration,test}/manifest.json` | Immutable role completion manifest |
+| `shards/{role}/rate-*/shard-*/samples.json` | Per-shard identity, seed, rate, dimensions, and file hashes |
+| `training/resume.json` | Current teacher/training restart state |
+| `training/teacher_progress.json` | Teacher-chunk completion and source identity |
+| `training/teacher_chunks/` | Verified, bounded BP-LSD teacher chunks |
+| `training/teacher_corrections.b8` | Assembled packed BP-LSD teacher corrections |
+| `training/teacher.json` | Assembled teacher cache identity and statistics |
+| `training/epoch-*.pt` | Atomic epoch checkpoint candidates |
+| `training/model.pt`, `training/model.json` | Completed frozen FNO and full provenance |
+| `calibration/progress.json` | Strict two-stage screen/decode restart state and provenance |
+| `calibration/grid.json` | Proxy results, method-specific shortlists, and decoded candidates |
+| `calibration/selected.json` | Independently frozen soft-prior and residual selections |
 | `evaluation/rate-*/batch-*/outcomes.npz` | Immutable paired per-shot outcomes and latency diagnostics |
 | `evaluation/rate-*/batch-*/manifest.json` | Batch coordinates, counts, hashes, and provenance |
 | `evaluation/rate-*/summary.json` | Per-rate statistics, intervals, validity, and stopping reason |
 | `evaluation/progress.json` | Resumable batch-manifest index |
 | `evaluation/manifest.json` | Final complete or deadline-partial publication |
+| `summary/results.{json,md}` | Final verified scientific summary |
+| `.partial-summaries/<sequence>/` | Small, immutable deadline summaries published first |
+| `.checkpoints/<stage>/<sequence>/` | Optional verified stage snapshots published after a partial summary |
 
 Evaluation verifies the selection, test, model, teacher, checkpoint, and
 calibration chain before decoding. Existing batches are semantically revalidated
 on `--resume` without loading all prior outcome arrays at once.
+
+The store prefix `training/` materializes as the runner's local `model/` working
+directory. This is intentional; do not construct manual stage commands from the
+remote/store path names.
+
+## Manual stage artifact tree
+
+The individual commands in the README use a different local layout:
+
+| Path | Meaning |
+| --- | --- |
+| `source-lock.json` | Optional bibliography/software source lock |
+| `code/`, `pilot/` | Validated code and pilot selection |
+| `{train,calibration,test}/` | Role shards at the campaign root |
+| `model/` | Teacher cache, checkpoints, and frozen model |
+| `calibration/{progress,grid,selected}.json` | Calibration restart, grid, and selections beside calibration-role shards |
+| `evaluation/` | Resumable paired held-out batches and summaries |
+
+These paths are for direct CLI use only. The orchestrated runner owns the
+runner-store mapping above.
+
+## Resuming the campaign runner
+
+The local runner resumes the exact existing store and refuses implicit reuse:
+
+```bash
+CAMPAIGN_OUTPUT=artifacts/accuracy-campaign \
+bash scripts/run_accuracy_campaign.sh --resume
+```
+
+For Cloud Run, repeat the original clean commit, active project, region, and
+campaign ID. The launcher verifies the existing job and commit-tagged image and
+does not recreate resources:
+
+```bash
+CAMPAIGN_ID=accuracy-20260901-a1b2 \
+CLOUD_REGION=us-central1 \
+bash scripts/launch_cloud_campaign.sh --execute --resume
+```
+
+Canonical Cloud executions are bounded to 8 hours and stop new work by 7 hours
+15 minutes, reserving at least 45 minutes for summary/checkpoint persistence.
+Partial status includes the exact asynchronous `gcloud run jobs execute` command
+for the next allocation.
 
 ## Resuming campaign training
 
@@ -194,8 +247,12 @@ continue until scientific stopping or an externally supplied deadline.
 - **Training:** inspect `model/resume.json`; restart only with `--resume`. Existing
   teacher chunks and the checkpoint referenced by `resume.json` are verified
   before reuse.
-- **Calibration:** `selected.json` marks completion and is never overwritten.
-  Use a fresh campaign tree for a different calibration run.
+- **Calibration:** each invocation persists one bounded checkpoint screen or
+  shortlisted hybrid-decode unit in `progress.json`. Resume through the campaign
+  runner or repeat the manual command with `--resume`; the config, calibration
+  shards, model, policy, subset, shortlists, and recorded work order are verified
+  before reuse. `selected.json` marks completion and is never overwritten. Use a
+  fresh campaign tree for a different policy.
 - **Evaluation:** restart an incomplete or deadline-partial publication with
   `--resume`. Existing batch hashes, coordinates, outcome semantics, summaries,
   and source provenance are verified before additional batches are decoded.
@@ -208,7 +265,8 @@ stage from its verified parents so provenance remains meaningful.
 For each published result, record:
 
 - repository commit and clean/dirty state;
-- config and source-lock hashes;
+- config hash, plus the source-lock hash only when the optional manual/smoke step
+  was used;
 - role completion and model/calibration manifests;
 - shot count and physical error rate per point;
 - syndrome-invalid and logical block-error counts, not rates alone;

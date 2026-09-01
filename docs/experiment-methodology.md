@@ -65,7 +65,9 @@ Subsequent samples are immutable, role-separated shards:
 - **test:** untouched samples for paired held-out evaluation.
 
 The default train and calibration caps (50,000 and 10,000 total shots) are divided
-across selected rates, with any remainder assigned to lower rates. Test generation
+across selected rates, with any remainder assigned to lower rates. Calibration
+proxy screening uses that calibration role; expensive hybrid decoding uses a
+deterministic, rate-stratified subset capped at 512 shots. Test generation
 materializes the configured cap of 200,000 shots per selected rate in immutable
 shards; held-out evaluation later consumes those shots in 2,048-shot batches.
 Each shard is at most 2,048 shots and derives its seed from the campaign seed, rate
@@ -104,9 +106,25 @@ a checkpoint candidate and validation NLL.
 
 ## Calibration and hybrid decoders
 
-Calibration evaluates every saved epoch checkpoint over a fixed parameter grid.
+Calibration is deterministic and two-stage. It never reads the test role.
+
+1. For every saved epoch and all 48 fixed `(alpha, beta, temperature)` tuples,
+   compute calibration-only proxies without invoking BP-LSD: correction NLL,
+   threshold-proposal invalid count, and mean residual-syndrome weight. FNO logits
+   are evaluated once per checkpoint over the full calibration role.
+2. Independently shortlist four candidates for each method. Soft-prior ranking
+   uses NLL. Residual ranking uses proposal invalid count, residual-syndrome
+   weight, then NLL. The union contains at most eight candidates.
+3. Run both hybrid decoders for that union on a maximum of 512 calibration shots.
+   The subset is selected by SHA-256 ranking within each error rate followed by
+   round-robin allocation, and its seed, per-rate counts, and index hash are
+   recorded.
+
 The parameters transform the FNO logits while conditioning on the physical noise
-rate, then clip the resulting probabilities away from zero and one.
+rate, then clip the resulting probabilities away from zero and one. Proxy ranking
+is only a computational screen: final soft and residual winners are each
+restricted to their own independently constructed shortlist and chosen using
+their actual hybrid-decoding outcomes.
 
 **Soft-prior path.** BP-LSD receives the calibrated per-qubit probabilities and
 decodes the original syndrome.
@@ -118,15 +136,27 @@ computes its residual syndrome, sets each prior from the proposal's uncertainty
 Each method selects its calibration candidate independently by this lexicographic
 rule:
 
-1. prefer candidates with zero invalid corrections;
+1. prefer candidates with no invalid corrections;
 2. minimize block errors;
 3. minimize NLL;
-4. minimize measured FNO inference time;
-5. prefer earlier epoch; then
-6. break remaining ties by calibration parameter values.
+4. prefer earlier epoch; then
+5. break remaining ties by calibration parameter values.
 
-The first four criteria represent scientific priorities; the final fields make
-selection deterministic.
+Measured FNO inference time is diagnostic and never selects a winner. Each
+invocation completes one bounded checkpoint-wide screen or one shortlisted hybrid
+decode. `progress.json` binds the exact config, calibration shard manifests,
+model/checkpoints, screening policy, decode subset, shortlists, and ordered work;
+resume rejects any divergence.
+
+The pre-policy benchmark in
+[Calibration throughput benchmark](calibration-throughput-benchmark.md) measured
+the real hybrid scoring path at a median 4.2167 candidate-shots/s on an Apple M2
+Max. Planning conservatively at 3 candidate-shots/s, the at-most 8 × 512 decoded
+candidate-shots take about 23 minutes; FNO-only screening is intentionally not
+assigned an unmeasured speed claim. The canonical launcher therefore does not
+promise one-allocation completion: it requires resumable multi-execution, stops
+new work after 7 hours 15 minutes of each 8-hour allocation, and reserves at
+least 45 minutes for persistence.
 
 ## Metrics: accuracy before speed
 
@@ -184,8 +214,9 @@ outcomes allow later resumption without changing already decoded shots.
 - Pilot adaptation chooses the studied noise range from baseline observations.
 - BP-LSD teacher labels are one valid representative, not a unique ground truth
   correction.
-- Calibration searches checkpoints and parameters on calibration data; only the
-  separate test role can support held-out comparison.
+- Calibration screens all checkpoints/parameters and decodes shortlisted
+  candidates on calibration-only data; proxy quality can omit a genuinely better
+  hybrid. Only the separate test role can support held-out comparison.
 - Wilson and bootstrap intervals are conventional fixed-sample intervals reported
   after outcome-dependent stopping; they are not anytime-valid sequential bounds.
 - CPU timings include different components across stages and depend on machine

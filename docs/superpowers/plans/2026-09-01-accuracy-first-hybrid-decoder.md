@@ -4,7 +4,7 @@
 
 **Goal:** Build and run a reproducible overnight campaign comparing uniform BP-LSD, FNO-conditioned BP-LSD, and residual BP-LSD repair on identical held-out `lp(3,7)_16` code-capacity samples.
 
-**Architecture:** Scientific logic stays in small local Python modules with deterministic packed artifacts. A single conditional FNO supplies calibrated per-bit probabilities to two algebraically checked hybrid decoders. A resumable campaign runner executes locally or as one bounded Cloud Run Job and publishes completion manifests to Cloud Storage.
+**Architecture:** Scientific logic stays in small local Python modules with deterministic packed artifacts. A single conditional FNO supplies calibrated per-bit probabilities to two algebraically checked hybrid decoders. A resumable campaign runner executes locally or through repeated bounded executions of one immutable Cloud Run Job and publishes completion manifests to Cloud Storage.
 
 **Tech Stack:** Python 3.14, NumPy 2.4.1, SciPy 1.17.1, PyTorch 2.11.0, Stim 1.16.0, ldpc 2.4.1, google-cloud-storage 3.13.1, pytest 9.1.1, Ruff 0.16.5, Bash, Docker, gcloud.
 
@@ -17,6 +17,8 @@
 - Training, calibration, and test seeds are disjoint and deterministically derived.
 - Test decoders consume identical shots and retain paired outcomes.
 - The canonical cloud job is CPU-only, 8 vCPUs, 32 GiB, and has an 8-hour task timeout.
+- Each cloud execution stops new work by 7h15m and reserves at least 45 minutes for persistence.
+- Canonical cloud creation is asynchronous and explicitly acknowledges multi-execution resume.
 - No stage overwrites a completed campaign prefix or trusts an unverified artifact.
 - Cloud commands are dry-run by default and require `--execute` for billable mutation.
 - Commit messages are concise technical descriptions of repository changes or measured results.
@@ -34,7 +36,7 @@ src/qldpc_fno/campaign/runner.py            resumable stage state machine
 src/qldpc_fno/decoders/hybrid.py            soft-prior and residual decoders
 src/qldpc_fno/data/conditional_fields.py    syndrome plus logit(p) tensors
 src/qldpc_fno/training/conditional.py       conditional FNO training
-src/qldpc_fno/training/calibration.py       alpha/beta/temperature grid search
+src/qldpc_fno/training/calibration.py       deterministic proxy screening and shortlists
 src/qldpc_fno/metrics/paired.py              paired decoder statistics
 experiments/13_pilot_noise_grid.py          select informative noise points
 experiments/14_generate_campaign_shards.py  immutable role-separated shards
@@ -43,7 +45,7 @@ experiments/16_calibrate_hybrid_priors.py    select calibration parameters
 experiments/17_evaluate_hybrid_decoders.py   adaptive paired evaluation
 experiments/18_summarize_accuracy_campaign.py final machine-readable summary
 scripts/run_accuracy_campaign.sh            one-command local campaign
-scripts/launch_cloud_campaign.sh             dry-run/execute cloud launcher
+scripts/launch_cloud_campaign.sh             dry-run/create/verified-resume cloud launcher
 Dockerfile                                   Cloud Run image
 .dockerignore                                bounded build context
 tests/campaign, tests/decoders, tests/integration focused and end-to-end coverage
@@ -102,6 +104,8 @@ Expected: import errors for `qldpc_fno.campaign`.
   "pilot_shots_per_point": 256,
   "train_shots_cap": 50000,
   "calibration_shots_cap": 10000,
+  "calibration_decode_shots_cap": 512,
+  "calibration_shortlist_per_method": 4,
   "test_batch_shots": 2048,
   "max_test_shots_per_point": 200000,
   "target_failures": 200,
@@ -113,13 +117,13 @@ Expected: import errors for `qldpc_fno.campaign`.
   "cloud_cpu": 8,
   "cloud_memory": "32Gi",
   "cloud_timeout_seconds": 28800,
-  "checkpoint_grace_seconds": 600
+  "checkpoint_grace_seconds": 2700
 }
 ```
 
 - [ ] **Step 4: Implement strict frozen configuration parsing**
 
-Use a frozen dataclass, reject unknown/missing fields, require increasing probabilities in `(0, 0.5)`, positive caps, `target_failures <= max_test_shots_per_point`, and `checkpoint_grace_seconds < cloud_timeout_seconds`.
+Use a frozen dataclass, reject unknown/missing fields, require increasing probabilities in `(0, 0.5)`, positive caps, `calibration_decode_shots_cap <= calibration_shots_cap`, shortlist size no larger than the fixed 48-tuple grid, `target_failures <= max_test_shots_per_point`, and `2700 <= checkpoint_grace_seconds < cloud_timeout_seconds`.
 
 - [ ] **Step 5: Implement SHA-256 seed derivation**
 
@@ -400,13 +404,14 @@ git commit -m "feat: generate role-separated decoder campaign shards"
 
 **Interfaces:**
 - Consumes verified train/calibration shard manifests.
-- Produces `model/model.pt`, `model/model.json`, `calibration/grid.json`, and `calibration/selected.json`.
+- Produces `model/model.pt`, `model/model.json`, `calibration/progress.json`, `calibration/grid.json`, and `calibration/selected.json`.
 
 - [ ] **Step 1: Write a reduced subprocess test**
 
 Use 16 training shots, eight calibration shots, two epochs, and a two-candidate
-calibration grid. Assert the model source hashes reference only training manifests
-and selected calibration references only calibration manifests.
+calibration grid. Assert the model source hashes reference only training manifests,
+the two-stage progress is a strict resumable prefix, the method shortlists are
+independent, and selected calibration references only calibration manifests.
 
 - [ ] **Step 2: Implement streaming shard loading**
 
@@ -420,9 +425,10 @@ match. Publish `model.json` after the final model hash verifies.
 
 - [ ] **Step 4: Implement calibration CLI**
 
-Freeze the model. Compute logits once for calibration shots, evaluate every fixed
-parameter tuple with both hybrid decoders, and select independently for soft-prior
-and residual methods using the declared lexicographic rule.
+Freeze the model. Screen every checkpoint/parameter tuple using calibration-only
+NLL, threshold-proposal validity, and residual-syndrome-weight proxies. Independently
+shortlist soft-prior and residual candidates, decode their union on the declared
+deterministic calibration subset, and select each method only from its shortlist.
 
 - [ ] **Step 5: Run and commit**
 
@@ -523,8 +529,11 @@ sizes/digests, copy into the immutable stage prefix, then write `_COMPLETE.json`
 - [ ] **Step 4: Implement the stage state machine**
 
 Stages are `pilot`, `shards`, `training`, `calibration`, `evaluation`, and `summary`.
-Before every batch/epoch, compare monotonic time to `deadline - grace`. On deadline,
-write the current checkpoint, produce `status="partial_deadline"`, and exit zero.
+Before every bounded work unit, compare monotonic time to `deadline - grace`. On
+deadline, publish a small `status="partial_deadline"` summary first, then attempt an
+optional changed-stage snapshot while time remains. Propagate the absolute deadline
+through every store materialization/publication and exit zero when finalization is
+bounded by a slow or failing store.
 
 - [ ] **Step 5: Implement final summary**
 
@@ -594,12 +603,16 @@ git commit -m "feat: add one-command hybrid accuracy campaign"
 **Interfaces:**
 - Dry-run prints project, region, repository, image, bucket, prefix, CPU, memory,
   timeout, Git commit, and exact gcloud mutations.
-- `--execute` creates only uniquely named campaign resources and launches one job.
+- `--execute --multi-execution` creates only uniquely named canonical resources and
+  launches the first execution asynchronously; `--execute --resume` verifies and
+  executes only the exact existing commit-bound job.
 
 - [ ] **Step 1: Write dry-run tests with a fake `gcloud` executable**
 
-Assert no mutating fake command executes without `--execute`. Assert `--execute`
-uses 8 CPU, 32Gi, 8h, no GPU flag, a unique campaign prefix, and the current commit.
+Assert no mutating fake command executes without `--execute`. Assert canonical
+creation refuses without `--multi-execution`, uses 8 CPU, 32Gi, 8h, no GPU flag, a
+unique campaign prefix, and the current commit. Assert verified resume never
+recreates resources and refuses any job identity or image mismatch.
 
 - [ ] **Step 2: Add a pinned CPU image**
 
@@ -611,9 +624,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /bin/
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-COPY experiments ./experiments
-COPY configs ./configs
-COPY scripts ./scripts
+COPY experiments/01_build_lp_codes.py experiments/02_validate_lp_codes.py experiments/
+COPY experiments/13_pilot_noise_grid.py experiments/14_generate_campaign_shards.py experiments/
+COPY experiments/15_train_conditional_fno.py experiments/16_calibrate_hybrid_priors.py experiments/
+COPY experiments/17_evaluate_hybrid_decoders.py experiments/
+COPY configs/accuracy_campaign.json configs/accuracy_campaign_cloud_reduced.json configs/
 RUN uv sync --frozen --no-dev
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 ENTRYPOINT ["python", "-m", "qldpc_fno.campaign.runner"]
@@ -625,10 +640,11 @@ commit.
 
 - [ ] **Step 3: Implement the launcher**
 
-Default region `us-central1`. Confirm active project is non-empty. Create a uniquely
-named Artifact Registry repository only if absent, a uniquely named bucket only if
-absent, build with `gcloud builds submit`, create/update a uniquely named Cloud Run
-job, and execute it. Never delete shared resources.
+Default region `us-central1`. Confirm active project is non-empty and require a
+clean exact commit. Submit a Git archive containing only the declared tracked
+runtime paths. On creation, require all uniquely named resources to be absent;
+never update or bypass a collision. On resume, require those exact resources,
+identity label, and commit-tagged image to match before executing only the job.
 
 Use:
 
@@ -757,11 +773,18 @@ fails, diagnose before launching canonical work.
 - [ ] **Step 6: Launch the overnight campaign**
 
 ```bash
-bash scripts/launch_cloud_campaign.sh --execute
+bash scripts/launch_cloud_campaign.sh --execute --multi-execution
 ```
 
 Record the Cloud Run execution name and GCS summary prefix. Do not wait locally;
 the cloud job owns its deadline and persistence.
+
+Continue a partial canonical campaign from the identical clean commit with:
+
+```bash
+CAMPAIGN_ID=<original-id> CLOUD_REGION=<original-region> \
+  bash scripts/launch_cloud_campaign.sh --execute --resume
+```
 
 - [ ] **Step 7: Commit any machine-generated result pointers only after completion**
 

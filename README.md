@@ -131,11 +131,112 @@ Without that override, the script enforces all training gates and stops before
 held-out evaluation if any gate fails. The smoke orchestrator refuses to overwrite
 an existing output directory.
 
-### 3. Understand the accuracy-campaign stages
+### 3. Run the accuracy campaign locally
 
-The campaign is intentionally exposed as individual, potentially
-resource-intensive stages. The commands below are the implemented stage map,
-using the committed full campaign configuration:
+The campaign runner pins canonical work to the committed configuration and a
+clean Git checkout. It refuses an existing output unless `--resume` is explicit.
+Allow substantial local disk and CPU time; the canonical caps are 50,000 training
+shots, 10,000 calibration shots, and 200,000 test shots per selected rate, with
+60 training epochs. A single invocation is not expected to finish that work.
+
+Preview the committed policy in `configs/accuracy_campaign.json`, then start a
+fresh canonical campaign:
+
+```bash
+CAMPAIGN_OUTPUT=artifacts/accuracy-canonical \
+bash scripts/run_accuracy_campaign.sh
+```
+
+When the runner reaches its work cutoff, it publishes a small partial summary
+before attempting an optional verified stage snapshot. Continue the exact same
+campaign and Git commit with:
+
+```bash
+CAMPAIGN_OUTPUT=artifacts/accuracy-canonical \
+bash scripts/run_accuracy_campaign.sh --resume
+```
+
+For a fast end-to-end execution check, opt into reduced mode and declare every
+reduction. Its outputs are labelled `reduced_non_scientific` and must not be
+reported as decoder evidence:
+
+```bash
+CAMPAIGN_OUTPUT=artifacts/accuracy-reduced \
+CAMPAIGN_REDUCED=1 \
+CAMPAIGN_PILOT_SHOTS=8 \
+CAMPAIGN_TRAIN_SHOTS=24 \
+CAMPAIGN_CALIBRATION_SHOTS=8 \
+CAMPAIGN_TEST_SHOTS=8 \
+CAMPAIGN_EPOCHS=1 \
+CAMPAIGN_CALIBRATION_CANDIDATES=1 \
+CAMPAIGN_BOOTSTRAP_SAMPLES=100 \
+bash scripts/run_accuracy_campaign.sh
+```
+
+### 4. Run the accuracy campaign on Google Cloud
+
+Cloud execution requires `gcloud`, an authenticated account, an active project
+with billing, and permission to use Cloud Build, Artifact Registry, Cloud Run,
+Cloud Storage, IAM service accounts, and IAM policy bindings. Enable the required
+APIs before launching. Start from the exact clean commit that should identify the
+campaign and choose a stable, unique lowercase `CAMPAIGN_ID` and region.
+
+The launcher is dry-run by default. It prints every resource, mutation, resume
+command, and cleanup command without changing Google Cloud:
+
+```bash
+CAMPAIGN_ID=accuracy-20260901-a1b2 \
+CLOUD_REGION=us-central1 \
+bash scripts/launch_cloud_campaign.sh
+```
+
+Run the small, synchronous execution check with:
+
+```bash
+CAMPAIGN_ID=accuracy-check-20260901 \
+CLOUD_REGION=us-central1 \
+bash scripts/launch_cloud_campaign.sh --execute --reduced
+```
+
+Canonical work cannot safely finish in one allocation. Its first launch is
+asynchronous and therefore requires an explicit multi-execution acknowledgement:
+
+```bash
+CAMPAIGN_ID=accuracy-20260901-a1b2 \
+CLOUD_REGION=us-central1 \
+bash scripts/launch_cloud_campaign.sh --execute --multi-execution
+```
+
+Each execution uses one task, 8 vCPUs, 32 GiB memory, no GPU, no retries, and an
+8-hour Cloud Run timeout. New work stops by 7 hours 15 minutes, leaving at least
+45 minutes to publish a small partial summary and optional verified snapshots.
+Resume from the identical clean commit, project, region, and campaign ID:
+
+```bash
+CAMPAIGN_ID=accuracy-20260901-a1b2 \
+CLOUD_REGION=us-central1 \
+bash scripts/launch_cloud_campaign.sh --execute --resume
+```
+
+Resume verifies the existing repository, bucket, service account, job identity,
+and exact commit-tagged image, then executes only that job. It neither recreates
+resources nor bypasses name collisions. Cloud partial status also prints the
+exact direct `gcloud run jobs execute ... --async` command for the next execution.
+
+Cloud Build, Artifact Registry, Cloud Run, and Cloud Storage can incur charges;
+stored artifacts continue to incur charges after a job stops. The launcher only
+prints cleanup commands. Inspect the campaign bucket and retain required results
+before manually running them: object deletion is recursive and irreversible.
+Delete the job, bucket objects, bucket, repository, and campaign service account
+when they are no longer needed.
+
+### 5. Run individual stages manually
+
+The campaign is also exposed as individual, potentially resource-intensive
+stages. The manual layout below differs deliberately from the campaign runner's
+store layout described in [Reproducibility](docs/reproducibility.md). The optional
+source-lock step records bibliography/software references for manual reporting;
+the runner itself does not publish or verify `source-lock.json`.
 
 ```bash
 uv run python experiments/00_lock_sources.py \
@@ -195,9 +296,7 @@ uv run python experiments/17_evaluate_hybrid_decoders.py \
 ```
 
 The evaluator checkpoints immutable per-batch outcomes and can continue with
-`--resume`; `--max-batches-this-run` provides a bounded execution slice. The
-configuration permits up to 50,000 training shots, 10,000 calibration shots,
-200,000 test shots per selected rate, and 60 training epochs. Review
+`--resume`; `--max-batches-this-run` provides a bounded execution slice. Review
 [Reproducibility](docs/reproducibility.md) before starting a long run.
 
 ## Methods and success criteria
@@ -258,6 +357,9 @@ and provenance chain.
 | `configs/` | Pinned smoke and accuracy-campaign policies |
 | `experiments/` | Numbered, single-stage command-line entry points |
 | `scripts/run_smoke.sh` | End-to-end smoke orchestrator |
+| `scripts/run_accuracy_campaign.sh` | Resumable local campaign runner |
+| `scripts/launch_cloud_campaign.sh` | Dry-run-first Cloud Run launcher and verified resume |
+| `Dockerfile`, `.dockerignore` | Exact, default-deny cloud build context |
 | `src/qldpc_fno/codes/` | Lifted-product construction and GF(2) operations |
 | `src/qldpc_fno/stim/` | Detector-error-model and packed-sample utilities |
 | `src/qldpc_fno/decoders/` | Uniform and hybrid BP-LSD implementations |
@@ -298,7 +400,8 @@ artifact contract.
 
 ## Sources
 
-The experiment writes these exact references to `source-lock.json`:
+The smoke orchestrator and optional manual `experiments/00_lock_sources.py` step
+write these exact references to `source-lock.json`:
 
 - [Primary qLDPC paper, arXiv:2603.28627v1](https://arxiv.org/abs/2603.28627v1)
 - [Stim 1.16.0](https://github.com/quantumlib/Stim/tree/v1.16.0)
@@ -306,5 +409,6 @@ The experiment writes these exact references to `source-lock.json`:
 - [Google Quantum AI Willow dataset, Zenodo 10.5281/zenodo.13273331](https://zenodo.org/records/13273331)
 
 When reporting results, cite the underlying paper and software or dataset sources
-appropriate to the experiment, and retain the generated source lock and manifests
-with the result artifacts.
+appropriate to the experiment. Retain a generated source lock when that optional
+manual/smoke step was used; runner campaigns instead bind the exact clean Git
+commit, effective configuration, code, stage manifests, and artifact hashes.

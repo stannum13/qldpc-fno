@@ -83,12 +83,14 @@ The model outputs one logit for each of the 58 correction channels at each of 45
 ring positions.
 
 Training labels are the syndrome-valid corrections selected by the pinned BP-LSD
-teacher. Weighted binary cross-entropy remains a diagnostic imitation loss. Model
-selection instead uses calibration-set hybrid logical error and validity:
-
-1. reject any checkpoint that produces a syndrome-invalid final hybrid correction;
-2. among valid checkpoints, minimize calibrated hybrid block-error rate;
-3. break statistical ties using negative log likelihood, then inference latency.
+teacher. Weighted binary cross-entropy remains a diagnostic imitation loss.
+Calibration screens every saved checkpoint and fixed parameter tuple with cheap
+calibration-only NLL/proposal proxies. It independently shortlists four candidates
+per hybrid, decodes their at-most-eight-candidate union on a deterministic
+rate-stratified 512-shot calibration subset, and selects each method only from its
+own shortlist. Final selection prefers no invalid corrections, then fewer hybrid
+block errors, lower NLL, earlier epoch, and fixed parameter order. Measured
+inference latency is diagnostic and never participates in selection.
 
 The model is trained once across the selected noise grid. Noise-conditioned input
 prevents a separate model per physical error rate and makes interpolation testable.
@@ -186,7 +188,7 @@ built from the pinned `uv.lock` and the exact Git commit. Defaults:
 - one task and zero retries for the first campaign;
 - no GPU;
 - region chosen from available low-friction project regions;
-- a unique campaign ID on every launch.
+- a unique campaign ID at creation, retained for every later resume execution.
 
 The job executes the pilot selection, dataset generation, training, calibration,
 and adaptive evaluation sequentially. CPU-bound decoding may use bounded worker
@@ -200,18 +202,24 @@ writes to a temporary object prefix, validates hashes, and publishes a completio
 manifest last. On restart, a stage is skipped only when its completion manifest and
 all declared hashes verify.
 
-Checkpoint at least every 2,048 decoded shots and every training epoch. A monotonic
-deadline leaves ten minutes for the final checkpoint and summary. The job creates
-no long-lived VM. Cloud Run job configuration and container references are retained
-for reproducibility; a cleanup command removes them when requested.
+Checkpoint at least every 2,048 decoded shots and every training epoch. Cloud Run's
+outer timeout remains eight hours, while the internal monotonic work cutoff is at
+most 7 hours 15 minutes. The remaining 45 minutes are reserved to publish a small
+partial summary before optional changed-stage snapshots. The absolute deadline is
+propagated into storage materialization/publication, whose network units use the
+remaining timeout. The job creates no long-lived VM. Cloud Run job configuration
+and container references are retained for reproducibility; cleanup commands are
+printed but never executed automatically.
 
 ### Cost and safety boundary
 
 The launcher prints the selected project, region, CPU, memory, timeout, Git commit,
-bucket, and exact command, then requires an explicit `--execute` flag. The job has
-an 8-hour hard timeout and cannot allocate a GPU. It never deletes pre-existing
-buckets, repositories, images, or campaign prefixes. A unique prefix prevents
-overwrites.
+bucket, and exact command, then requires an explicit `--execute` flag. Canonical
+creation additionally requires `--multi-execution`; the first execution is
+asynchronous. `--resume` requires the exact campaign ID and commit and verifies the
+existing repository, bucket, service account, job identity label, and commit-tagged
+image before executing only that job. The job has an 8-hour hard timeout and cannot
+allocate a GPU. It never deletes pre-existing resources or campaign prefixes.
 
 ## Atomic commands and artifacts
 
@@ -230,7 +238,6 @@ Cloud support is separated from scientific logic:
 
 ```text
 scripts/run_accuracy_campaign.sh
-scripts/build_cloud_image.sh
 scripts/launch_cloud_campaign.sh
 Dockerfile
 ```
