@@ -10,6 +10,8 @@ import pytest
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 CAMPAIGN_ID = "accuracy-20260901-010203-a1b2c3"
 DIGEST = f"sha256:{'1' * 64}"
+PROJECT_NUMBER = "888484963419"
+BUILD_SERVICE_ACCOUNT = f"{PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 
 
 def _write_executable(path: Path, source: str) -> None:
@@ -61,6 +63,7 @@ import tarfile
 from pathlib import Path
 
 DIGEST = "sha256:" + "1" * 64
+PROJECT_NUMBER = "888484963419"
 
 
 def canonical_bytes(payload):
@@ -82,8 +85,35 @@ if arguments[:2] == ["builds", "submit"]:
 if arguments == ["config", "get-value", "project"]:
     print(os.environ.get("FAKE_GCLOUD_PROJECT", "science-project"))
     raise SystemExit(0)
+if arguments[:2] == ["builds", "get-default-service-account"]:
+    if os.environ.get("FAKE_DEFAULT_BUILD_SA_UNSUPPORTED") == "1":
+        print("Invalid choice: get-default-service-account", file=sys.stderr)
+        raise SystemExit(1)
+    if os.environ.get("FAKE_DEFAULT_BUILD_SA_FAILURE") == "1":
+        print("PERMISSION_DENIED", file=sys.stderr)
+        raise SystemExit(1)
+    if "--format=value(serviceAccountEmail)" not in arguments:
+        print("missing structured service-account format", file=sys.stderr)
+        raise SystemExit(1)
+    account = os.environ.get(
+        "FAKE_DEFAULT_BUILD_SA",
+        f"projects/science-project/serviceAccounts/{PROJECT_NUMBER}-compute@developer.gserviceaccount.com",
+    )
+    print(account)
+    raise SystemExit(0)
+if arguments[:2] == ["projects", "describe"]:
+    if os.environ.get("FAKE_PROJECT_NUMBER_FAILURE") == "1":
+        print("PERMISSION_DENIED", file=sys.stderr)
+        raise SystemExit(1)
+    print(os.environ.get("FAKE_PROJECT_NUMBER", PROJECT_NUMBER))
+    raise SystemExit(0)
 if arguments[:4] == ["artifacts", "docker", "images", "describe"]:
     print(DIGEST)
+    raise SystemExit(0)
+if arguments[:3] == ["artifacts", "repositories", "add-iam-policy-binding"]:
+    if os.environ.get("FAKE_BUILD_WRITER_GRANT_FAILURE") == "1":
+        print("PERMISSION_DENIED", file=sys.stderr)
+        raise SystemExit(1)
     raise SystemExit(0)
 
 if arguments[:3] == ["storage", "cp", "--recursive"]:
@@ -243,6 +273,12 @@ if arguments[:3] == ["run", "jobs", "describe"]:
         print("NOT_FOUND", file=sys.stderr)
     raise SystemExit(0 if resume or existing == "job" else 1)
 if arguments[:3] == ["iam", "service-accounts", "describe"]:
+    if arguments[3].endswith(("@cloudbuild.gserviceaccount.com", "@developer.gserviceaccount.com")):
+        if os.environ.get("FAKE_BUILD_SA_DESCRIBE_FAILURE") == "1":
+            print("NOT_FOUND", file=sys.stderr)
+            raise SystemExit(1)
+        print(os.environ.get("FAKE_DESCRIBED_BUILD_SA", arguments[3]))
+        raise SystemExit(0)
     if describe_error:
         print("PERMISSION_DENIED", file=sys.stderr)
     elif existing != "service-account":
@@ -294,7 +330,24 @@ def test_dry_run_resolves_every_resource_and_performs_no_mutation(tmp_path: Path
     result, calls = _launch(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    assert calls == [["config", "get-value", "project"]]
+    assert calls == [
+        ["config", "get-value", "project"],
+        [
+            "builds",
+            "get-default-service-account",
+            "--project=science-project",
+            "--format=value(serviceAccountEmail)",
+        ],
+        ["projects", "describe", "science-project", "--format=value(projectNumber)"],
+        [
+            "iam",
+            "service-accounts",
+            "describe",
+            BUILD_SERVICE_ACCOUNT,
+            "--project=science-project",
+            "--format=value(email)",
+        ],
+    ]
     expected = {
         "mode": "dry-run",
         "project": "science-project",
@@ -319,10 +372,12 @@ def test_dry_run_resolves_every_resource_and_performs_no_mutation(tmp_path: Path
         "service_account": (
             "qfno-abcdef0123456789abcdef01@science-project.iam.gserviceaccount.com"
         ),
+        "build_service_account": BUILD_SERVICE_ACCOUNT,
     }
     for key, value in expected.items():
         assert f"{key}={value}" in result.stdout
     assert "gcloud artifacts repositories create" in result.stdout
+    assert "gcloud artifacts repositories add-iam-policy-binding" in result.stdout
     assert "gcloud storage buckets create" in result.stdout
     assert "gcloud builds submit" in result.stdout
     assert "gcloud run jobs create" in result.stdout
@@ -331,7 +386,118 @@ def test_dry_run_resolves_every_resource_and_performs_no_mutation(tmp_path: Path
     assert f"CAMPAIGN_ID={CAMPAIGN_ID}" in result.stdout
     assert "launch_cloud_campaign.sh --execute --resume" in result.stdout
     assert "cleanup commands (not executed):" in result.stdout
+    assert (
+        f"gcloud artifacts repositories delete qldpc-fno-{CAMPAIGN_ID}"
+        in result.stdout
+    )
+    assert "remove-iam-policy-binding" not in result.stdout
+    assert "gcloud projects add-iam-policy-binding" not in result.stdout
     assert "canonical cloud execution is blocked" in result.stdout
+
+
+def test_dry_run_falls_back_to_verified_compute_service_account_when_command_is_absent(
+    tmp_path: Path,
+) -> None:
+    result, calls = _launch(
+        tmp_path,
+        environment_overrides={"FAKE_DEFAULT_BUILD_SA_UNSUPPORTED": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"build_service_account={BUILD_SERVICE_ACCOUNT}" in result.stdout
+    assert calls[:4] == [
+        ["config", "get-value", "project"],
+        [
+            "builds",
+            "get-default-service-account",
+            "--project=science-project",
+            "--format=value(serviceAccountEmail)",
+        ],
+        ["projects", "describe", "science-project", "--format=value(projectNumber)"],
+        [
+            "iam",
+            "service-accounts",
+            "describe",
+            BUILD_SERVICE_ACCOUNT,
+            "--project=science-project",
+            "--format=value(email)",
+        ],
+    ]
+
+
+def test_preferred_command_accepts_google_managed_legacy_build_account(
+    tmp_path: Path,
+) -> None:
+    legacy_account = f"{PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+    result, calls = _launch(
+        tmp_path,
+        "--execute",
+        "--reduced",
+        environment_overrides={
+            "FAKE_DEFAULT_BUILD_SA": (
+                f"projects/science-project/serviceAccounts/{legacy_account}"
+            ),
+            "FAKE_BUILD_SA_DESCRIBE_FAILURE": "1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"build_service_account={legacy_account}" in result.stdout
+    assert not any(
+        call[:3] == ["iam", "service-accounts", "describe"]
+        and call[3] == legacy_account
+        for call in calls
+    )
+    repository_writer = next(
+        call
+        for call in calls
+        if call[:3] == ["artifacts", "repositories", "add-iam-policy-binding"]
+    )
+    assert f"--member=serviceAccount:{legacy_account}" in repository_writer
+
+
+@pytest.mark.parametrize(
+    "environment_overrides",
+    [
+        {"FAKE_DEFAULT_BUILD_SA_FAILURE": "1"},
+        {"FAKE_DEFAULT_BUILD_SA": "attacker@example.com"},
+        {
+            "FAKE_DEFAULT_BUILD_SA": (
+                "999999999999-compute@developer.gserviceaccount.com"
+            )
+        },
+        {"FAKE_DESCRIBED_BUILD_SA": "different@developer.gserviceaccount.com"},
+        {"FAKE_BUILD_SA_DESCRIBE_FAILURE": "1"},
+        {"FAKE_PROJECT_NUMBER_FAILURE": "1"},
+        {
+            "FAKE_DEFAULT_BUILD_SA_UNSUPPORTED": "1",
+            "FAKE_PROJECT_NUMBER": "not-a-project-number",
+        },
+    ],
+)
+def test_build_service_account_resolution_fails_closed_before_mutation(
+    tmp_path: Path,
+    environment_overrides: dict[str, str],
+) -> None:
+    result, calls = _launch(
+        tmp_path,
+        "--execute",
+        "--reduced",
+        environment_overrides=environment_overrides,
+    )
+
+    assert result.returncode == 2
+    assert "Cloud Build service account" in result.stderr
+    assert not any(
+        call[:3]
+        in (
+            ["artifacts", "repositories", "create"],
+            ["storage", "buckets", "create"],
+            ["run", "jobs", "create"],
+        )
+        or call[:2] == ["builds", "submit"]
+        for call in calls
+    )
 
 
 def test_reduced_execute_creates_one_bounded_cpu_job(tmp_path: Path) -> None:
@@ -347,9 +513,11 @@ def test_reduced_execute_creates_one_bounded_cpu_job(tmp_path: Path) -> None:
         call
         for call in calls
         if "describe" not in call and call != ["config", "get-value", "project"]
+        and call[:2] != ["builds", "get-default-service-account"]
     ]
     assert [call[:3] for call in mutation_calls] == [
         ["artifacts", "repositories", "create"],
+        ["artifacts", "repositories", "add-iam-policy-binding"],
         ["storage", "buckets", "create"],
         ["iam", "service-accounts", "create"],
         ["storage", "buckets", "add-iam-policy-binding"],
@@ -368,6 +536,29 @@ def test_reduced_execute_creates_one_bounded_cpu_job(tmp_path: Path) -> None:
     assert not any(argument.startswith("--execution-environment") for argument in create_job)
     assert f"--image={expected_pinned_image}" in create_job
     assert not any(argument.startswith("--gpu") for argument in create_job)
+    repository_writer = next(
+        call
+        for call in calls
+        if call[:3] == ["artifacts", "repositories", "add-iam-policy-binding"]
+    )
+    assert repository_writer[3] == f"qldpc-fno-{CAMPAIGN_ID}"
+    assert f"--member=serviceAccount:{BUILD_SERVICE_ACCOUNT}" in repository_writer
+    assert "--role=roles/artifactregistry.writer" in repository_writer
+    assert "--location=us-central1" in repository_writer
+    assert "--project=science-project" in repository_writer
+    assert not any(
+        call[:2] == ["projects", "add-iam-policy-binding"] for call in calls
+    )
+    assert not any(
+        call[:3] == ["artifacts", "repositories", "add-iam-policy-binding"]
+        and any(
+            argument
+            == "--member=serviceAccount:"
+            "qfno-abcdef0123456789abcdef01@science-project.iam.gserviceaccount.com"
+            for argument in call
+        )
+        for call in calls
+    )
     env_argument = next(argument for argument in create_job if argument.startswith("--set-env-vars="))
     assert f"CAMPAIGN_BUCKET=science-project-{CAMPAIGN_ID}" in env_argument
     assert f"CAMPAIGN_PREFIX=campaigns/{CAMPAIGN_ID}/{COMMIT}" in env_argument
@@ -413,7 +604,24 @@ def test_canonical_execute_fails_closed_at_representative_benchmark_gate(
 
     assert result.returncode == 2
     assert "representative decoder benchmark gate" in result.stderr
-    assert calls == [["config", "get-value", "project"]]
+    assert calls == [
+        ["config", "get-value", "project"],
+        [
+            "builds",
+            "get-default-service-account",
+            "--project=science-project",
+            "--format=value(serviceAccountEmail)",
+        ],
+        ["projects", "describe", "science-project", "--format=value(projectNumber)"],
+        [
+            "iam",
+            "service-accounts",
+            "describe",
+            BUILD_SERVICE_ACCOUNT,
+            "--project=science-project",
+            "--format=value(email)",
+        ],
+    ]
 
 
 def test_resume_verifies_exact_job_identity_and_never_recreates_resources(tmp_path: Path) -> None:
@@ -431,6 +639,7 @@ def test_resume_verifies_exact_job_identity_and_never_recreates_resources(tmp_pa
         call
         for call in calls
         if "describe" not in call and call != ["config", "get-value", "project"]
+        and call[:2] != ["builds", "get-default-service-account"]
         and call[:2] != ["storage", "cp"]
     ]
     assert mutation_calls == []
@@ -548,6 +757,26 @@ def test_execute_fails_closed_when_resource_absence_cannot_be_verified(tmp_path:
     assert result.returncode == 2
     assert "cannot verify campaign repository absence" in result.stderr
     assert not any("create" in call or call[:2] == ["builds", "submit"] for call in calls)
+
+
+def test_repository_writer_grant_failure_prevents_build_and_later_mutations(
+    tmp_path: Path,
+) -> None:
+    result, calls = _launch(
+        tmp_path,
+        "--execute",
+        "--reduced",
+        environment_overrides={"FAKE_BUILD_WRITER_GRANT_FAILURE": "1"},
+    )
+
+    assert result.returncode == 2
+    grant_index = next(
+        index
+        for index, call in enumerate(calls)
+        if call[:3] == ["artifacts", "repositories", "add-iam-policy-binding"]
+    )
+    assert calls[grant_index - 1][:3] == ["artifacts", "repositories", "create"]
+    assert calls[grant_index + 1 :] == []
 
 
 def test_launcher_rejects_dirty_source_and_shell_injection(tmp_path: Path) -> None:

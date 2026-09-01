@@ -181,6 +181,14 @@ Cloud Storage, IAM service accounts, and IAM policy bindings. Enable the require
 APIs before launching. Start from the exact clean commit that should identify the
 campaign and choose a stable, unique lowercase `CAMPAIGN_ID` and region.
 
+Before any mutation, the launcher resolves and verifies the project's effective
+default Cloud Build service account and prints it as `build_service_account`.
+After creating the unique Artifact Registry repository, it grants that principal
+`roles/artifactregistry.writer` on that repository only, before submitting the
+build. It never grants writer at project scope or to the campaign runtime service
+account. Deleting the unique repository also removes its repository-local IAM
+binding.
+
 The launcher is dry-run by default. It prints every resource, mutation, resume
 command, and cleanup command without changing Google Cloud:
 

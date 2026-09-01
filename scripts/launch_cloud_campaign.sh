@@ -106,6 +106,67 @@ if [[ -n "${CLOUD_PROJECT:-}" && "$project" != "$CLOUD_PROJECT" ]]; then
   die "active gcloud project does not match CLOUD_PROJECT"
 fi
 
+normalize_service_account() {
+  local value="$1"
+  value="${value##*/}"
+  printf '%s' "$value"
+}
+
+build_service_account_output=""
+build_service_account_fallback=0
+if build_service_account_output="$(
+  gcloud builds get-default-service-account "--project=$project" \
+    "--format=value(serviceAccountEmail)" 2>&1
+)"; then
+  build_service_account="$(normalize_service_account "$build_service_account_output")"
+else
+  case "$build_service_account_output" in
+    *"Invalid choice"* | *"invalid choice"* | *"Unknown command"* | \
+      *"unknown command"* | *"unrecognized command"*)
+      build_service_account_fallback=1
+      ;;
+    *)
+      [[ -z "$build_service_account_output" ]] || echo "$build_service_account_output" >&2
+      die "cannot resolve the default Cloud Build service account"
+      ;;
+  esac
+fi
+project_number="$(
+  gcloud projects describe "$project" "--format=value(projectNumber)" 2>/dev/null
+)" || die "cannot resolve the project number for the Cloud Build service account"
+[[ "$project_number" =~ ^[0-9]+$ ]] \
+  || die "Cloud Build service account project number is invalid"
+if (( build_service_account_fallback )); then
+  build_service_account="${project_number}-compute@developer.gserviceaccount.com"
+fi
+if [[ ! "$build_service_account" =~ ^[0-9]+@cloudbuild\.gserviceaccount\.com$ \
+  && ! "$build_service_account" =~ ^[0-9]+-compute@developer\.gserviceaccount\.com$ ]]; then
+  die "resolved Cloud Build service account is invalid"
+fi
+case "$build_service_account" in
+  *-compute@developer.gserviceaccount.com)
+    build_service_account_kind="compute"
+    build_service_account_project_number="${build_service_account%-compute@developer.gserviceaccount.com}"
+    ;;
+  *@cloudbuild.gserviceaccount.com)
+    build_service_account_kind="legacy"
+    build_service_account_project_number="${build_service_account%@cloudbuild.gserviceaccount.com}"
+    ;;
+esac
+[[ "$build_service_account_project_number" == "$project_number" ]] \
+  || die "Cloud Build service account does not belong to the active project"
+if [[ "$build_service_account_kind" == "compute" ]]; then
+  described_build_service_account="$(
+    gcloud iam service-accounts describe "$build_service_account" \
+      "--project=$project" "--format=value(email)" 2>/dev/null
+  )" || die "cannot verify the resolved Cloud Build service account"
+  described_build_service_account="$(
+    normalize_service_account "$described_build_service_account"
+  )"
+  [[ "$described_build_service_account" == "$build_service_account" ]] \
+    || die "Cloud Build service account verification differs from the resolved principal"
+fi
+
 repository="qldpc-fno-${campaign_id}"
 job="qldpc-fno-${campaign_id}"
 bucket="${project}-${campaign_id}"
@@ -180,6 +241,11 @@ repo_create=(
   gcloud artifacts repositories create "$repository"
   "--repository-format=docker" "--location=$region" "--project=$project"
   "--description=qLDPC FNO campaign ${campaign_id}" --quiet
+)
+grant_build_push_access=(
+  gcloud artifacts repositories add-iam-policy-binding "$repository"
+  "--location=$region" "--member=serviceAccount:$build_service_account"
+  --role=roles/artifactregistry.writer "--project=$project"
 )
 bucket_create=(
   gcloud storage buckets create "gs://$bucket"
@@ -274,6 +340,7 @@ echo "prefix=$prefix"
 echo "store=$store"
 echo "job=$job"
 echo "service_account=$service_account"
+echo "build_service_account=$build_service_account"
 echo "cpu=8"
 echo "memory=32Gi"
 echo "timeout=8h"
@@ -291,6 +358,7 @@ echo "git_commit=$git_commit"
 echo "mutation commands:"
 if (( ! resume )); then
   print_command "${repo_create[@]}"
+  print_command "${grant_build_push_access[@]}"
   print_command "${bucket_create[@]}"
   print_command "${service_account_create[@]}"
   print_command "${grant_bucket_read_access[@]}"
@@ -403,6 +471,8 @@ require_absent job "$job" "${job_describe[@]}"
 require_absent service-account "$service_account" "${service_account_describe[@]}"
 
 "${repo_create[@]}"
+"${grant_build_push_access[@]}" \
+  || die "cannot grant repository-scoped Artifact Registry writer to Cloud Build"
 "${bucket_create[@]}"
 "${service_account_create[@]}"
 "${grant_bucket_read_access[@]}"

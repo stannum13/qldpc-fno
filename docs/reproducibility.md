@@ -163,6 +163,12 @@ CLOUD_REGION=us-central1 \
 bash scripts/launch_cloud_campaign.sh --execute --resume
 ```
 
+For new reduced jobs, Cloud Build's effective default service account is resolved
+and verified before mutation. Its Artifact Registry writer role is scoped only to
+the campaign's unique repository and is granted before the build; the runtime
+service account receives no registry writer role. Repository deletion removes the
+repository-local binding without a separate project-IAM cleanup operation.
+
 The canonical Cloud execution gate is closed because a representative real
 candidate did not complete inside its 10m45s diagnostic ceiling. The command above
 verifies old resources and provenance but refuses to submit an execution. A future
