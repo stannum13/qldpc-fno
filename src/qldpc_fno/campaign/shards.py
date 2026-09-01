@@ -8,6 +8,7 @@ import shutil
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ import stim
 from scipy import sparse
 
 from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.campaign.code_identity import validate_campaign_code_identity
 from qldpc_fno.campaign.seeds import derive_seed
 from qldpc_fno.stim.b8 import write_b8
 
@@ -61,6 +63,9 @@ def allocate_total_shots(rates: Sequence[float], *, total_shots: int) -> tuple[i
         raise ValueError("total_shots must be positive")
     if not rates:
         raise ValueError("at least one rate is required")
+    numeric_rates = tuple(float(rate) for rate in rates)
+    if any(left >= right for left, right in pairwise(numeric_rates)):
+        raise ValueError("rates must be strictly sorted before total-shot allocation")
     quotient, remainder = divmod(total_shots, len(rates))
     return tuple(quotient + (index < remainder) for index in range(len(rates)))
 
@@ -71,11 +76,84 @@ def validate_campaign_code(
     hz: sparse.spmatrix,
 ) -> None:
     """Reject artifacts other than the canonical lp_3_7_16 campaign code."""
-    expected = {"name": "lp_3_7_16", "ell": 45, "n": 2610, "k": 744}
-    if any(metadata.get(key) != value for key, value in expected.items()):
-        raise ValueError("campaign CLIs require the canonical lp_3_7_16 code metadata")
-    if hx.shape != (945, 2610) or hz.shape != (945, 2610):
-        raise ValueError("campaign code matrix dimensions must both be (945, 2610)")
+    validate_campaign_code_identity(metadata, hx, hz)
+
+
+def sample_pilot_point_shards(
+    *,
+    dem: stim.DetectorErrorModel,
+    rate: float,
+    rate_index: int,
+    shots: int,
+    campaign_seed: int,
+    staging: Path,
+    source_code_sha256: str,
+    source_artifact_sha256: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, object]], np.ndarray, np.ndarray]:
+    """Write bounded pilot shards and return aggregate detections and observables."""
+    if shots <= 0:
+        raise ValueError("pilot shots must be positive")
+    manifests: list[dict[str, object]] = []
+    detection_batches: list[np.ndarray] = []
+    observable_batches: list[np.ndarray] = []
+    for shard_index, offset in enumerate(range(0, shots, _MAX_SHARD_SHOTS)):
+        shard_shots = min(_MAX_SHARD_SHOTS, shots - offset)
+        seed = derive_seed(
+            campaign_seed,
+            p_index=rate_index,
+            role="pilot",
+            shard_index=shard_index,
+        )
+        shard_path = Path(f"rate-{rate_index:03d}") / f"shard-{shard_index:05d}"
+        shard_dir = staging / shard_path
+        shard_dir.mkdir(parents=True)
+        dem_path = shard_dir / "model.dem"
+        dem.to_file(dem_path)
+        dets, obs, errors = dem.compile_sampler(seed=seed).sample(
+            shard_shots,
+            bit_packed=False,
+            return_errors=True,
+        )
+        if errors is None:
+            raise RuntimeError("Stim did not return requested error-mechanism labels")
+        packed = {
+            "dets.b8": np.asarray(dets, dtype=np.uint8),
+            "errors.b8": np.asarray(errors, dtype=np.uint8),
+            "obs_actual.b8": np.asarray(obs, dtype=np.uint8),
+        }
+        for filename, values in packed.items():
+            write_b8(shard_dir / filename, values)
+        manifest: dict[str, object] = {
+            "bit_order": "little",
+            "dimensions": {
+                "dets.b8": dem.num_detectors,
+                "errors.b8": dem.num_errors,
+                "obs_actual.b8": dem.num_observables,
+            },
+            "error_rate": rate,
+            "format": "b8",
+            "num_detectors": dem.num_detectors,
+            "num_errors": dem.num_errors,
+            "num_observables": dem.num_observables,
+            "path": str(shard_path),
+            "rate_index": rate_index,
+            "role": "pilot",
+            "seed": seed,
+            "shard_index": shard_index,
+            "sha256": {filename: sha256_file(shard_dir / filename) for filename in packed},
+            "shots": shard_shots,
+            "source_sha256": {
+                **(source_artifact_sha256 or {}),
+                "code_manifest": source_code_sha256,
+                "dem": sha256_file(dem_path),
+            },
+            "stim_version": stim.__version__,
+        }
+        write_canonical_json(shard_dir / "samples.json", manifest)
+        manifests.append(manifest)
+        detection_batches.append(packed["dets.b8"])
+        observable_batches.append(packed["obs_actual.b8"])
+    return manifests, np.concatenate(detection_batches), np.concatenate(observable_batches)
 
 
 @contextmanager

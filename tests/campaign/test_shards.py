@@ -12,10 +12,13 @@ from qldpc_fno.artifacts import sha256_file
 from qldpc_fno.campaign.shards import (
     allocate_total_shots,
     run_pilot_grid,
+    sample_pilot_point_shards,
     select_noise_points,
     validate_campaign_code,
     write_role_shards,
 )
+from qldpc_fno.codes.lifted_product import build_self_lifted_product
+from qldpc_fno.codes.seeds import PAPER_LP_3_7_16
 from qldpc_fno.stim.b8 import read_b8
 
 
@@ -69,11 +72,13 @@ def test_all_zero_pilot_grid_extends_geometrically_to_exact_cap() -> None:
 
 
 def test_total_shots_are_allocated_by_sorted_rate_with_remainder_first() -> None:
-    assert allocate_total_shots((0.2, 0.1, 0.3), total_shots=8) == (3, 3, 2)
+    with pytest.raises(ValueError, match="sorted"):
+        allocate_total_shots((0.2, 0.1, 0.3), total_shots=8)
+    assert allocate_total_shots((0.1, 0.2, 0.3), total_shots=8) == (3, 3, 2)
 
 
 def test_allocated_shard_manifests_sum_to_exact_total(tmp_path: Path) -> None:
-    rates = (0.2, 0.1, 0.3)
+    rates = (0.1, 0.2, 0.3)
     manifests = write_role_shards(
         role="train",
         rates=rates,
@@ -190,11 +195,40 @@ def test_campaign_code_validation_requires_canonical_metadata_and_shapes() -> No
         "n": 2610,
         "k": 744,
     }
-    hx = sparse.csr_matrix((945, 2610), dtype=np.uint8)
-    hz = sparse.csr_matrix((945, 2610), dtype=np.uint8)
-    validate_campaign_code(canonical, hx, hz)
+    code = build_self_lifted_product(PAPER_LP_3_7_16)
+    validate_campaign_code(canonical, code.hx, code.hz)
 
     with pytest.raises(ValueError, match="canonical lp_3_7_16"):
-        validate_campaign_code({**canonical, "name": "tiny"}, hx, hz)
+        validate_campaign_code({**canonical, "name": "tiny"}, code.hx, code.hz)
     with pytest.raises(ValueError, match="matrix dimensions"):
-        validate_campaign_code(canonical, sparse.csr_matrix((1, 2)), hz)
+        validate_campaign_code(canonical, sparse.csr_matrix((1, 2)), code.hz)
+
+
+def test_campaign_code_validation_rejects_spoofed_same_shape_css_code() -> None:
+    canonical = {"name": "lp_3_7_16", "ell": 45, "n": 2610, "k": 744}
+    spoofed_hx = sparse.csr_matrix((945, 2610), dtype=np.uint8)
+    spoofed_hz = sparse.csr_matrix((945, 2610), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="matrix identity"):
+        validate_campaign_code(canonical, spoofed_hx, spoofed_hz)
+
+
+def test_pilot_point_over_2048_shots_is_split_and_aggregated(tmp_path: Path) -> None:
+    dem = stim.DetectorErrorModel("error(0.1) D0 L0")
+
+    manifests, detections, observables = sample_pilot_point_shards(
+        dem=dem,
+        rate=0.1,
+        rate_index=2,
+        shots=2_049,
+        campaign_seed=17,
+        staging=tmp_path,
+        source_code_sha256="c" * 64,
+        source_artifact_sha256={"config": "f" * 64},
+    )
+
+    assert [manifest["shots"] for manifest in manifests] == [2_048, 1]
+    assert [manifest["shard_index"] for manifest in manifests] == [0, 1]
+    assert len({manifest["seed"] for manifest in manifests}) == 2
+    assert detections.shape == (2_049, 1)
+    assert observables.shape == (2_049, 1)

@@ -55,6 +55,31 @@ def _write_reduced_config(path: Path, *, training_seed: int = 1701) -> None:
     )
 
 
+def _write_flow_config(path: Path) -> None:
+    write_canonical_json(
+        path,
+        {
+            "campaign_seed": 20260901,
+            "noise_grid": [0.003],
+            "pilot_shots_per_point": 1,
+            "train_shots_cap": 16,
+            "calibration_shots_cap": 16,
+            "test_batch_shots": 1,
+            "max_test_shots_per_point": 1,
+            "target_failures": 1,
+            "training_epochs": 1,
+            "training_batch_size": 1,
+            "training_learning_rate": 0.001,
+            "training_seed": 1701,
+            "checkpoint_every_epochs": 1,
+            "cloud_cpu": 1,
+            "cloud_memory": "1Gi",
+            "cloud_timeout_seconds": 60,
+            "checkpoint_grace_seconds": 1,
+        },
+    )
+
+
 def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
     write_canonical_json(
         path,
@@ -74,7 +99,13 @@ def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
 
 
 def _run_shard_cli(
-    *, config: Path, code: Path, selection: Path, output: Path
+    *,
+    config: Path,
+    code: Path,
+    selection: Path,
+    output: Path,
+    role: str = "train",
+    shots: int = 8,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -87,9 +118,9 @@ def _run_shard_cli(
             "--selection",
             str(selection),
             "--role",
-            "train",
+            role,
             "--shots-per-rate",
-            "8",
+            str(shots),
             "--out",
             str(output),
         ],
@@ -97,6 +128,60 @@ def _run_shard_cli(
         check=False,
         text=True,
     )
+
+
+def test_reduced_real_code_campaign_data_flow_with_dynamic_extension(tmp_path: Path) -> None:
+    code_dir = tmp_path / "code"
+    config_path = tmp_path / "campaign.json"
+    campaign_dir = tmp_path / "campaign"
+    pilot_dir = campaign_dir / "pilot"
+    _write_flow_config(config_path)
+    subprocess.run(
+        [sys.executable, "experiments/01_build_lp_codes.py", "--out", str(code_dir)],
+        check=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "experiments/13_pilot_noise_grid.py",
+            "--config",
+            str(config_path),
+            "--code",
+            str(code_dir),
+            "--out",
+            str(pilot_dir),
+        ],
+        check=True,
+    )
+
+    selection_path = pilot_dir / "selection.json"
+    selection = json.loads(selection_path.read_text())
+    assert len(selection["pilot_rows"]) > 1
+    assert selection["pilot_rows"][1]["error_rate"] == 0.0045
+    assert json.loads((pilot_dir / "manifest.json").read_text())["complete"] is True
+
+    for role, shots in (("train", 16), ("calibration", 16), ("test", 1)):
+        result = _run_shard_cli(
+            config=config_path,
+            code=code_dir,
+            selection=selection_path,
+            output=campaign_dir / role,
+            role=role,
+            shots=shots,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads((campaign_dir / role / "manifest.json").read_text())["complete"] is True
+
+    role_shots = {}
+    for role in ("train", "calibration", "test"):
+        manifests = [
+            json.loads(path.read_text())
+            for path in (campaign_dir / role).glob("rate-*/shard-*/samples.json")
+        ]
+        role_shots[role] = sum(int(manifest["shots"]) for manifest in manifests)
+    assert role_shots["train"] == 16
+    assert role_shots["calibration"] == 16
+    assert role_shots["test"] == len(selection["selected_noise_points"])
 
 
 def test_pilot_cli_rejects_noncanonical_code(tmp_path: Path) -> None:
