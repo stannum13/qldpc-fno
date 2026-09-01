@@ -19,6 +19,8 @@ def _wilson_interval(errors: int, shots: int) -> tuple[float, float]:
 def score_observable_predictions(
     actual: np.ndarray,
     predicted: np.ndarray,
+    *,
+    syndrome_valid: np.ndarray | None = None,
 ) -> dict[str, object]:
     """Score logical observable predictions using block-level failure semantics."""
     actual_array = np.asarray(actual, dtype=np.uint8)
@@ -32,8 +34,15 @@ def score_observable_predictions(
     if not np.all((predicted_array == 0) | (predicted_array == 1)):
         raise ValueError("predicted observables must be binary")
     shot_errors = np.any(actual_array != predicted_array, axis=1)
-    block_errors = int(shot_errors.sum())
     shots = int(actual_array.shape[0])
+    if syndrome_valid is None:
+        valid = np.ones(shots, dtype=np.bool_)
+    else:
+        valid = np.asarray(syndrome_valid)
+        if valid.shape != (shots,) or valid.dtype.kind != "b":
+            raise ValueError("syndrome_valid must contain one boolean value per shot")
+    block_error = shot_errors | ~valid
+    block_errors = int(block_error.sum())
     low, high = _wilson_interval(block_errors, shots)
     return {
         "block_error_rate": block_errors / shots,

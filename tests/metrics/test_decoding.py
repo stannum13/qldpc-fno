@@ -23,3 +23,17 @@ def test_score_requires_equal_binary_arrays() -> None:
         assert "equal shape" in str(error)
     else:
         raise AssertionError("accepted mismatched observable arrays")
+
+
+def test_invalid_syndrome_is_a_block_failure_even_when_observables_match() -> None:
+    actual = np.array([[0], [1]], dtype=np.uint8)
+    predicted = actual.copy()
+
+    metrics = score_observable_predictions(
+        actual,
+        predicted,
+        syndrome_valid=np.array([True, False]),
+    )
+
+    assert metrics["block_errors"] == 1
+    assert metrics["exact_observable_match_rate"] == 1.0

@@ -65,7 +65,11 @@ def main() -> None:
             )
 
             result = decode_bplsd_batch(hx, dets, logical_x, error_rate=rate)
-            score = score_observable_predictions(obs, result.predicted_observables)
+            score = score_observable_predictions(
+                obs,
+                result.predicted_observables,
+                syndrome_valid=result.syndrome_valid,
+            )
             return {
                 **score,
                 "converged": int(np.count_nonzero(result.converged)),

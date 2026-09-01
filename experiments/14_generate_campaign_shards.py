@@ -68,7 +68,7 @@ def main() -> None:
     default_shots = {
         "train": config.train_shots_cap,
         "calibration": config.calibration_shots_cap,
-        "test": config.test_batch_shots,
+        "test": config.max_test_shots_per_point,
     }
     requested_shots = (
         args.shots_per_rate if args.shots_per_rate is not None else default_shots[args.role]
