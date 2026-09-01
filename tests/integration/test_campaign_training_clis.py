@@ -469,6 +469,83 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     assert progress["hybrid_candidates"] == []
     assert not (calibration / "selected.json").exists()
 
+    progress_path = calibration / "progress.json"
+    partial_progress_text = progress_path.read_text()
+    corrupted_progress = json.loads(partial_progress_text)
+    corrupted_progress["screening_candidates"][0]["logits_sha256"] = "not-a-sha256"
+    write_canonical_json(progress_path, corrupted_progress)
+    try:
+        rejected_screening_progress = _run(
+            "experiments/16_calibrate_hybrid_priors.py",
+            "--config",
+            config,
+            "--code",
+            code,
+            "--calibration",
+            calibration,
+            "--model",
+            model,
+            "--grid-limit",
+            2,
+            "--max-work-units-this-run",
+            1,
+            "--resume",
+            "--out",
+            calibration,
+        )
+    finally:
+        progress_path.write_text(partial_progress_text)
+    assert rejected_screening_progress.returncode != 0
+    assert "screening order or measurement" in rejected_screening_progress.stderr
+
+    second_partial = _run(
+        "experiments/16_calibrate_hybrid_priors.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--calibration",
+        calibration,
+        "--model",
+        model,
+        "--grid-limit",
+        2,
+        "--max-work-units-this-run",
+        2,
+        "--resume",
+        "--out",
+        calibration,
+    )
+    assert second_partial.returncode == 0, second_partial.stderr
+    second_progress_text = progress_path.read_text()
+    second_progress = json.loads(second_progress_text)
+    assert len(second_progress["hybrid_candidates"]) == 1
+    second_progress["hybrid_candidates"][0]["residual"]["invalid_count"] = 9
+    write_canonical_json(progress_path, second_progress)
+    try:
+        rejected_hybrid_progress = _run(
+            "experiments/16_calibrate_hybrid_priors.py",
+            "--config",
+            config,
+            "--code",
+            code,
+            "--calibration",
+            calibration,
+            "--model",
+            model,
+            "--grid-limit",
+            2,
+            "--max-work-units-this-run",
+            1,
+            "--resume",
+            "--out",
+            calibration,
+        )
+    finally:
+        progress_path.write_text(second_progress_text)
+    assert rejected_hybrid_progress.returncode != 0
+    assert "hybrid residual score" in rejected_hybrid_progress.stderr
+
     calibrated = _run(
         "experiments/16_calibrate_hybrid_priors.py",
         "--config",

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
@@ -333,10 +334,12 @@ def main() -> None:
             "proposal_invalid_count",
             "work_index",
         }
+        checkpoint_measurements: dict[int, tuple[str, float]] = {}
         for work_index, row in enumerate(screening_rows):
             if not isinstance(row, dict) or set(row) != screening_fields:
                 raise ValueError("calibration progress screening row is malformed")
-            checkpoint = checkpoint_candidates[work_index // len(candidates)]
+            checkpoint_index = work_index // len(candidates)
+            checkpoint = checkpoint_candidates[checkpoint_index]
             parameters = candidates[work_index % len(candidates)]
             numeric = (
                 row.get("inference_latency_seconds"),
@@ -350,11 +353,22 @@ def main() -> None:
                 != {"path": str(checkpoint["path"]), "sha256": str(checkpoint["sha256"])}
                 or row.get("parameters") != asdict(parameters)
                 or not isinstance(row.get("logits_sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", str(row["logits_sha256"])) is None
                 or any(type(value) not in (int, float) or not np.isfinite(value) or value < 0 for value in numeric)
                 or type(row.get("proposal_invalid_count")) is not int
                 or not 0 <= int(row["proposal_invalid_count"]) <= shots
+                or float(row["mean_residual_syndrome_weight"]) > hx.shape[0]
             ):
                 raise ValueError("calibration progress screening order or measurement is invalid")
+            measurement = (
+                str(row["logits_sha256"]),
+                float(row["inference_latency_seconds"]),
+            )
+            previous_measurement = checkpoint_measurements.setdefault(
+                checkpoint_index, measurement
+            )
+            if previous_measurement != measurement:
+                raise ValueError("calibration progress checkpoint measurements diverge")
         raw_shortlists = progress.get("shortlists")
         raw_decode_work = progress.get("decode_work_indices")
         screening_complete = len(screening_rows) == len(checkpoint_candidates) * len(candidates)
@@ -393,6 +407,14 @@ def main() -> None:
                 }:
                     raise ValueError("calibration progress hybrid row is malformed")
                 screening = screening_rows[decode_work_indices[offset]]
+                if (
+                    not isinstance(row.get("logits_sha256"), str)
+                    or re.fullmatch(r"[0-9a-f]{64}", str(row["logits_sha256"])) is None
+                    or type(row.get("inference_latency_seconds")) not in (int, float)
+                    or not np.isfinite(row["inference_latency_seconds"])
+                    or float(row["inference_latency_seconds"]) < 0
+                ):
+                    raise ValueError("calibration progress hybrid measurement is invalid")
                 for field in ("model_checkpoint", "model_epoch", "parameters"):
                     if row.get(field) != screening.get(field):
                         raise ValueError("calibration progress hybrid provenance diverges")
@@ -402,6 +424,34 @@ def main() -> None:
                     "proposal_invalid_count": screening["proposal_invalid_count"],
                 }:
                     raise ValueError("calibration progress screening proxy diverges")
+                score_nlls: list[float] = []
+                for method in ("soft_prior", "residual"):
+                    score = row.get(method)
+                    if not isinstance(score, dict) or set(score) != {
+                        "block_errors",
+                        "invalid_count",
+                        "nll",
+                    }:
+                        raise ValueError(
+                            f"calibration progress hybrid {method} score is malformed"
+                        )
+                    invalid_count = score["invalid_count"]
+                    block_errors = score["block_errors"]
+                    nll = score["nll"]
+                    if (
+                        type(invalid_count) is not int
+                        or type(block_errors) is not int
+                        or not 0 <= invalid_count <= block_errors <= len(decode_indices)
+                        or type(nll) not in (int, float)
+                        or not np.isfinite(nll)
+                        or float(nll) < 0
+                    ):
+                        raise ValueError(
+                            f"calibration progress hybrid {method} score is invalid"
+                        )
+                    score_nlls.append(float(nll))
+                if score_nlls[0] != score_nlls[1]:
+                    raise ValueError("calibration progress hybrid method NLL values diverge")
         screened_checkpoints = len(screening_rows) // len(candidates)
         expected_total = len(checkpoint_candidates) + (
             len(decode_work_indices)
