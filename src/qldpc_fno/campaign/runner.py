@@ -467,6 +467,10 @@ def _verify_scientific_chain(
 
 def _summary_markdown(results: dict[str, object]) -> str:
     state = results["completion_state"]
+    scope = results.get("scientific_scope", {})
+    claims_permitted = (
+        scope.get("scientific_claims_permitted", True) if isinstance(scope, dict) else True
+    )
     pilot = results.get("pilot")
     model = results.get("model")
     calibration = results.get("calibration")
@@ -485,26 +489,38 @@ def _summary_markdown(results: dict[str, object]) -> str:
         "",
         f"Completion state: **{state}**.",
         "",
-        "## Scientific scope",
-        "",
-        (
-            "These results cover the `lp(3,7)_16` code at `ell=45` under independent-Z "
-            "code-capacity noise with perfect syndrome measurements. Timing is diagnostic only."
-        ),
-        "",
-        "## Reproducibility and provenance",
-        "",
-        f"- Git commit: `{results.get('git_commit', 'unavailable')}`",
-        f"- Pilot-selected noise rates: `{selected_rates}`",
-        f"- Model manifest SHA-256: `{model_manifest or 'unavailable'}`",
-        f"- Model SHA-256: `{model_sha256 or 'unavailable'}`",
-        f"- Calibration grid SHA-256: `{calibration_grid or 'unavailable'}`",
-        f"- Calibration selection SHA-256: `{calibration_selected or 'unavailable'}`",
-        f"- Early-stop reasons: `{reasons or ['none']}`",
-        "",
-        "## Held-out test results",
-        "",
     ]
+    if not claims_permitted:
+        lines.extend(
+            [
+                "**NON-SCIENTIFIC REDUCED CAMPAIGN:** execution coverage only. ",
+                "These measurements must not be reported as scientific results.",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Scientific scope",
+            "",
+            (
+                "These results cover the `lp(3,7)_16` code at `ell=45` under independent-Z "
+                "code-capacity noise with perfect syndrome measurements. Timing is diagnostic only."
+            ),
+            "",
+            "## Reproducibility and provenance",
+            "",
+            f"- Git commit: `{results.get('git_commit', 'unavailable')}`",
+            f"- Pilot-selected noise rates: `{selected_rates}`",
+            f"- Model manifest SHA-256: `{model_manifest or 'unavailable'}`",
+            f"- Model SHA-256: `{model_sha256 or 'unavailable'}`",
+            f"- Calibration grid SHA-256: `{calibration_grid or 'unavailable'}`",
+            f"- Calibration selection SHA-256: `{calibration_selected or 'unavailable'}`",
+            f"- Early-stop reasons: `{reasons or ['none']}`",
+            "",
+            "## Held-out test results",
+            "",
+        ]
+    )
     held_out = results["held_out_test_results"]
     if not isinstance(held_out, list) or not held_out:
         lines.append("No verified held-out evaluation was available when this summary was written.")
@@ -631,10 +647,18 @@ def write_campaign_summary(
     early_stop_reasons: Sequence[str],
     config_path: Path | None = None,
     code_path: Path | None = None,
+    campaign_mode: str = "canonical",
+    scientific_claims_permitted: bool = True,
 ) -> dict[str, object]:
     """Write verified JSON/Markdown summaries without mixing scientific roles."""
     if not git_commit:
         raise ValueError("summary Git commit must be non-empty")
+    if campaign_mode not in {"canonical", "reduced_non_scientific"}:
+        raise ValueError("summary campaign mode is invalid")
+    if type(scientific_claims_permitted) is not bool:
+        raise TypeError("scientific_claims_permitted must be a boolean")
+    if campaign_mode == "reduced_non_scientific" and scientific_claims_permitted:
+        raise ValueError("reduced campaign summaries cannot permit scientific claims")
     if output.is_symlink():
         raise ValueError("campaign summary output must not be a symlink")
     if output.exists() and any(output.iterdir()):
@@ -683,10 +707,12 @@ def write_campaign_summary(
         "pilot": pilot,
         "schema_version": 1,
         "scientific_scope": {
-            "accuracy_primary": True,
+            "accuracy_primary": scientific_claims_permitted,
+            "campaign_mode": campaign_mode,
             "code": "lp(3,7)_16",
             "ell": 45,
             "noise_model": "independent_Z_code_capacity_perfect_measurements",
+            "scientific_claims_permitted": scientific_claims_permitted,
             "speed_claim_permitted": False,
         },
     }
@@ -702,6 +728,8 @@ def _publish_partial_summary(
     reason: str,
     config_path: Path | None = None,
     code_path: Path | None = None,
+    campaign_mode: str = "canonical",
+    scientific_claims_permitted: bool = True,
 ) -> str:
     """Publish an immutable, versioned deadline report without completing summary."""
     for index in range(1_000_000):
@@ -722,6 +750,8 @@ def _publish_partial_summary(
             early_stop_reasons=(reason,),
             config_path=config_path,
             code_path=code_path,
+            campaign_mode=campaign_mode,
+            scientific_claims_permitted=scientific_claims_permitted,
         )
         store.publish_directory(output, prefix, status="partial_deadline")
         return prefix
@@ -990,6 +1020,8 @@ def build_campaign_runner(
     store: ArtifactStore,
     calibration_grid_limit: int | None = None,
     bootstrap_samples: int = 10_000,
+    campaign_mode: str = "canonical",
+    scientific_claims_permitted: bool = True,
     command_runner: Callable[[list[str], float | None], None] = _default_command_runner,
     monotonic_clock: Callable[[], float] = monotonic,
 ) -> CampaignRunner:
@@ -1016,6 +1048,8 @@ def build_campaign_runner(
             early_stop_reasons=(),
             config_path=commands.config_path,
             code_path=commands.code_path,
+            campaign_mode=campaign_mode,
+            scientific_claims_permitted=scientific_claims_permitted,
         )
         return StageResult.COMPLETE
 
@@ -1033,6 +1067,8 @@ def build_campaign_runner(
             reason,
             config_path=commands.config_path,
             code_path=commands.code_path,
+            campaign_mode=campaign_mode,
+            scientific_claims_permitted=scientific_claims_permitted,
         )
 
     stages = (
@@ -1068,6 +1104,12 @@ def main() -> None:
     parser.add_argument("--deadline-monotonic", type=float)
     parser.add_argument("--calibration-grid-limit", type=int)
     parser.add_argument("--bootstrap-samples", type=int, default=10_000)
+    parser.add_argument(
+        "--campaign-mode",
+        choices=("canonical", "reduced_non_scientific"),
+        default="canonical",
+    )
+    parser.add_argument("--fail-on-stage-execution", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     config_path = Path(_argument_or_environment(args.config, "CAMPAIGN_CONFIG"))
     code_path = Path(_argument_or_environment(args.code, "CAMPAIGN_CODE"))
@@ -1077,6 +1119,13 @@ def main() -> None:
     deadline = args.deadline_monotonic
     if deadline is None:
         deadline = monotonic() + config.cloud_timeout_seconds
+    command_runner = _default_command_runner
+    if args.fail_on_stage_execution:
+
+        def command_runner(command: list[str], timeout: float | None) -> None:
+            del timeout
+            raise RuntimeError(f"completed resume unexpectedly executed stage command: {command}")
+
     runner = build_campaign_runner(
         config_path=config_path,
         code_path=code_path,
@@ -1084,6 +1133,9 @@ def main() -> None:
         store=open_artifact_store(store_location),
         calibration_grid_limit=args.calibration_grid_limit,
         bootstrap_samples=args.bootstrap_samples,
+        campaign_mode=args.campaign_mode,
+        scientific_claims_permitted=args.campaign_mode == "canonical",
+        command_runner=command_runner,
     )
     status = runner.run(deadline)
     print(json.dumps({"status": status.value}, sort_keys=True))
