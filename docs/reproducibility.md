@@ -180,9 +180,10 @@ uv run python experiments/17_evaluate_hybrid_decoders.py \
 
 Continue the same publication by repeating the command with `--resume`. The
 evaluator verifies the frozen inputs, every existing batch manifest and outcome,
-per-rate summaries, and progress coordinates before decoding another batch. Omit
-`--max-batches-this-run` when the process should continue until scientific
-stopping or an externally supplied deadline.
+and the source/rate/batch-hash coordinates in `progress.json` before decoding
+another batch. When a final or deadline-partial manifest exists, it also verifies
+the per-rate summaries. Omit `--max-batches-this-run` when the process should
+continue until scientific stopping or an externally supplied deadline.
 
 ## Interrupted and failed stages
 

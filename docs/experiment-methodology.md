@@ -65,10 +65,11 @@ Subsequent samples are immutable, role-separated shards:
 - **test:** untouched samples for paired held-out evaluation.
 
 The default train and calibration caps (50,000 and 10,000 total shots) are divided
-across selected rates, with any remainder assigned to lower rates. The default
-test batch contains 2,048 shots at each selected rate. Each shard is at most 2,048
-shots and derives its seed from the campaign seed, rate index, role, and shard
-index. No role reuses another role's shard.
+across selected rates, with any remainder assigned to lower rates. Test generation
+materializes the configured cap of 200,000 shots per selected rate in immutable
+shards; held-out evaluation later consumes those shots in 2,048-shot batches.
+Each shard is at most 2,048 shots and derives its seed from the campaign seed, rate
+index, role, and shard index. No role reuses another role's shard.
 
 ## Uniform BP-LSD configuration
 
@@ -169,9 +170,10 @@ individual block-error rate receives a Wilson interval. A hybrid is marked
 paired delta interval is not strictly above zero. Latency does not participate in
 that gate.
 
-Sampling proceeds in deterministic batches. A noise point stops when all three
-decoders have reached the configured failure target or when its shot cap is
-reached. A campaign deadline may publish a resumable `partial_deadline` result,
+Evaluation consumes the pre-generated test role in deterministic batches. A noise
+point stops when all three decoders have reached the configured failure target or
+when its shot cap is reached. A campaign deadline may publish a resumable
+`partial_deadline` result,
 but that status is not equivalent to scientific completion. Immutable batch
 outcomes allow later resumption without changing already decoded shots.
 
@@ -184,6 +186,8 @@ outcomes allow later resumption without changing already decoded shots.
   correction.
 - Calibration searches checkpoints and parameters on calibration data; only the
   separate test role can support held-out comparison.
+- Wilson and bootstrap intervals are conventional fixed-sample intervals reported
+  after outcome-dependent stopping; they are not anytime-valid sequential bounds.
 - CPU timings include different components across stages and depend on machine
   load, batching, and software versions.
 - Willow surface-code hardware data is outside this methodology and must not be
