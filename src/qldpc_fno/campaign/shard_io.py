@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from qldpc_fno.campaign.seeds import derive_seed
 from qldpc_fno.campaign.shards import validate_campaign_code
 from qldpc_fno.codes.gf2 import logical_x_basis
 from qldpc_fno.stim.b8 import read_b8_rows
+
+_TEACHER_BITS_PER_SHOT = 2610
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +184,75 @@ def load_campaign_code(
     return metadata, hx, hz, logical_x
 
 
+def load_verified_teacher_artifact(
+    model_dir: Path,
+    *,
+    expected_metadata_sha256: str | None,
+    expected_shots: int,
+) -> dict[str, object]:
+    """Verify the final packed teacher cache and its hash-bound metadata."""
+    if type(expected_shots) is not int or expected_shots <= 0:
+        raise ValueError("expected teacher shots must be a positive integer")
+    metadata_path = model_dir / "teacher.json"
+    if expected_metadata_sha256 is not None:
+        verify_sha256(metadata_path, expected_metadata_sha256, label="teacher metadata")
+    metadata = json.loads(metadata_path.read_text())
+    expected_fields = {
+        "bits_per_shot",
+        "chunk_shots",
+        "chunks",
+        "decoder",
+        "positive_counts_by_channel",
+        "sha256",
+        "shots",
+        "source",
+    }
+    if set(metadata) != expected_fields:
+        raise ValueError("teacher metadata fields do not match the declared schema")
+    if metadata.get("bits_per_shot") != _TEACHER_BITS_PER_SHOT:
+        raise ValueError("teacher bits_per_shot does not match lp_3_7_16")
+    if type(metadata.get("shots")) is not int or metadata["shots"] != expected_shots:
+        raise ValueError("teacher shots do not match training provenance")
+    chunk_shots = metadata.get("chunk_shots")
+    if type(chunk_shots) is not int or not 0 < chunk_shots <= 2_048:
+        raise ValueError("teacher chunk_shots must be an integer between 1 and 2048")
+    chunks = metadata.get("chunks")
+    if (
+        not isinstance(chunks, dict)
+        or not chunks
+        or any(
+            not isinstance(path, str) or not isinstance(digest, str)
+            for path, digest in chunks.items()
+        )
+    ):
+        raise ValueError("teacher chunks must be a non-empty path-to-SHA-256 mapping")
+    if not isinstance(metadata.get("decoder"), dict) or not isinstance(
+        metadata.get("source"), dict
+    ):
+        raise TypeError("teacher decoder and source provenance must be objects")
+    if not isinstance(metadata.get("sha256"), str):
+        raise TypeError("teacher correction SHA-256 must be a string")
+    positive_counts = metadata.get("positive_counts_by_channel")
+    if (
+        not isinstance(positive_counts, list)
+        or len(positive_counts) != 58
+        or any(type(count) is not int or count < 0 for count in positive_counts)
+    ):
+        raise ValueError("teacher positive counts must be 58 non-negative integers")
+
+    cache_path = model_dir / "teacher_corrections.b8"
+    if not cache_path.is_file():
+        raise FileNotFoundError(f"teacher correction cache is missing: {cache_path}")
+    expected_size = expected_shots * math.ceil(_TEACHER_BITS_PER_SHOT / 8)
+    if cache_path.stat().st_size != expected_size:
+        raise ValueError(
+            f"teacher correction cache size mismatch: expected {expected_size} bytes, "
+            f"found {cache_path.stat().st_size}"
+        )
+    verify_sha256(cache_path, str(metadata["sha256"]), label="teacher correction cache")
+    return metadata
+
+
 def load_verified_shards(
     root: Path,
     *,
@@ -246,12 +318,27 @@ def load_verified_shards(
         )
         if seed != expected_seed:
             raise ValueError(f"shard seed does not match the derived seed for {role} {coordinate}")
-        shots = int(manifest["shots"])
-        if shots <= 0:
-            raise ValueError("campaign shards must contain positive shot counts")
-        dimensions = {key: int(value) for key, value in manifest["dimensions"].items()}
+        shots = manifest.get("shots")
+        if type(shots) is not int or shots <= 0:
+            raise ValueError("campaign shard shots must be a positive integer")
+        raw_dimensions = manifest.get("dimensions")
+        if not isinstance(raw_dimensions, dict) or any(
+            type(value) is not int or value < 0 for value in raw_dimensions.values()
+        ):
+            raise ValueError("shard dimensions must contain exact non-negative integers")
+        dimensions = dict(raw_dimensions)
         if dimensions != {"dets.b8": 945, "errors.b8": 2610, "obs_actual.b8": 744}:
             raise ValueError("campaign shard dimensions do not match lp_3_7_16")
+        for field, filename in (
+            ("num_detectors", "dets.b8"),
+            ("num_errors", "errors.b8"),
+            ("num_observables", "obs_actual.b8"),
+        ):
+            value = manifest.get(field)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"shard {field} must be an exact non-negative integer")
+            if value != dimensions[filename]:
+                raise ValueError(f"shard {field} disagrees with dimensions.{filename}")
         if expected_dimensions is not None and dimensions != expected_dimensions:
             raise ValueError("campaign shards have inconsistent dimensions")
         expected_dimensions = dimensions

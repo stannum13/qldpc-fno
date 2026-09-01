@@ -14,7 +14,11 @@ import torch
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
 from qldpc_fno.campaign.config import CampaignConfig
-from qldpc_fno.campaign.shard_io import load_campaign_code, load_verified_shards
+from qldpc_fno.campaign.shard_io import (
+    load_campaign_code,
+    load_verified_shards,
+    load_verified_teacher_artifact,
+)
 from qldpc_fno.data.conditional_fields import add_noise_channel
 from qldpc_fno.data.ring_fields import to_ring_field
 from qldpc_fno.decoders.hybrid import decode_residual_batch, decode_soft_prior_batch
@@ -175,11 +179,25 @@ def main() -> None:
     teacher = model_manifest.get("teacher")
     if not isinstance(teacher, dict):
         raise TypeError("model manifest is missing teacher provenance")
-    verify_sha256(
-        args.model / "teacher.json",
-        str(teacher["metadata_sha256"]),
-        label="teacher metadata",
+    model_split = model_manifest.get("split")
+    if not isinstance(model_split, dict):
+        raise TypeError("model manifest is missing split provenance")
+    train_shots = model_split.get("train_shots")
+    validation_shots = model_split.get("validation_shots")
+    if (
+        type(train_shots) is not int
+        or train_shots <= 0
+        or type(validation_shots) is not int
+        or validation_shots <= 0
+    ):
+        raise ValueError("model split shot counts must be positive integers")
+    teacher_metadata = load_verified_teacher_artifact(
+        args.model,
+        expected_metadata_sha256=str(teacher["metadata_sha256"]),
+        expected_shots=train_shots + validation_shots,
     )
+    if teacher_metadata.get("sha256") != teacher.get("corrections_sha256"):
+        raise ValueError("model teacher correction SHA-256 disagrees with teacher metadata")
     model_path = args.model / "model.pt"
     verify_sha256(model_path, str(model_manifest["sha256"]), label="model")
     final_model = torch.load(model_path, map_location="cpu", weights_only=True)

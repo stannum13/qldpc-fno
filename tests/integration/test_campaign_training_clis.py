@@ -126,6 +126,37 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     first_manifest_text = first_manifest_path.read_text()
     first_manifest = json.loads(first_manifest_text)
 
+    first_manifest["shots"] = float(first_manifest["shots"])
+    write_canonical_json(first_manifest_path, first_manifest)
+    train_completion["shards"][manifest_relatives[0]] = sha256_file(first_manifest_path)
+    write_canonical_json(train_completion_path, train_completion)
+    with pytest.raises(ValueError, match="shots must be a positive integer"):
+        load_verified_shards(
+            train,
+            role="train",
+            config_path=config,
+            code_manifest_path=code / "code.json",
+        )
+    first_manifest_path.write_text(first_manifest_text)
+    train_completion_path.write_text(train_completion_text)
+
+    first_manifest = json.loads(first_manifest_text)
+    first_manifest["dimensions"]["dets.b8"] = True
+    write_canonical_json(first_manifest_path, first_manifest)
+    train_completion = json.loads(train_completion_text)
+    train_completion["shards"][manifest_relatives[0]] = sha256_file(first_manifest_path)
+    write_canonical_json(train_completion_path, train_completion)
+    with pytest.raises(ValueError, match="dimensions must contain exact non-negative integers"):
+        load_verified_shards(
+            train,
+            role="train",
+            config_path=config,
+            code_manifest_path=code / "code.json",
+        )
+    first_manifest_path.write_text(first_manifest_text)
+    train_completion_path.write_text(train_completion_text)
+
+    first_manifest = json.loads(first_manifest_text)
     first_manifest["sha256"].pop("obs_actual.b8")
     write_canonical_json(first_manifest_path, first_manifest)
     train_completion["shards"][manifest_relatives[0]] = sha256_file(first_manifest_path)
@@ -196,6 +227,32 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     assert not (model / "teacher.json").exists()
     assert not (model / "model.json").exists()
 
+    teacher_partial = _run(
+        "experiments/15_train_conditional_fno.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--train",
+        train,
+        "--resume",
+        "--max-teacher-chunks-this-run",
+        1,
+        "--out",
+        model,
+    )
+    assert teacher_partial.returncode == 0, teacher_partial.stderr
+    teacher_partial_resume = json.loads((model / "resume.json").read_text())
+    assert teacher_partial_resume["status"] == "teacher_partial"
+    assert not (model / "teacher.json").exists()
+    assert not list(model.glob("epoch-*.pt"))
+    teacher_chunk_manifests = sorted((model / "teacher_chunks").glob("chunk-*.json"))
+    assert len(teacher_chunk_manifests) == 1
+    first_chunk_manifest = json.loads(teacher_chunk_manifests[0].read_text())
+    first_chunk_path = model / "teacher_chunks" / first_chunk_manifest["path"]
+    first_chunk_bytes = first_chunk_path.read_bytes()
+    first_chunk_stat = first_chunk_path.stat()
+
     partial = _run(
         "experiments/15_train_conditional_fno.py",
         "--config",
@@ -211,6 +268,9 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         model,
     )
     assert partial.returncode == 0, partial.stderr
+    assert first_chunk_path.read_bytes() == first_chunk_bytes
+    assert first_chunk_path.stat().st_ino == first_chunk_stat.st_ino
+    assert first_chunk_path.stat().st_mtime_ns == first_chunk_stat.st_mtime_ns
     assert not (model / "model.json").exists()
     resume_metadata = json.loads((model / "resume.json").read_text())
     assert resume_metadata["status"] == "checkpointed"
@@ -295,6 +355,47 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         sum(row["validation_shots"] for row in per_rate)
         == model_metadata["split"]["validation_shots"]
     )
+
+    teacher_corrections_path = model / "teacher_corrections.b8"
+    teacher_corrections = teacher_corrections_path.read_bytes()
+    teacher_corrections_path.unlink()
+    rejected_missing_teacher = _run(
+        "experiments/15_train_conditional_fno.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--train",
+        train,
+        "--resume",
+        "--out",
+        model,
+    )
+    assert rejected_missing_teacher.returncode != 0
+    assert "teacher correction cache" in rejected_missing_teacher.stderr
+    teacher_corrections_path.write_bytes(teacher_corrections)
+
+    corrupted_teacher = bytearray(teacher_corrections)
+    corrupted_teacher[0] ^= 1
+    teacher_corrections_path.write_bytes(corrupted_teacher)
+    rejected_corrupted_teacher = _run(
+        "experiments/16_calibrate_hybrid_priors.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--calibration",
+        calibration,
+        "--model",
+        model,
+        "--grid-limit",
+        2,
+        "--out",
+        calibration,
+    )
+    assert rejected_corrupted_teacher.returncode != 0
+    assert "teacher correction cache SHA-256 mismatch" in rejected_corrupted_teacher.stderr
+    teacher_corrections_path.write_bytes(teacher_corrections)
 
     calibrated = _run(
         "experiments/16_calibrate_hybrid_priors.py",

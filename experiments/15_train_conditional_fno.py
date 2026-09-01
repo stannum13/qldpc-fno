@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,7 @@ from qldpc_fno.campaign.shard_io import (
     deterministic_stratified_split,
     load_campaign_code,
     load_verified_shards,
+    load_verified_teacher_artifact,
 )
 from qldpc_fno.data.conditional_fields import add_noise_channel
 from qldpc_fno.data.ring_fields import to_ring_field
@@ -42,6 +44,15 @@ _TEACHER_CONFIGURATION = {
     "ms_scaling_factor": 0.0,
     "schedule": "serial",
 }
+_TEACHER_BITS_PER_SHOT = 2610
+_MAX_TEACHER_CHUNK_SHOTS = 2_048
+
+
+@dataclass(frozen=True, slots=True)
+class _TeacherPreparation:
+    metadata: dict[str, object] | None
+    metadata_sha256: str | None
+    progress_sha256: str
 
 
 def _git_commit() -> str:
@@ -113,40 +124,36 @@ def _prepare_teacher_cache(
     logical_x: object,
     identity: dict[str, object],
     expected_metadata_sha256: str | None,
-) -> tuple[dict[str, object], str]:
+    max_new_chunks: int | None,
+) -> _TeacherPreparation:
     cache_path = output / "teacher_corrections.b8"
     metadata_path = output / "teacher.json"
+    chunk_shots = min(batch_size, _MAX_TEACHER_CHUNK_SHOTS)
+    chunk_dir = output / "teacher_chunks"
+    progress_path = output / "teacher_progress.json"
     if metadata_path.exists():
-        if expected_metadata_sha256 is not None:
-            verify_sha256(
-                metadata_path,
-                expected_metadata_sha256,
-                label="teacher metadata",
-            )
-        metadata = json.loads(metadata_path.read_text())
-        if set(metadata) != {
-            "bits_per_shot",
-            "decoder",
-            "positive_counts_by_channel",
-            "sha256",
-            "shots",
-            "source",
-        }:
-            raise ValueError("teacher metadata fields do not match the declared schema")
+        metadata = load_verified_teacher_artifact(
+            output,
+            expected_metadata_sha256=expected_metadata_sha256,
+            expected_shots=shards.shots,
+        )
         if metadata.get("source") != identity:
             raise ValueError("teacher cache provenance does not match training sources")
         if metadata.get("decoder") != _TEACHER_CONFIGURATION:
             raise ValueError("teacher cache decoder configuration mismatch")
-        if metadata.get("bits_per_shot") != 2610 or metadata.get("shots") != shards.shots:
-            raise ValueError("teacher cache dimensions do not match training shards")
-        positive_counts = metadata.get("positive_counts_by_channel")
-        if (
-            not isinstance(positive_counts, list)
-            or len(positive_counts) != 58
-            or any(type(count) is not int or count < 0 for count in positive_counts)
-        ):
-            raise ValueError("teacher positive counts must be 58 non-negative integers")
-        verify_sha256(cache_path, str(metadata["sha256"]), label="teacher correction cache")
+        if metadata.get("chunk_shots") != chunk_shots:
+            raise ValueError("teacher chunk cadence does not match training configuration")
+        declared_chunks = metadata["chunks"]
+        if not isinstance(declared_chunks, dict):
+            raise TypeError("teacher chunk provenance must be an object")
+        verified_chunks = _verify_teacher_chunks(
+            output,
+            shards=shards,
+            identity=identity,
+            chunk_shots=chunk_shots,
+        )
+        if declared_chunks != verified_chunks:
+            raise ValueError("teacher metadata does not declare the exact verified chunks")
         positives = _teacher_positive_counts(
             cache_path,
             shards=shards,
@@ -155,25 +162,109 @@ def _prepare_teacher_cache(
         )
         if metadata.get("positive_counts_by_channel") != positives.tolist():
             raise ValueError("teacher positive counts do not match packed corrections")
-        return metadata, sha256_file(metadata_path)
+        metadata_sha256 = sha256_file(metadata_path)
+        progress_sha256 = _write_teacher_progress(
+            progress_path,
+            chunks=verified_chunks,
+            chunk_shots=chunk_shots,
+            complete=True,
+            identity=identity,
+            shots=shards.shots,
+            teacher_metadata_sha256=metadata_sha256,
+        )
+        return _TeacherPreparation(metadata, metadata_sha256, progress_sha256)
 
-    temporary = output / ".teacher_corrections.b8.tmp"
-    positives = np.zeros(58, dtype=np.int64)
-    train_mask = np.zeros(shards.shots, dtype=np.bool_)
-    train_mask[train_indices] = True
-    with temporary.open("wb") as handle:
-        for offset in range(0, shards.shots, batch_size):
-            indices = np.arange(offset, min(offset + batch_size, shards.shots), dtype=np.int64)
-            corrections = _teacher_batch(shards, indices, hx=hx, logical_x=logical_x)
-            handle.write(np.packbits(corrections, axis=1, bitorder="little").tobytes(order="C"))
-            train_rows = train_mask[indices]
-            if np.any(train_rows):
-                positives += (
-                    corrections[train_rows].reshape(-1, 58, 45).sum(axis=(0, 2), dtype=np.int64)
+    chunk_dir.mkdir(exist_ok=True)
+    expected_chunk_count = (shards.shots + chunk_shots - 1) // chunk_shots
+    expected_manifest_names = {f"chunk-{index:05d}.json" for index in range(expected_chunk_count)}
+    discovered_manifest_names = {path.name for path in chunk_dir.glob("chunk-*.json")}
+    unexpected = discovered_manifest_names - expected_manifest_names
+    if unexpected:
+        raise ValueError(f"unexpected teacher chunk manifests: {sorted(unexpected)}")
+
+    chunks: dict[str, str] = {}
+    generated = 0
+    for chunk_index in range(expected_chunk_count):
+        start = chunk_index * chunk_shots
+        stop = min(start + chunk_shots, shards.shots)
+        manifest_path = chunk_dir / f"chunk-{chunk_index:05d}.json"
+        if manifest_path.exists():
+            _verify_teacher_chunk(
+                manifest_path,
+                chunk_index=chunk_index,
+                start=start,
+                stop=stop,
+                identity=identity,
+            )
+        else:
+            if max_new_chunks is not None and generated >= max_new_chunks:
+                progress_sha256 = _write_teacher_progress(
+                    progress_path,
+                    chunks=chunks,
+                    chunk_shots=chunk_shots,
+                    complete=False,
+                    identity=identity,
+                    shots=shards.shots,
                 )
-    temporary.replace(cache_path)
+                return _TeacherPreparation(None, None, progress_sha256)
+            indices = np.arange(start, stop, dtype=np.int64)
+            corrections = _teacher_batch(shards, indices, hx=hx, logical_x=logical_x)
+            packed = np.packbits(corrections, axis=1, bitorder="little").tobytes(order="C")
+            chunk_path = chunk_dir / f"chunk-{chunk_index:05d}.b8"
+            temporary_chunk = chunk_dir / f".chunk-{chunk_index:05d}.b8.tmp"
+            temporary_chunk.write_bytes(packed)
+            os.replace(temporary_chunk, chunk_path)
+            _write_json_atomic(
+                manifest_path,
+                {
+                    "bits_per_shot": _TEACHER_BITS_PER_SHOT,
+                    "chunk_index": chunk_index,
+                    "decoder": _TEACHER_CONFIGURATION,
+                    "path": chunk_path.name,
+                    "sha256": sha256_file(chunk_path),
+                    "shots": stop - start,
+                    "source": identity,
+                    "start": start,
+                    "stop": stop,
+                },
+            )
+            generated += 1
+        chunks[str(manifest_path.relative_to(output))] = sha256_file(manifest_path)
+        _write_teacher_progress(
+            progress_path,
+            chunks=chunks,
+            chunk_shots=chunk_shots,
+            complete=False,
+            identity=identity,
+            shots=shards.shots,
+        )
+
+    verified_chunks = _verify_teacher_chunks(
+        output,
+        shards=shards,
+        identity=identity,
+        chunk_shots=chunk_shots,
+    )
+    if chunks != verified_chunks:
+        raise ValueError("teacher chunk set changed before final assembly")
+    temporary = output / ".teacher_corrections.b8.tmp"
+    with temporary.open("wb") as handle:
+        for chunk_index in range(expected_chunk_count):
+            handle.write((chunk_dir / f"chunk-{chunk_index:05d}.b8").read_bytes())
+    expected_size = shards.shots * ((_TEACHER_BITS_PER_SHOT + 7) // 8)
+    if temporary.stat().st_size != expected_size:
+        raise ValueError("assembled teacher correction cache has the wrong size")
+    os.replace(temporary, cache_path)
+    positives = _teacher_positive_counts(
+        cache_path,
+        shards=shards,
+        train_indices=train_indices,
+        batch_size=batch_size,
+    )
     metadata = {
-        "bits_per_shot": 2610,
+        "bits_per_shot": _TEACHER_BITS_PER_SHOT,
+        "chunk_shots": chunk_shots,
+        "chunks": chunks,
         "decoder": _TEACHER_CONFIGURATION,
         "positive_counts_by_channel": positives.tolist(),
         "sha256": sha256_file(cache_path),
@@ -181,7 +272,119 @@ def _prepare_teacher_cache(
         "source": identity,
     }
     _write_json_atomic(metadata_path, metadata)
-    return metadata, sha256_file(metadata_path)
+    metadata_sha256 = sha256_file(metadata_path)
+    progress_sha256 = _write_teacher_progress(
+        progress_path,
+        chunks=chunks,
+        chunk_shots=chunk_shots,
+        complete=True,
+        identity=identity,
+        shots=shards.shots,
+        teacher_metadata_sha256=metadata_sha256,
+    )
+    return _TeacherPreparation(metadata, metadata_sha256, progress_sha256)
+
+
+def _verify_teacher_chunk(
+    manifest_path: Path,
+    *,
+    chunk_index: int,
+    start: int,
+    stop: int,
+    identity: dict[str, object],
+) -> dict[str, object]:
+    manifest = json.loads(manifest_path.read_text())
+    if set(manifest) != {
+        "bits_per_shot",
+        "chunk_index",
+        "decoder",
+        "path",
+        "sha256",
+        "shots",
+        "source",
+        "start",
+        "stop",
+    }:
+        raise ValueError("teacher chunk manifest fields do not match the declared schema")
+    integer_fields = ("bits_per_shot", "chunk_index", "shots", "start", "stop")
+    if any(type(manifest.get(field)) is not int for field in integer_fields):
+        raise ValueError("teacher chunk coordinates must be exact integers")
+    if not isinstance(manifest.get("path"), str) or not isinstance(manifest.get("sha256"), str):
+        raise TypeError("teacher chunk path and SHA-256 must be strings")
+    expected = {
+        "bits_per_shot": _TEACHER_BITS_PER_SHOT,
+        "chunk_index": chunk_index,
+        "decoder": _TEACHER_CONFIGURATION,
+        "path": f"chunk-{chunk_index:05d}.b8",
+        "shots": stop - start,
+        "source": identity,
+        "start": start,
+        "stop": stop,
+    }
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            raise ValueError(f"teacher chunk {chunk_index} has mismatched {key}")
+    chunk_path = manifest_path.parent / str(manifest["path"])
+    if not chunk_path.is_file():
+        raise FileNotFoundError(f"teacher chunk data is missing: {chunk_path}")
+    expected_size = (stop - start) * ((_TEACHER_BITS_PER_SHOT + 7) // 8)
+    if chunk_path.stat().st_size != expected_size:
+        raise ValueError(f"teacher chunk {chunk_index} size mismatch")
+    verify_sha256(chunk_path, str(manifest["sha256"]), label=f"teacher chunk {chunk_index}")
+    return manifest
+
+
+def _verify_teacher_chunks(
+    output: Path,
+    *,
+    shards: VerifiedShardSet,
+    identity: dict[str, object],
+    chunk_shots: int,
+) -> dict[str, str]:
+    chunk_dir = output / "teacher_chunks"
+    expected_count = (shards.shots + chunk_shots - 1) // chunk_shots
+    expected_names = {f"chunk-{index:05d}.json" for index in range(expected_count)}
+    discovered_names = {path.name for path in chunk_dir.glob("chunk-*.json")}
+    if discovered_names != expected_names:
+        raise ValueError("teacher chunk manifest set is incomplete or contains extras")
+    chunks: dict[str, str] = {}
+    for chunk_index in range(expected_count):
+        start = chunk_index * chunk_shots
+        stop = min(start + chunk_shots, shards.shots)
+        manifest_path = chunk_dir / f"chunk-{chunk_index:05d}.json"
+        _verify_teacher_chunk(
+            manifest_path,
+            chunk_index=chunk_index,
+            start=start,
+            stop=stop,
+            identity=identity,
+        )
+        chunks[str(manifest_path.relative_to(output))] = sha256_file(manifest_path)
+    return chunks
+
+
+def _write_teacher_progress(
+    path: Path,
+    *,
+    chunks: dict[str, str],
+    chunk_shots: int,
+    complete: bool,
+    identity: dict[str, object],
+    shots: int,
+    teacher_metadata_sha256: str | None = None,
+) -> str:
+    _write_json_atomic(
+        path,
+        {
+            "chunk_shots": chunk_shots,
+            "chunks": chunks,
+            "complete": complete,
+            "shots": shots,
+            "source": identity,
+            "teacher_metadata_sha256": teacher_metadata_sha256,
+        },
+    )
+    return sha256_file(path)
 
 
 def _teacher_positive_counts(
@@ -227,7 +430,12 @@ def _save_checkpoint(path: Path, payload: dict[str, object]) -> None:
     temporary.replace(path)
 
 
-def _verify_completed_model(output: Path, identity: dict[str, object]) -> bool:
+def _verify_completed_model(
+    output: Path,
+    identity: dict[str, object],
+    *,
+    expected_shots: int,
+) -> bool:
     manifest_path = output / "model.json"
     if not manifest_path.exists():
         return False
@@ -243,11 +451,13 @@ def _verify_completed_model(output: Path, identity: dict[str, object]) -> bool:
     teacher = manifest.get("teacher")
     if not isinstance(teacher, dict):
         raise TypeError("completed model is missing teacher provenance")
-    verify_sha256(
-        output / "teacher.json",
-        str(teacher["metadata_sha256"]),
-        label="teacher metadata",
+    teacher_metadata = load_verified_teacher_artifact(
+        output,
+        expected_metadata_sha256=str(teacher["metadata_sha256"]),
+        expected_shots=expected_shots,
     )
+    if teacher_metadata.get("sha256") != teacher.get("corrections_sha256"):
+        raise ValueError("model teacher correction SHA-256 disagrees with teacher metadata")
     checkpoints = manifest.get("checkpoints")
     if not isinstance(checkpoints, list) or not checkpoints:
         raise ValueError("completed model is missing epoch checkpoint candidates")
@@ -267,6 +477,7 @@ def main() -> None:
     parser.add_argument("--train", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--initialize-only", action="store_true")
+    parser.add_argument("--max-teacher-chunks-this-run", type=int)
     parser.add_argument("--max-epochs-this-run", type=int)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -274,6 +485,8 @@ def main() -> None:
     config = CampaignConfig.from_json(args.config)
     if args.max_epochs_this_run is not None and args.max_epochs_this_run <= 0:
         raise ValueError("max-epochs-this-run must be positive")
+    if args.max_teacher_chunks_this_run is not None and args.max_teacher_chunks_this_run <= 0:
+        raise ValueError("max-teacher-chunks-this-run must be positive")
     code_manifest_path = args.code / "code.json"
     _, hx, _, logical_x = load_campaign_code(args.code)
     shards = load_verified_shards(
@@ -296,7 +509,11 @@ def main() -> None:
         raise FileExistsError(f"refusing to overwrite or implicitly resume {args.out}")
     if args.resume and not args.out.exists():
         raise FileNotFoundError("resume requested but the model output does not exist")
-    if args.resume and _verify_completed_model(args.out, identity):
+    if args.resume and _verify_completed_model(
+        args.out,
+        identity,
+        expected_shots=shards.shots,
+    ):
         return
 
     resume_path = args.out / "resume.json"
@@ -318,6 +535,7 @@ def main() -> None:
             "status": "initialized",
             "teacher_corrections_sha256": None,
             "teacher_metadata_sha256": None,
+            "teacher_progress_sha256": None,
         }
         _publish_initialized_output(args.out, resume)
     if args.initialize_only:
@@ -326,7 +544,7 @@ def main() -> None:
     expected_teacher_metadata = resume.get("teacher_metadata_sha256")
     if expected_teacher_metadata is not None and not isinstance(expected_teacher_metadata, str):
         raise TypeError("resume teacher_metadata_sha256 must be a string or null")
-    teacher, teacher_metadata_sha256 = _prepare_teacher_cache(
+    preparation = _prepare_teacher_cache(
         args.out,
         shards=shards,
         batch_size=config.training_batch_size,
@@ -335,13 +553,29 @@ def main() -> None:
         logical_x=logical_x,
         identity=identity,
         expected_metadata_sha256=expected_teacher_metadata,
+        max_new_chunks=args.max_teacher_chunks_this_run,
     )
+    if preparation.metadata is None:
+        _write_json_atomic(
+            resume_path,
+            {
+                **resume,
+                "status": "teacher_partial",
+                "teacher_progress_sha256": preparation.progress_sha256,
+            },
+        )
+        return
+    teacher = preparation.metadata
+    teacher_metadata_sha256 = preparation.metadata_sha256
+    if teacher_metadata_sha256 is None:
+        raise RuntimeError("completed teacher preparation is missing its metadata hash")
     teacher_path = args.out / "teacher_corrections.b8"
     resume = {
         **resume,
         "status": "checkpointed" if resume.get("checkpoint") is not None else "teacher_ready",
         "teacher_corrections_sha256": teacher["sha256"],
         "teacher_metadata_sha256": teacher_metadata_sha256,
+        "teacher_progress_sha256": preparation.progress_sha256,
     }
     _write_json_atomic(resume_path, resume)
 
@@ -438,6 +672,7 @@ def main() -> None:
             "status": "checkpointed",
             "teacher_corrections_sha256": teacher["sha256"],
             "teacher_metadata_sha256": teacher_metadata_sha256,
+            "teacher_progress_sha256": preparation.progress_sha256,
         }
         _write_json_atomic(resume_path, resume)
 
