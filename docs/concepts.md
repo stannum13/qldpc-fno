@@ -120,8 +120,8 @@ decoder repairs.
 - **Logical block-error rate** counts a shot as failed when any logical observable
   is wrong. Learned standalone evaluation and hybrid calibration also count every
   syndrome-invalid shot as failed. The current pilot preselection score reports
-  syndrome validity separately from its observable-mismatch block errors; the
-  planned final comparison will use one invalid-as-failure rule for every method.
+  syndrome validity separately and folds invalidity into its block failures; the
+  held-out comparison uses the same invalid-as-failure rule for every method.
 - **Exact observable match rate** ignores how many logical bits differ and asks
   whether all of them match for each shot.
 - **Negative log-likelihood (NLL)** evaluates probability calibration against

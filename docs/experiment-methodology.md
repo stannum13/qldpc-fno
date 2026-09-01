@@ -1,6 +1,6 @@
 # Experiment methodology
 
-This document separates implemented method from planned evaluation. For setup,
+This document describes the implemented accuracy campaign. For setup,
 artifacts, and safe restart behavior, see [Reproducibility](reproducibility.md).
 
 ## Research question
@@ -13,9 +13,9 @@ held-out comparison fixes data and decoder settings while varying the prior path
 2. calibrated FNO soft-prior BP-LSD; and
 3. a calibrated hard FNO proposal followed by residual BP-LSD.
 
-The repository currently implements preparation, training, and calibration, but
-not the final held-out comparison. Calibration results are model-selection
-artifacts, not test-set evidence.
+Preparation, training, calibration, and paired held-out evaluation are implemented.
+Calibration results remain model-selection artifacts, not test-set evidence; only
+the untouched test role supports the final comparison.
 
 ## Code and noise model
 
@@ -44,25 +44,25 @@ X-check detectors and logical-X observables. Syndrome measurement is perfect.
 The committed campaign grid is
 `[0.003, 0.005, 0.008, 0.012, 0.018, 0.025]`, with 256 pilot shots at each point.
 Uniform-prior BP-LSD supplies pilot measurements. In the current implementation,
-pilot `block_errors` count observable mismatches only; `syndrome_valid` and
-`syndrome_valid_rate` are reported separately and are not folded into that
-preselection score. If every configured point has zero observable failures, the
+pilot `block_errors` count either syndrome-invalid corrections or observable
+mismatches; syndrome validity is also reported separately. If every configured
+point has zero block failures, the
 pilot extends geometrically by a factor of 1.5, up to `p = 0.08`, until an
-observable failure is measured or the cap is reached.
+block failure is measured or the cap is reached.
 
 Selection always retains the two lowest measured points. It extends one point
 beyond an initial zero-failure prefix, retains measured points through 50%
 baseline block-error rate, and inserts the midpoint before the first
 majority-failure point. `selection.json` records the measurements, selected points,
 and source hashes. These rows select the campaign's noise range; they are not a
-final decoder comparison. The planned held-out evaluator must apply the same
+final decoder comparison. Held-out evaluation applies the same
 invalid-as-failure rule to all three methods.
 
 Subsequent samples are immutable, role-separated shards:
 
 - **train:** BP-LSD teacher generation and model fitting;
 - **calibration:** checkpoint and probability-parameter selection; and
-- **test:** reserved for a future held-out evaluator.
+- **test:** untouched samples for paired held-out evaluation.
 
 The default train and calibration caps (50,000 and 10,000 total shots) are divided
 across selected rates, with any remainder assigned to lower rates. The default
@@ -147,8 +147,33 @@ The reporting order is:
 Teacher-bit accuracy cannot establish decoding correctness because valid
 corrections are not unique and a small bitwise difference can violate a check.
 Calibration accuracy cannot establish generalization because it is used for
-selection. Final claims require the planned evaluator to score all three frozen
-methods on the same untouched test shards.
+selection. The evaluator scores all three frozen methods on the same untouched
+test shots, reports paired disagreement and confidence intervals, and stops a
+noise point only at the configured failure target or shot cap.
+
+## Paired held-out evaluation
+
+At each selected physical error rate, all three decoders receive the same test
+shots in the same order. Each shot records syndrome validity, logical mismatch,
+the combined block-failure outcome, convergence, correction weight, iterations,
+and decoder latency. Hybrid records additionally separate FNO, preprocessing,
+BP-LSD, and end-to-end time. This pairing matters: the comparison asks which
+decoder fails on a particular error instance, not only whether two aggregate
+rates happen to be close.
+
+For each hybrid, the summary includes the full 2 × 2 disagreement table against
+uniform BP-LSD and the hybrid-minus-baseline block-error-rate delta. A
+deterministic shot-level bootstrap gives the delta's 95% interval; each decoder's
+individual block-error rate receives a Wilson interval. A hybrid is marked
+`accuracy_compatible` only when every correction is syndrome-valid and the
+paired delta interval is not strictly above zero. Latency does not participate in
+that gate.
+
+Sampling proceeds in deterministic batches. A noise point stops when all three
+decoders have reached the configured failure target or when its shot cap is
+reached. A campaign deadline may publish a resumable `partial_deadline` result,
+but that status is not equivalent to scientific completion. Immutable batch
+outcomes allow later resumption without changing already decoded shots.
 
 ## Threats to interpretation
 

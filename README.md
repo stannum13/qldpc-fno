@@ -39,16 +39,14 @@ Development smoke runs exposed the central failure mode: high agreement with
 BP-LSD's correction bits can coexist with failed syndrome checks. Those run
 artifacts are not committed, so a fresh clone cannot audit a particular numeric
 result. The durable lesson is encoded in the pipeline: teacher-bit accuracy is a
-training diagnostic, syndrome validity is reported explicitly, and the planned
-final comparison will count invalid corrections as block failures. Speed comes
+training diagnostic, syndrome validity is reported explicitly, and the held-out
+comparison counts invalid corrections as block failures. Speed comes
 only after accuracy and validity.
 
-> **Status:** the smoke pipeline is complete. The accuracy campaign currently
-> implements pilot selection, role-separated data generation, resumable teacher
-> generation and FNO training, and independent calibration of both hybrid
-> methods. A final held-out evaluator that compares all three methods is not yet
-> present, so this repository does not claim that either learned method improves
-> accuracy or latency over uniform BP-LSD.
+> **Status:** the smoke pipeline and the accuracy-campaign implementation are
+> complete through held-out paired evaluation. No canonical campaign result is
+> reported yet, so this repository does not claim that either learned method
+> improves accuracy or latency over uniform BP-LSD.
 
 ## Why this pairing?
 
@@ -84,9 +82,10 @@ flowchart LR
     I --> J[Soft-prior BP-LSD]
     I --> K[Hard proposal + residual BP-LSD]
     E -. baseline .-> L[Uniform-prior BP-LSD]
-    J -. planned held-out comparison .-> M[Accuracy before speed]
-    K -. planned held-out comparison .-> M
-    L -. planned held-out comparison .-> M
+    J --> M[Paired held-out evaluation]
+    K --> M
+    L --> M
+    M --> N[Accuracy gate before speed]
 ```
 
 The code-capacity model applies independent physical Z errors with perfect
@@ -177,12 +176,29 @@ uv run python experiments/16_calibrate_hybrid_priors.py \
   --calibration artifacts/accuracy-campaign/calibration \
   --model artifacts/accuracy-campaign/model \
   --out artifacts/accuracy-campaign/calibration
+
+uv run python experiments/14_generate_campaign_shards.py \
+  --config configs/accuracy_campaign.json \
+  --code artifacts/accuracy-campaign/code \
+  --selection artifacts/accuracy-campaign/pilot/selection.json \
+  --role test \
+  --out artifacts/accuracy-campaign/test
+
+uv run python experiments/17_evaluate_hybrid_decoders.py \
+  --config configs/accuracy_campaign.json \
+  --code artifacts/accuracy-campaign/code \
+  --selection artifacts/accuracy-campaign/pilot/selection.json \
+  --test artifacts/accuracy-campaign/test \
+  --model artifacts/accuracy-campaign/model \
+  --calibration artifacts/accuracy-campaign/calibration \
+  --out artifacts/accuracy-campaign/evaluation
 ```
 
-`experiments/14_generate_campaign_shards.py` also accepts `--role test`, but no
-campaign test evaluator consumes those shards yet. The configuration permits up
-to 50,000 training shots, 10,000 calibration shots, and 60 training epochs;
-review [Reproducibility](docs/reproducibility.md) before starting a long run.
+The evaluator checkpoints immutable per-batch outcomes and can continue with
+`--resume`; `--max-batches-this-run` provides a bounded execution slice. The
+configuration permits up to 50,000 training shots, 10,000 calibration shots,
+200,000 test shots per selected rate, and 60 training epochs. Review
+[Reproducibility](docs/reproducibility.md) before starting a long run.
 
 ## Methods and success criteria
 
@@ -196,23 +212,23 @@ and split provenance fixed while changing how the decoder receives its prior:
 | Proposal + residual BP-LSD | Thresholded FNO correction; uncertainty prior on the residual problem | BP-LSD repair |
 
 The accuracy hierarchy used by learned smoke evaluation, hybrid calibration, and
-the planned final comparison is:
+held-out paired evaluation is:
 
 1. **Syndrome validity:** does `Hx @ correction mod 2` equal the observed syndrome?
 2. **Logical block-error rate:** does any predicted logical observable differ from
    the sampled one? Learned smoke evaluation and hybrid calibration include
-   syndrome-invalid outputs among block failures; the planned final comparison
-   will apply that rule to every method.
+   syndrome-invalid outputs among block failures; held-out evaluation applies
+   that rule to every method.
 3. **Uncertainty:** report error counts and a 95% Wilson interval where implemented.
 4. **Diagnostics:** convergence, teacher-bit accuracy, negative log-likelihood,
    correction weights, and related intermediate measures.
 5. **Timing:** report the measured batch and decoder components only after the
    accuracy comparison is valid; do not generalize one machine's timing.
 
-The current pilot is a preselection stage, not the final comparison: its baseline
-`block_errors` field counts observable mismatches, while syndrome validity is
-reported separately. Pilot rows should therefore be used to select a noise range,
-not as final accuracy evidence.
+The pilot is a preselection stage, not the final comparison. It reports syndrome
+validity and counts either an invalid correction or an observable mismatch as a
+block failure. Pilot rows should still be used only to select a noise range, not
+as final comparative evidence.
 
 See [Experiment methodology](docs/experiment-methodology.md) for the exact model,
 decoder settings, data roles, and calibration rule.
@@ -227,8 +243,8 @@ rounds, leakage, surgery gadgets, or five-candidate decoder ensemble.
 The suffix `16` is the source paper's **distance upper bound**. The repository
 does not claim that the code's exact distance is 16. It also does not claim that
 matching a BP-LSD teacher is equivalent to decoding successfully, that the FNO
-generalizes outside the selected noise range, or that a calibrated method wins on
-held-out data before the missing final evaluator is implemented and run.
+generalizes outside the selected noise range, or that either hybrid wins before a
+canonical held-out campaign is run and its artifacts are reported.
 
 The Google Quantum AI Willow dataset is source-locked for future work but is not
 mixed into this qLDPC experiment. It is surface-code hardware data and belongs in
@@ -271,10 +287,10 @@ artifact contract.
 
 ## Roadmap
 
-- Complete the held-out campaign evaluator for uniform BP-LSD, soft-prior BP-LSD,
-  and proposal + residual BP-LSD on identical test shards.
-- Add sequential test sampling toward the configured failure target and maximum
-  shot cap, with Wilson intervals and accuracy-first stopping semantics.
+- Run and report the canonical held-out campaign for uniform BP-LSD, soft-prior
+  BP-LSD, and proposal + residual BP-LSD on identical test shards.
+- Stress-test accuracy-compatible hybrids across additional noise ranges and code
+  sizes before treating transfer as established.
 - Report comparable timing components only for accuracy-eligible methods.
 - Treat Willow/temporal work as a separate study: add a hardware-data adapter,
   temporal splits, drift tests, and independent provenance without combining it

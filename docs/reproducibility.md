@@ -103,9 +103,15 @@ A campaign rooted at `artifacts/accuracy-campaign/` publishes:
 | `model/model.json` | Completed model publication and full provenance |
 | `calibration/grid.json` | All evaluated checkpoint/parameter candidates |
 | `calibration/selected.json` | Frozen soft-prior and residual selections |
+| `evaluation/rate-*/batch-*/outcomes.npz` | Immutable paired per-shot outcomes and latency diagnostics |
+| `evaluation/rate-*/batch-*/manifest.json` | Batch coordinates, counts, hashes, and provenance |
+| `evaluation/rate-*/summary.json` | Per-rate statistics, intervals, validity, and stopping reason |
+| `evaluation/progress.json` | Resumable batch-manifest index |
+| `evaluation/manifest.json` | Final complete or deadline-partial publication |
 
-Test shards can be published now, but no final campaign evaluator consumes them
-in the current repository.
+Evaluation verifies the selection, test, model, teacher, checkpoint, and
+calibration chain before decoding. Existing batches are semantically revalidated
+on `--resume` without loading all prior outcome arrays at once.
 
 ## Resuming campaign training
 
@@ -155,6 +161,29 @@ Resume is intentionally rejected when the config, Git commit, code manifest,
 train completion manifest, shard manifests, split, teacher cache, or checkpoint
 does not match. Preserve the exact checkout used to start a long run.
 
+## Resuming held-out evaluation
+
+The first evaluator invocation creates the output publication. To bound a worker
+allocation, stop after a fixed number of new batches:
+
+```bash
+uv run python experiments/17_evaluate_hybrid_decoders.py \
+  --config configs/accuracy_campaign.json \
+  --code artifacts/accuracy-campaign/code \
+  --selection artifacts/accuracy-campaign/pilot/selection.json \
+  --test artifacts/accuracy-campaign/test \
+  --model artifacts/accuracy-campaign/model \
+  --calibration artifacts/accuracy-campaign/calibration \
+  --max-batches-this-run 1 \
+  --out artifacts/accuracy-campaign/evaluation
+```
+
+Continue the same publication by repeating the command with `--resume`. The
+evaluator verifies the frozen inputs, every existing batch manifest and outcome,
+per-rate summaries, and progress coordinates before decoding another batch. Omit
+`--max-batches-this-run` when the process should continue until scientific
+stopping or an externally supplied deadline.
+
 ## Interrupted and failed stages
 
 - **Smoke:** there is no stage-level resume. Keep the failed directory for
@@ -166,6 +195,9 @@ does not match. Preserve the exact checkout used to start a long run.
   before reuse.
 - **Calibration:** `selected.json` marks completion and is never overwritten.
   Use a fresh campaign tree for a different calibration run.
+- **Evaluation:** restart an incomplete or deadline-partial publication with
+  `--resume`. Existing batch hashes, coordinates, outcome semantics, summaries,
+  and source provenance are verified before additional batches are decoded.
 
 Do not repair a hash mismatch by editing the manifest. Regenerate the affected
 stage from its verified parents so provenance remains meaningful.

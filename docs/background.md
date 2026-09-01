@@ -126,13 +126,14 @@ The pipeline responds in three ways:
 The research hypothesis is deliberately conditional: a structural prior may help
 BP-LSD choose better corrections or do less repair work. The experiment must also
 allow the opposite result—that the prior gives no accuracy benefit or adds more
-cost than it removes. This is why the planned final comparison ranks validity and
+cost than it removes. This is why the held-out comparison ranks validity and
 logical block errors before timing.
 
-The current implementation has reached pilot selection, role-separated sampling,
-resumable teacher generation and FNO training, and hybrid calibration. It does not
-yet contain the final held-out evaluator, so calibration output is not evidence
-that either hybrid beats uniform BP-LSD.
+The implementation includes pilot selection, role-separated sampling, resumable
+teacher generation and FNO training, hybrid calibration, and paired held-out
+evaluation. Calibration output alone is not evidence that either hybrid beats
+uniform BP-LSD, and no canonical held-out result is claimed until a campaign is
+run and its artifacts are reported.
 
 ## A separate future question: temporal hardware data
 
