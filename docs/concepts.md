@@ -1,8 +1,10 @@
 # Concepts
 
 This guide builds the minimum vocabulary needed to read the experiment. The
-[README](../README.md) gives the project overview; [Experiment methodology](experiment-methodology.md)
-defines the implemented study precisely.
+[Research background](background.md) explains why the pieces are combined, the
+[README](../README.md) gives the project overview, and
+[Experiment methodology](experiment-methodology.md) defines the implemented study
+precisely.
 
 ## From physical errors to a decoding problem
 

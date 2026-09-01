@@ -1,24 +1,47 @@
 # qLDPC-FNO
 
-Can a neural operator improve quantum-error-correction decoding without ignoring
-the algebraic constraints enforced by a conventional decoder?
+Quantum information is fragile: unwanted interactions can change a physical
+qubit, while directly inspecting an unknown quantum state would destroy the
+information one is trying to protect. Quantum error correction addresses this by
+spreading logical information across many physical qubits and measuring
+parity-like constraints instead of the logical state itself.
 
-This repository is a reproducible research pipeline for that question on the
-canonical `lp(3,7)_16` quantum low-density parity-check (qLDPC) code. The current
-accuracy-first campaign compares:
+Those measurements produce a **syndrome**—a compact fingerprint of which
+constraints were disturbed. Decoding is the classical task of turning that
+fingerprint into a correction. The correction must reproduce the measured
+syndrome and preserve the encoded logical information; merely resembling another
+decoder's bit string is not enough.
+
+Surface-code architectures are the standard local-check reference point, but
+their low encoding rate can make physical-qubit overhead important when many
+logical qubits are needed. qLDPC codes explore a different tradeoff: sparse checks
+with potentially higher encoding rate, usually at the cost of less local
+connectivity. This project studies the cyclic lifted-product code `lp(3,7)_16`
+from the [source-locked qLDPC paper](https://arxiv.org/abs/2603.28627v1), without
+claiming that one code settles the broader architecture question.
+
+The code's repeating length-45 structure makes a Fourier neural operator (FNO) a
+plausible way to learn structured decoder priors. BP-LSD remains the conventional
+decoder: belief propagation uses the sparse check graph, and localized-statistics
+decoding supplies a fallback when message passing is insufficient. The
+accuracy-first hypothesis is not that an FNO should replace those constraints,
+but that it may help BP-LSD by supplying better soft priors or a proposal that
+BP-LSD repairs.
+
+The implemented campaign therefore compares:
 
 1. BP-LSD with a uniform physical-error prior;
 2. BP-LSD with per-qubit soft priors from a noise-conditioned Fourier neural
    operator (FNO); and
 3. a thresholded FNO proposal followed by BP-LSD repair of the residual syndrome.
 
-Development smoke runs exposed an important failure mode: high agreement with
+Development smoke runs exposed the central failure mode: high agreement with
 BP-LSD's correction bits can coexist with failed syndrome checks. Those run
 artifacts are not committed, so a fresh clone cannot audit a particular numeric
 result. The durable lesson is encoded in the pipeline: teacher-bit accuracy is a
 training diagnostic, syndrome validity is reported explicitly, and the planned
-final comparison will count invalid corrections as block failures. Speed
-comparisons come only after those correctness checks.
+final comparison will count invalid corrections as block failures. Speed comes
+only after accuracy and validity.
 
 > **Status:** the smoke pipeline is complete. The accuracy campaign currently
 > implements pilot selection, role-separated data generation, resumable teacher
@@ -27,28 +50,24 @@ comparisons come only after those correctness checks.
 > present, so this repository does not claim that either learned method improves
 > accuracy or latency over uniform BP-LSD.
 
-## Why decoding matters
+## Why this pairing?
 
-Quantum hardware cannot inspect and copy a protected quantum state directly.
-Instead, a quantum error-correcting code repeatedly measures parity-like
-constraints called **stabilizers**. Their outcomes form a **syndrome**: an indirect
-fingerprint of the error, not a unique description of it. A decoder must quickly
-choose a correction that matches that syndrome and preserves the encoded logical
-information.
+Lifted-product checks repeat under cyclic shifts. The ring FNO applies the same
+learned rule at each cyclic position and mixes long-range information through a
+small set of Fourier modes. That structural match makes the model a reasonable
+prior generator, but it does not make the model a decoder by itself: an
+unconstrained thresholded output need not satisfy the syndrome.
 
-qLDPC codes use sparse checks, making them promising for scalable fault-tolerant
-architectures. Their decoding problem remains difficult: many physical error
-patterns share a syndrome, and a correction that looks close to a reference bit
-string can still violate the measured checks or enact a logical error.
+BP-LSD supplies the missing algebraic discipline. It is a strong baseline, but it
+performs iterative graph decoding and may invoke a localized fallback for each
+shot. Whether an FNO prior improves accuracy, reduces decoder work, or only adds
+overhead is an empirical question. This repository measures correctness before
+making any timing comparison.
 
-BP-LSD combines belief propagation with a localized-statistics fallback. An FNO
-learns translation-equivariant maps through Fourier modes; here, it operates on
-the code's cyclic coordinate. The hybrid approaches use the FNO as structured
-prior information or as a proposal, while BP-LSD remains responsible for finding
-a syndrome-consistent correction.
-
-For a more intuitive introduction, see [Concepts](docs/concepts.md). For exact
-experimental definitions, see [Experiment methodology](docs/experiment-methodology.md).
+Read [Research background](docs/background.md) for the full motivation,
+[Concepts](docs/concepts.md) for the vocabulary, and
+[Experiment methodology](docs/experiment-methodology.md) for the exact implemented
+study.
 
 ## Experiment flow
 
