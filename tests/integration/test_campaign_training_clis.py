@@ -5,7 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.campaign.shard_io import load_verified_shards
 
 
 def _run(*arguments: object) -> subprocess.CompletedProcess[str]:
@@ -22,7 +25,7 @@ def _write_config(path: Path) -> None:
         path,
         {
             "campaign_seed": 20260901,
-            "noise_grid": [0.003],
+            "noise_grid": [0.003, 0.005],
             "pilot_shots_per_point": 1,
             "train_shots_cap": 16,
             "calibration_shots_cap": 8,
@@ -47,7 +50,7 @@ def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
         path,
         {
             "pilot_rows": [],
-            "selected_noise_points": [0.003],
+            "selected_noise_points": [0.003, 0.005],
             "source_sha256": {
                 "code_manifest": sha256_file(code_manifest),
                 "config": sha256_file(config),
@@ -76,7 +79,7 @@ def _generate_role(
         "--shots-per-rate",
         shots,
         "--shard-size",
-        8,
+        4,
         "--out",
         out,
     )
@@ -114,6 +117,85 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         out=calibration,
     )
 
+    train = campaign / "train"
+    train_completion_path = train / "manifest.json"
+    train_completion_text = train_completion_path.read_text()
+    train_completion = json.loads(train_completion_text)
+    manifest_relatives = sorted(train_completion["shards"])
+    first_manifest_path = train / manifest_relatives[0]
+    first_manifest_text = first_manifest_path.read_text()
+    first_manifest = json.loads(first_manifest_text)
+
+    first_manifest["sha256"].pop("obs_actual.b8")
+    write_canonical_json(first_manifest_path, first_manifest)
+    train_completion["shards"][manifest_relatives[0]] = sha256_file(first_manifest_path)
+    write_canonical_json(train_completion_path, train_completion)
+    with pytest.raises(ValueError, match="exactly dets.b8, errors.b8, and obs_actual.b8"):
+        load_verified_shards(
+            train,
+            role="train",
+            config_path=config,
+            code_manifest_path=code / "code.json",
+        )
+    first_manifest_path.write_text(first_manifest_text)
+    train_completion_path.write_text(train_completion_text)
+
+    first_manifest = json.loads(first_manifest_text)
+    first_manifest["seed"] += 1
+    write_canonical_json(first_manifest_path, first_manifest)
+    train_completion = json.loads(train_completion_text)
+    train_completion["shards"][manifest_relatives[0]] = sha256_file(first_manifest_path)
+    write_canonical_json(train_completion_path, train_completion)
+    with pytest.raises(ValueError, match="derived seed"):
+        load_verified_shards(
+            train,
+            role="train",
+            config_path=config,
+            code_manifest_path=code / "code.json",
+        )
+    first_manifest_path.write_text(first_manifest_text)
+    train_completion_path.write_text(train_completion_text)
+
+    second_manifest_path = train / manifest_relatives[1]
+    second_manifest_text = second_manifest_path.read_text()
+    second_manifest = json.loads(second_manifest_text)
+    second_manifest["rate_index"] = first_manifest["rate_index"]
+    second_manifest["shard_index"] = first_manifest["shard_index"]
+    second_manifest["seed"] = first_manifest["seed"]
+    write_canonical_json(second_manifest_path, second_manifest)
+    train_completion = json.loads(train_completion_text)
+    train_completion["shards"][manifest_relatives[1]] = sha256_file(second_manifest_path)
+    write_canonical_json(train_completion_path, train_completion)
+    with pytest.raises(ValueError, match="duplicate shard coordinate"):
+        load_verified_shards(
+            train,
+            role="train",
+            config_path=config,
+            code_manifest_path=code / "code.json",
+        )
+    second_manifest_path.write_text(second_manifest_text)
+    train_completion_path.write_text(train_completion_text)
+
+    initialized = _run(
+        "experiments/15_train_conditional_fno.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--train",
+        train,
+        "--initialize-only",
+        "--out",
+        model,
+    )
+    assert initialized.returncode == 0, initialized.stderr
+    initialization = json.loads((model / "resume.json").read_text())
+    assert initialization["status"] == "initialized"
+    assert initialization["checkpoint"] is None
+    assert initialization["teacher_metadata_sha256"] is None
+    assert not (model / "teacher.json").exists()
+    assert not (model / "model.json").exists()
+
     partial = _run(
         "experiments/15_train_conditional_fno.py",
         "--config",
@@ -121,7 +203,8 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         "--code",
         code,
         "--train",
-        campaign / "train",
+        train,
+        "--resume",
         "--max-epochs-this-run",
         1,
         "--out",
@@ -130,6 +213,29 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     assert partial.returncode == 0, partial.stderr
     assert not (model / "model.json").exists()
     resume_metadata = json.loads((model / "resume.json").read_text())
+    assert resume_metadata["status"] == "checkpointed"
+    teacher_path = model / "teacher.json"
+    original_teacher = teacher_path.read_text()
+    teacher_metadata = json.loads(original_teacher)
+    teacher_metadata["positive_counts_by_channel"][0] += 1
+    write_canonical_json(teacher_path, teacher_metadata)
+
+    rejected_teacher = _run(
+        "experiments/15_train_conditional_fno.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--train",
+        train,
+        "--resume",
+        "--out",
+        model,
+    )
+    assert rejected_teacher.returncode != 0
+    assert "teacher metadata SHA-256 mismatch" in rejected_teacher.stderr
+    teacher_path.write_text(original_teacher)
+
     checkpoint = model / str(resume_metadata["checkpoint"])
     original_checkpoint = checkpoint.read_bytes()
     checkpoint.write_bytes(original_checkpoint + b"corrupt")
@@ -141,7 +247,7 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         "--code",
         code,
         "--train",
-        campaign / "train",
+        train,
         "--resume",
         "--out",
         model,
@@ -157,13 +263,16 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         "--code",
         code,
         "--train",
-        campaign / "train",
+        train,
         "--resume",
         "--out",
         model,
     )
     assert resumed.returncode == 0, resumed.stderr
     model_metadata = json.loads((model / "model.json").read_text())
+    completed_resume = json.loads((model / "resume.json").read_text())
+    assert completed_resume["status"] == "complete"
+    assert completed_resume["model_manifest_sha256"] == sha256_file(model / "model.json")
     assert model_metadata["complete"] is True
     assert model_metadata["source_role"] == "train"
     assert set(model_metadata["source_sha256"]) == {
@@ -172,9 +281,20 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         "train_manifest",
         "train_shard_manifests",
     }
-    assert len(model_metadata["source_sha256"]["train_shard_manifests"]) == 2
+    assert len(model_metadata["source_sha256"]["train_shard_manifests"]) == 4
     assert sha256_file(model / "model.pt") == model_metadata["sha256"]
     assert model_metadata["teacher"]["decoder"]["lsd_order"] == 5
+    assert model_metadata["teacher"]["metadata_sha256"] == sha256_file(teacher_path)
+    assert len(model_metadata["checkpoints"]) == 2
+    assert {candidate["epoch"] for candidate in model_metadata["checkpoints"]} == {1, 2}
+    per_rate = model_metadata["split"]["per_rate"]
+    assert {row["error_rate"] for row in per_rate} == {0.003, 0.005}
+    assert all(row["train_shots"] > 0 and row["validation_shots"] > 0 for row in per_rate)
+    assert sum(row["train_shots"] for row in per_rate) == model_metadata["split"]["train_shots"]
+    assert (
+        sum(row["validation_shots"] for row in per_rate)
+        == model_metadata["split"]["validation_shots"]
+    )
 
     calibrated = _run(
         "experiments/16_calibrate_hybrid_priors.py",
@@ -194,8 +314,24 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     assert calibrated.returncode == 0, calibrated.stderr
     grid = json.loads((calibration / "grid.json").read_text())
     selected = json.loads((calibration / "selected.json").read_text())
-    assert len(grid["candidates"]) == 2
-    assert all(set(row) >= {"parameters", "residual", "soft_prior"} for row in grid["candidates"])
+    assert len(grid["candidates"]) == 4
+    assert {row["model_epoch"] for row in grid["candidates"]} == {1, 2}
+    assert all(
+        set(row)
+        >= {
+            "inference_latency_seconds",
+            "logits_sha256",
+            "model_checkpoint",
+            "model_epoch",
+            "parameters",
+            "residual",
+            "soft_prior",
+        }
+        for row in grid["candidates"]
+    )
+    for epoch in (1, 2):
+        epoch_rows = [row for row in grid["candidates"] if row["model_epoch"] == epoch]
+        assert len({row["logits_sha256"] for row in epoch_rows}) == 1
     assert selected["complete"] is True
     assert selected["source_role"] == "calibration"
     assert set(selected["selected"]) == {"residual", "soft_prior"}
@@ -207,8 +343,27 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         "grid",
         "model_manifest",
     }
-    assert len(selected["source_sha256"]["calibration_shard_manifests"]) == 1
+    assert len(selected["source_sha256"]["calibration_shard_manifests"]) == 2
+    assert selected["selection_rule"] == [
+        "has_any_invalid_correction",
+        "block_errors",
+        "nll",
+        "inference_latency_seconds",
+        "model_epoch",
+        "alpha",
+        "beta",
+        "temperature",
+    ]
     for method in ("soft_prior", "residual"):
+        selected_checkpoint = selected["selected"][method]["model_checkpoint"]
+        assert sha256_file(model / selected_checkpoint["path"]) == selected_checkpoint["sha256"]
         assert selected["selected"][method] in [
-            row[method] | {"parameters": row["parameters"]} for row in grid["candidates"]
+            row[method]
+            | {
+                "inference_latency_seconds": row["inference_latency_seconds"],
+                "model_checkpoint": row["model_checkpoint"],
+                "model_epoch": row["model_epoch"],
+                "parameters": row["parameters"],
+            }
+            for row in grid["candidates"]
         ]

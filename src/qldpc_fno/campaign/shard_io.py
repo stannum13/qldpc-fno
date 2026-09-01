@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,8 @@ import numpy as np
 from scipy import sparse
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256
+from qldpc_fno.campaign.config import CampaignConfig
+from qldpc_fno.campaign.seeds import derive_seed
 from qldpc_fno.campaign.shards import validate_campaign_code
 from qldpc_fno.codes.gf2 import logical_x_basis
 from qldpc_fno.stim.b8 import read_b8_rows
@@ -23,6 +26,9 @@ class VerifiedShard:
     start: int
     stop: int
     error_rate: float
+    rate_index: int
+    shard_index: int
+    seed: int
     dimensions: dict[str, int]
 
 
@@ -79,6 +85,82 @@ class VerifiedShardSet:
             rates[positions] = shard.error_rate
         return rates
 
+    def indices_for_rate(self, rate_index: int) -> np.ndarray:
+        """Return global shot indices belonging to one verified noise rate."""
+        batches = [
+            np.arange(shard.start, shard.stop, dtype=np.int64)
+            for shard in self.shards
+            if shard.rate_index == rate_index
+        ]
+        if not batches:
+            raise ValueError(f"campaign shards do not contain rate_index {rate_index}")
+        return np.concatenate(batches)
+
+
+def deterministic_stratified_split(
+    shards: VerifiedShardSet,
+    *,
+    training_seed: int,
+) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
+    """Assign train/validation shots independently within every represented rate."""
+    if type(training_seed) is not int or training_seed < 0:
+        raise ValueError("training_seed must be a non-negative integer")
+    rates = sorted({shard.rate_index for shard in shards.shards})
+    train_batches: list[np.ndarray] = []
+    validation_batches: list[np.ndarray] = []
+    per_rate: list[dict[str, object]] = []
+    for rate_index in rates:
+        indices = shards.indices_for_rate(rate_index)
+        ranked = sorted(
+            indices.tolist(),
+            key=lambda index: hashlib.sha256(
+                f"{training_seed}:{rate_index}:{index}:validation".encode()
+            ).digest(),
+        )
+        validation_count = max(1, indices.size // 4) if indices.size >= 2 else 0
+        validation = np.array(sorted(ranked[:validation_count]), dtype=np.int64)
+        train = np.array(sorted(ranked[validation_count:]), dtype=np.int64)
+        if train.size == 0:
+            raise ValueError(f"rate_index {rate_index} has no fitting shots")
+        train_batches.append(train)
+        if validation.size:
+            validation_batches.append(validation)
+        error_rates = {
+            shard.error_rate for shard in shards.shards if shard.rate_index == rate_index
+        }
+        if len(error_rates) != 1:
+            raise ValueError(f"rate_index {rate_index} has inconsistent error rates")
+        per_rate.append(
+            {
+                "error_rate": error_rates.pop(),
+                "rate_index": rate_index,
+                "total_shots": int(indices.size),
+                "train_shots": int(train.size),
+                "validation_shots": int(validation.size),
+            }
+        )
+    if not validation_batches:
+        raise ValueError("stratified training requires at least one rate with two shots")
+    train_indices = np.concatenate(train_batches)
+    validation_indices = np.concatenate(validation_batches)
+
+    def indices_sha256(values: np.ndarray) -> str:
+        return hashlib.sha256(values.astype("<i8", copy=False).tobytes()).hexdigest()
+
+    metadata: dict[str, object] = {
+        "derivation": {
+            "algorithm": "sha256_rank_within_rate",
+            "payload": "{training_seed}:{rate_index}:{global_index}:validation",
+            "validation_count": "max(1, floor(rate_shots / 4)) when rate_shots >= 2",
+        },
+        "per_rate": per_rate,
+        "train_indices_sha256": indices_sha256(train_indices),
+        "train_shots": int(train_indices.size),
+        "validation_indices_sha256": indices_sha256(validation_indices),
+        "validation_shots": int(validation_indices.size),
+    }
+    return train_indices, validation_indices, metadata
+
 
 def load_campaign_code(
     code_dir: Path,
@@ -119,10 +201,15 @@ def load_verified_shards(
         raise ValueError("completion manifest shard set does not match the role directory")
 
     config_sha256 = sha256_file(config_path)
+    config = CampaignConfig.from_json(config_path)
     code_sha256 = sha256_file(code_manifest_path)
     shards: list[VerifiedShard] = []
     offset = 0
     expected_dimensions: dict[str, int] | None = None
+    coordinates: set[tuple[int, int]] = set()
+    seeds: set[int] = set()
+    rates_by_index: dict[int, float] = {}
+    shard_indices_by_rate: dict[int, set[int]] = {}
     for relative in sorted(declared):
         relative_path = Path(relative)
         if relative_path.is_absolute() or ".." in relative_path.parts:
@@ -132,8 +219,33 @@ def load_verified_shards(
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("role") != role or manifest.get("format") != "b8":
             raise ValueError(f"shard manifest is not a {role} b8 artifact")
-        if manifest.get("path") != str(relative_path.parent):
+        rate_index = manifest.get("rate_index")
+        shard_index = manifest.get("shard_index")
+        seed = manifest.get("seed")
+        if type(rate_index) is not int or rate_index < 0:
+            raise ValueError("shard rate_index must be a non-negative integer")
+        if type(shard_index) is not int or shard_index < 0:
+            raise ValueError("shard shard_index must be a non-negative integer")
+        if type(seed) is not int or seed < 0:
+            raise ValueError("shard seed must be a non-negative integer")
+        coordinate = (rate_index, shard_index)
+        if coordinate in coordinates:
+            raise ValueError(f"duplicate shard coordinate: {coordinate}")
+        coordinates.add(coordinate)
+        if seed in seeds:
+            raise ValueError(f"duplicate shard seed: {seed}")
+        seeds.add(seed)
+        expected_path = Path(f"rate-{rate_index:03d}") / f"shard-{shard_index:05d}"
+        if manifest.get("path") != str(expected_path) or relative_path.parent != expected_path:
             raise ValueError("shard manifest path provenance mismatch")
+        expected_seed = derive_seed(
+            config.campaign_seed,
+            p_index=rate_index,
+            role=role,
+            shard_index=shard_index,
+        )
+        if seed != expected_seed:
+            raise ValueError(f"shard seed does not match the derived seed for {role} {coordinate}")
         shots = int(manifest["shots"])
         if shots <= 0:
             raise ValueError("campaign shards must contain positive shot counts")
@@ -143,6 +255,12 @@ def load_verified_shards(
         if expected_dimensions is not None and dimensions != expected_dimensions:
             raise ValueError("campaign shards have inconsistent dimensions")
         expected_dimensions = dimensions
+        payload_sha256 = manifest.get("sha256")
+        expected_payloads = {"dets.b8", "errors.b8", "obs_actual.b8"}
+        if not isinstance(payload_sha256, dict) or set(payload_sha256) != expected_payloads:
+            raise ValueError(
+                "shard SHA-256 payloads must be exactly dets.b8, errors.b8, and obs_actual.b8"
+            )
         source = manifest.get("source_sha256")
         if not isinstance(source, dict):
             raise TypeError("shard manifest is missing source SHA-256 provenance")
@@ -150,12 +268,16 @@ def load_verified_shards(
             raise ValueError("campaign configuration SHA-256 mismatch in shard provenance")
         if source.get("code_manifest") != code_sha256:
             raise ValueError("code manifest SHA-256 mismatch in shard provenance")
-        for filename, expected in manifest["sha256"].items():
+        for filename, expected in payload_sha256.items():
             verify_sha256(manifest_path.parent / filename, str(expected), label=filename)
         verify_sha256(manifest_path.parent / "model.dem", str(source["dem"]), label="DEM")
         rate = float(manifest["error_rate"])
         if not 0.0 < rate < 0.5:
             raise ValueError("campaign shard error_rate must be between zero and 0.5")
+        previous_rate = rates_by_index.setdefault(rate_index, rate)
+        if previous_rate != rate:
+            raise ValueError(f"rate_index {rate_index} has inconsistent error rates")
+        shard_indices_by_rate.setdefault(rate_index, set()).add(shard_index)
         shards.append(
             VerifiedShard(
                 directory=manifest_path.parent,
@@ -164,8 +286,16 @@ def load_verified_shards(
                 start=offset,
                 stop=offset + shots,
                 error_rate=rate,
+                rate_index=rate_index,
+                shard_index=shard_index,
+                seed=seed,
                 dimensions=dimensions,
             )
         )
         offset += shots
+    if set(rates_by_index) != set(range(len(rates_by_index))):
+        raise ValueError("campaign shard rate indices must be consecutive from zero")
+    for rate_index, shard_indices in shard_indices_by_rate.items():
+        if shard_indices != set(range(len(shard_indices))):
+            raise ValueError(f"shard indices for rate {rate_index} must be consecutive from zero")
     return VerifiedShardSet(root, role, sha256_file(completion_path), tuple(shards))

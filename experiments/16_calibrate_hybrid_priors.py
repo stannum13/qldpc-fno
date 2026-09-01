@@ -7,6 +7,7 @@ import os
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import torch
@@ -23,7 +24,6 @@ from qldpc_fno.training.calibration import (
     CalibrationParameters,
     CalibrationScore,
     calibrated_probabilities,
-    select_calibration,
 )
 
 
@@ -49,8 +49,34 @@ def _score_payload(score: CalibrationScore) -> dict[str, object]:
     }
 
 
-def _selected_payload(score: CalibrationScore) -> dict[str, object]:
-    return {"parameters": asdict(score.parameters), **_score_payload(score)}
+def _selection_key(row: dict[str, object], method: str) -> tuple[object, ...]:
+    score = row[method]
+    parameters = row["parameters"]
+    if not isinstance(score, dict) or not isinstance(parameters, dict):
+        raise TypeError("calibration candidate row is malformed")
+    return (
+        int(int(score["invalid_count"]) != 0),
+        int(score["block_errors"]),
+        float(score["nll"]),
+        float(row["inference_latency_seconds"]),
+        int(row["model_epoch"]),
+        float(parameters["alpha"]),
+        float(parameters["beta"]),
+        float(parameters["temperature"]),
+    )
+
+
+def _selected_payload(row: dict[str, object], method: str) -> dict[str, object]:
+    score = row[method]
+    if not isinstance(score, dict):
+        raise TypeError("calibration candidate score is malformed")
+    return {
+        **score,
+        "inference_latency_seconds": row["inference_latency_seconds"],
+        "model_checkpoint": row["model_checkpoint"],
+        "model_epoch": row["model_epoch"],
+        "parameters": row["parameters"],
+    }
 
 
 def _probability_nll(probabilities: np.ndarray, targets: np.ndarray) -> float:
@@ -146,61 +172,103 @@ def main() -> None:
         raise ValueError("model configuration provenance does not match calibration")
     if model_sources.get("code_manifest") != sha256_file(code_manifest_path):
         raise ValueError("model code provenance does not match calibration")
+    teacher = model_manifest.get("teacher")
+    if not isinstance(teacher, dict):
+        raise TypeError("model manifest is missing teacher provenance")
+    verify_sha256(
+        args.model / "teacher.json",
+        str(teacher["metadata_sha256"]),
+        label="teacher metadata",
+    )
     model_path = args.model / "model.pt"
     verify_sha256(model_path, str(model_manifest["sha256"]), label="model")
-    checkpoint = torch.load(model_path, map_location="cpu", weights_only=True)
-    if checkpoint.get("configuration") != model_manifest.get("configuration"):
+    final_model = torch.load(model_path, map_location="cpu", weights_only=True)
+    if final_model.get("configuration") != model_manifest.get("configuration"):
         raise ValueError("model configuration disagrees with model.json")
-    model = RingFNO(**checkpoint["configuration"])
-    model.load_state_dict(checkpoint["state_dict"])
-    model.requires_grad_(False)
-    model.eval()
+    checkpoint_candidates = model_manifest.get("checkpoints")
+    if not isinstance(checkpoint_candidates, list) or not checkpoint_candidates:
+        raise ValueError("model manifest does not declare epoch checkpoint candidates")
+    candidate_epochs = [int(candidate["epoch"]) for candidate in checkpoint_candidates]
+    if len(set(candidate_epochs)) != len(candidate_epochs):
+        raise ValueError("model manifest declares duplicate checkpoint epochs")
+    expected_identity = {**model_sources, "git_commit": model_manifest["git_commit"]}
 
     shots = shards.shots
-    logits = np.empty((shots, 58, 45), dtype=np.float32)
+    model_inputs = np.empty((shots, 22, 45), dtype=np.float32)
     syndromes = np.empty((shots, 945), dtype=np.uint8)
     actual_errors = np.empty((shots, 2610), dtype=np.uint8)
     actual_observables = np.empty((shots, 744), dtype=np.uint8)
     error_rates = np.empty(shots, dtype=np.float64)
-    with torch.no_grad():
-        for offset in range(0, shots, config.training_batch_size):
-            indices = np.arange(
-                offset, min(offset + config.training_batch_size, shots), dtype=np.int64
-            )
-            syndrome_batch = shards.read("dets.b8", indices)
-            rate_batch = shards.error_rates(indices)
-            fields = to_ring_field(syndrome_batch, channels=21, ell=45)
-            inputs = add_noise_channel(fields, rate_batch)
-            logits[indices] = model(torch.from_numpy(inputs)).numpy()
-            syndromes[indices] = syndrome_batch
-            actual_errors[indices] = shards.read("errors.b8", indices)
-            actual_observables[indices] = shards.read("obs_actual.b8", indices)
-            error_rates[indices] = rate_batch
+    for offset in range(0, shots, config.training_batch_size):
+        indices = np.arange(offset, min(offset + config.training_batch_size, shots), dtype=np.int64)
+        syndrome_batch = shards.read("dets.b8", indices)
+        rate_batch = shards.error_rates(indices)
+        fields = to_ring_field(syndrome_batch, channels=21, ell=45)
+        model_inputs[indices] = add_noise_channel(fields, rate_batch)
+        syndromes[indices] = syndrome_batch
+        actual_errors[indices] = shards.read("errors.b8", indices)
+        actual_observables[indices] = shards.read("obs_actual.b8", indices)
+        error_rates[indices] = rate_batch
 
     rows: list[dict[str, object]] = []
-    soft_scores: list[CalibrationScore] = []
-    residual_scores: list[CalibrationScore] = []
-    for parameters in candidates:
-        soft, residual = _score_candidate(
-            parameters=parameters,
-            logits=logits,
-            syndromes=syndromes,
-            actual_errors=actual_errors,
-            actual_observables=actual_observables,
-            error_rates=error_rates,
-            hx=hx,
-            logical_x=logical_x,
-            batch_size=config.training_batch_size,
+    for candidate in checkpoint_candidates:
+        if not isinstance(candidate, dict):
+            raise TypeError("model checkpoint candidate must be an object")
+        epoch = int(candidate["epoch"])
+        checkpoint_path = args.model / str(candidate["path"])
+        verify_sha256(
+            checkpoint_path,
+            str(candidate["sha256"]),
+            label=f"epoch {epoch} checkpoint",
         )
-        soft_scores.append(soft)
-        residual_scores.append(residual)
-        rows.append(
-            {
-                "parameters": asdict(parameters),
-                "residual": _score_payload(residual),
-                "soft_prior": _score_payload(soft),
-            }
-        )
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        if int(checkpoint.get("epoch", -1)) != epoch:
+            raise ValueError("checkpoint epoch disagrees with model manifest")
+        if (
+            checkpoint.get("identity") != expected_identity
+            or checkpoint.get("split") != model_manifest.get("split")
+            or checkpoint.get("teacher_metadata_sha256") != teacher["metadata_sha256"]
+        ):
+            raise ValueError("checkpoint provenance disagrees with model manifest")
+        model = RingFNO(**model_manifest["configuration"])
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.requires_grad_(False)
+        model.eval()
+        logits = np.empty((shots, 58, 45), dtype=np.float32)
+        inference_started = perf_counter()
+        with torch.no_grad():
+            for offset in range(0, shots, config.training_batch_size):
+                batch = slice(offset, min(offset + config.training_batch_size, shots))
+                logits[batch] = model(torch.from_numpy(model_inputs[batch])).numpy()
+        inference_latency = perf_counter() - inference_started
+        logits_sha256 = _array_sha256(logits)
+
+        for parameters in candidates:
+            soft, residual = _score_candidate(
+                parameters=parameters,
+                logits=logits,
+                syndromes=syndromes,
+                actual_errors=actual_errors,
+                actual_observables=actual_observables,
+                error_rates=error_rates,
+                hx=hx,
+                logical_x=logical_x,
+                batch_size=config.training_batch_size,
+            )
+            rows.append(
+                {
+                    "inference_latency_seconds": inference_latency,
+                    "logits_sha256": logits_sha256,
+                    "model_checkpoint": {
+                        "path": str(candidate["path"]),
+                        "sha256": str(candidate["sha256"]),
+                    },
+                    "model_epoch": epoch,
+                    "parameters": asdict(parameters),
+                    "residual": _score_payload(residual),
+                    "soft_prior": _score_payload(soft),
+                }
+            )
 
     source_sha256: dict[str, object] = {
         "calibration_manifest": shards.manifest_sha256,
@@ -218,7 +286,7 @@ def main() -> None:
             "grid_policy": "fixed_prefix_for_reduced_runs"
             if args.grid_limit
             else "fixed_full_grid",
-            "logits_sha256": _array_sha256(logits),
+            "logit_evaluations": len(checkpoint_candidates),
             "shots": shots,
             "source_role": "calibration",
             "source_sha256": source_sha256,
@@ -232,16 +300,24 @@ def main() -> None:
         {
             "complete": True,
             "selection_rule": [
-                "invalid_count",
+                "has_any_invalid_correction",
                 "block_errors",
                 "nll",
+                "inference_latency_seconds",
+                "model_epoch",
                 "alpha",
                 "beta",
                 "temperature",
             ],
             "selected": {
-                "residual": _selected_payload(select_calibration(residual_scores)),
-                "soft_prior": _selected_payload(select_calibration(soft_scores)),
+                "residual": _selected_payload(
+                    min(rows, key=lambda row: _selection_key(row, "residual")),
+                    "residual",
+                ),
+                "soft_prior": _selected_payload(
+                    min(rows, key=lambda row: _selection_key(row, "soft_prior")),
+                    "soft_prior",
+                ),
             },
             "source_role": "calibration",
             "source_sha256": selected_sources,
