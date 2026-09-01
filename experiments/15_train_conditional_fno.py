@@ -5,7 +5,6 @@ import copy
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +15,7 @@ from torch import nn
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
 from qldpc_fno.campaign.config import CampaignConfig
+from qldpc_fno.campaign.local import resolve_git_commit
 from qldpc_fno.campaign.shard_io import (
     VerifiedShardSet,
     deterministic_stratified_split,
@@ -58,9 +58,7 @@ class _TeacherPreparation:
 
 
 def _git_commit() -> str:
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
-    ).stdout.strip()
+    return resolve_git_commit(Path(__file__).resolve().parents[1])
 
 
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:

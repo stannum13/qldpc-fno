@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,22 @@ def _git(repo: Path, *arguments: str, text: bool = False) -> bytes | str:
         capture_output=True,
         text=text,
     ).stdout
+
+
+def resolve_git_commit(repo: Path) -> str:
+    """Resolve provenance from a validated image binding or Git checkout."""
+    image_commit = os.environ.get("CAMPAIGN_GIT_COMMIT")
+    if image_commit is not None:
+        invalid_character = any(
+            character not in "0123456789abcdef" for character in image_commit
+        )
+        if len(image_commit) != 40 or invalid_character:
+            raise ValueError("CAMPAIGN_GIT_COMMIT must be a full lowercase SHA-1")
+        return image_commit
+    commit = _git(repo, "rev-parse", "HEAD", text=True)
+    if not isinstance(commit, str) or len(commit.strip()) != 40:
+        raise ValueError("Git commit is invalid")
+    return commit.strip()
 
 
 def verify_canonical_checkout(repo: Path, config: Path) -> str:

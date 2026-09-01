@@ -108,6 +108,22 @@ def test_campaign_package_exports_runner_and_store_interfaces() -> None:
     assert campaign.ArtifactStore.__name__ == "ArtifactStore"
 
 
+def test_runner_uses_the_image_bound_commit_without_git_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setenv("CAMPAIGN_GIT_COMMIT", commit)
+
+    assert runner_module._git_commit(Path("/image-without-git")) == commit
+
+
+def test_runner_rejects_an_invalid_image_bound_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CAMPAIGN_GIT_COMMIT", "HEAD; touch /tmp/not-a-commit")
+
+    with pytest.raises(ValueError, match="CAMPAIGN_GIT_COMMIT"):
+        runner_module._git_commit(Path("/image-without-git"))
+
+
 def test_runner_skips_only_verified_stages_and_checkpoints_bounded_units(tmp_path: Path) -> None:
     store = FakeStore()
     store.valid["pilot"] = True

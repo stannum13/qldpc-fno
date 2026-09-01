@@ -19,6 +19,7 @@ from time import monotonic
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
 from qldpc_fno.campaign.config import CampaignConfig
+from qldpc_fno.campaign.local import resolve_git_commit
 from qldpc_fno.campaign.shard_io import load_campaign_code, load_verified_shards
 from qldpc_fno.campaign.storage import (
     ArtifactStore,
@@ -1003,13 +1004,7 @@ def _deadline_finalization_timeout(checkpoint_grace_seconds: float) -> float:
 
 
 def _git_commit(repo: Path) -> str:
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    return resolve_git_commit(repo)
 
 
 def build_campaign_runner(

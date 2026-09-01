@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import json
 import os
-import subprocess
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
@@ -14,6 +13,7 @@ import torch
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
 from qldpc_fno.campaign.config import CampaignConfig
+from qldpc_fno.campaign.local import resolve_git_commit
 from qldpc_fno.campaign.shard_io import (
     load_campaign_code,
     load_verified_shards,
@@ -33,9 +33,7 @@ from qldpc_fno.training.calibration import (
 
 
 def _git_commit() -> str:
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
-    ).stdout.strip()
+    return resolve_git_commit(Path(__file__).resolve().parents[1])
 
 
 def _array_sha256(array: np.ndarray) -> str:
