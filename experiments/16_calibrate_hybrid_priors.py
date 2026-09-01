@@ -28,6 +28,7 @@ from qldpc_fno.training.calibration import (
     CalibrationParameters,
     CalibrationScore,
     calibrated_probabilities,
+    validate_calibration_progress_rows,
 )
 
 
@@ -140,6 +141,8 @@ def main() -> None:
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--grid-limit", type=int)
+    parser.add_argument("--max-work-units-this-run", type=int)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -154,6 +157,13 @@ def main() -> None:
     selected_path = args.out / "selected.json"
     if selected_path.exists():
         raise FileExistsError(f"refusing to overwrite completed calibration {selected_path}")
+    if args.max_work_units_this_run is not None and args.max_work_units_this_run <= 0:
+        raise ValueError("max-work-units-this-run must be positive")
+    progress_path = args.out / "progress.json"
+    if progress_path.exists() and not args.resume:
+        raise FileExistsError(f"calibration progress requires --resume: {progress_path}")
+    if args.resume and not progress_path.is_file():
+        raise FileNotFoundError(f"calibration resume progress is missing: {progress_path}")
 
     code_manifest_path = args.code / "code.json"
     _, hx, _, logical_x = load_campaign_code(args.code)
@@ -211,7 +221,41 @@ def main() -> None:
         raise ValueError("model manifest declares duplicate checkpoint epochs")
     expected_identity = {**model_sources, "git_commit": model_manifest["git_commit"]}
 
+    source_sha256: dict[str, object] = {
+        "calibration_manifest": shards.manifest_sha256,
+        "calibration_shard_manifests": shards.shard_manifest_sha256,
+        "code_manifest": sha256_file(code_manifest_path),
+        "config": sha256_file(args.config),
+        "model_manifest": sha256_file(model_manifest_path),
+    }
+    grid_policy = "fixed_prefix_for_reduced_runs" if args.grid_limit else "fixed_full_grid"
+    total_work_units = len(checkpoint_candidates) * len(candidates)
     shots = shards.shots
+    rows: list[dict[str, object]]
+    if args.resume:
+        progress = json.loads(progress_path.read_text())
+        if not isinstance(progress, dict):
+            raise TypeError("calibration progress must be a JSON object")
+        if (
+            progress.get("source_sha256") != source_sha256
+            or progress.get("grid_policy") != grid_policy
+            or progress.get("total_work_units") != total_work_units
+        ):
+            raise ValueError("calibration progress provenance does not match this run")
+        progress_rows = progress.get("candidates")
+        if progress.get("completed_work_units") != (
+            len(progress_rows) if isinstance(progress_rows, list) else None
+        ):
+            raise ValueError("calibration progress work-unit count is inconsistent")
+        rows = validate_calibration_progress_rows(
+            progress_rows,
+            checkpoint_candidates=checkpoint_candidates,
+            candidates=candidates,
+            shots=shots,
+        )
+    else:
+        rows = []
+
     model_inputs = np.empty((shots, 22, 45), dtype=np.float32)
     syndromes = np.empty((shots, 945), dtype=np.uint8)
     actual_errors = np.empty((shots, 2610), dtype=np.uint8)
@@ -228,10 +272,15 @@ def main() -> None:
         actual_observables[indices] = shards.read("obs_actual.b8", indices)
         error_rates[indices] = rate_batch
 
-    rows: list[dict[str, object]] = []
-    for candidate in checkpoint_candidates:
+    completed_at_start = len(rows)
+    completed_this_run = 0
+    stop_requested = False
+    for checkpoint_index, candidate in enumerate(checkpoint_candidates):
         if not isinstance(candidate, dict):
             raise TypeError("model checkpoint candidate must be an object")
+        first_work_index = checkpoint_index * len(candidates)
+        if first_work_index + len(candidates) <= completed_at_start:
+            continue
         epoch = int(candidate["epoch"])
         checkpoint_path = args.model / str(candidate["path"])
         verify_sha256(
@@ -260,8 +309,37 @@ def main() -> None:
                 logits[batch] = model(torch.from_numpy(model_inputs[batch])).numpy()
         inference_latency = perf_counter() - inference_started
         logits_sha256 = _array_sha256(logits)
+        previous_checkpoint_rows = rows[
+            first_work_index : min(completed_at_start, first_work_index + len(candidates))
+        ]
+        if previous_checkpoint_rows:
+            previous_logits = {
+                row.get("logits_sha256")
+                for row in previous_checkpoint_rows
+                if isinstance(row, dict)
+            }
+            previous_latencies = {
+                row.get("inference_latency_seconds")
+                for row in previous_checkpoint_rows
+                if isinstance(row, dict)
+            }
+            if previous_logits != {logits_sha256} or len(previous_latencies) != 1:
+                raise ValueError("resumed checkpoint inference provenance is inconsistent")
+            stored_latency = next(iter(previous_latencies))
+            if type(stored_latency) not in (int, float) or stored_latency < 0:
+                raise ValueError("resumed checkpoint inference latency is invalid")
+            inference_latency = float(stored_latency)
 
-        for parameters in candidates:
+        for parameter_index, parameters in enumerate(candidates):
+            work_index = first_work_index + parameter_index
+            if work_index < completed_at_start:
+                continue
+            if (
+                args.max_work_units_this_run is not None
+                and completed_this_run >= args.max_work_units_this_run
+            ):
+                stop_requested = True
+                break
             soft, residual = _score_candidate(
                 parameters=parameters,
                 logits=logits,
@@ -287,23 +365,32 @@ def main() -> None:
                     "soft_prior": _score_payload(soft),
                 }
             )
+            completed_this_run += 1
+            progress_temporary = args.out / ".progress.json.tmp"
+            write_canonical_json(
+                progress_temporary,
+                {
+                    "candidates": rows,
+                    "completed_work_units": len(rows),
+                    "grid_policy": grid_policy,
+                    "source_role": "calibration",
+                    "source_sha256": source_sha256,
+                    "total_work_units": total_work_units,
+                },
+            )
+            os.replace(progress_temporary, progress_path)
+        if stop_requested:
+            break
 
-    source_sha256: dict[str, object] = {
-        "calibration_manifest": shards.manifest_sha256,
-        "calibration_shard_manifests": shards.shard_manifest_sha256,
-        "code_manifest": sha256_file(code_manifest_path),
-        "config": sha256_file(args.config),
-        "model_manifest": sha256_file(model_manifest_path),
-    }
+    if len(rows) < total_work_units:
+        return
     grid_path = args.out / "grid.json"
     grid_temporary = args.out / ".grid.json.tmp"
     write_canonical_json(
         grid_temporary,
         {
             "candidates": rows,
-            "grid_policy": "fixed_prefix_for_reduced_runs"
-            if args.grid_limit
-            else "fixed_full_grid",
+            "grid_policy": grid_policy,
             "logit_evaluations": len(checkpoint_candidates),
             "shots": shots,
             "source_role": "calibration",

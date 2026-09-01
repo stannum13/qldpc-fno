@@ -1,7 +1,9 @@
 """Deterministic calibration of FNO correction probabilities."""
 
+import math
+import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
@@ -51,6 +53,94 @@ CALIBRATION_GRID = tuple(
     for beta in (0.0, 0.5, 1.0)
     for temperature in (0.5, 1.0, 2.0, 4.0)
 )
+
+
+def validate_calibration_progress_rows(
+    rows: object,
+    *,
+    checkpoint_candidates: object,
+    candidates: Sequence[CalibrationParameters],
+    shots: int,
+) -> list[dict[str, object]]:
+    """Validate an exact ordered calibration-work prefix before resuming it."""
+    if not isinstance(rows, list):
+        raise TypeError("calibration progress candidates must be a list")
+    if not isinstance(checkpoint_candidates, list) or any(
+        not isinstance(checkpoint, dict) for checkpoint in checkpoint_candidates
+    ):
+        raise TypeError("calibration progress checkpoints are malformed")
+    if type(shots) is not int or shots <= 0:
+        raise ValueError("calibration progress shot count must be positive")
+    if not candidates or len(rows) > len(checkpoint_candidates) * len(candidates):
+        raise ValueError("calibration progress exceeds the declared work grid")
+
+    checkpoint_measurements: dict[int, tuple[str, float]] = {}
+    expected_row_fields = {
+        "inference_latency_seconds",
+        "logits_sha256",
+        "model_checkpoint",
+        "model_epoch",
+        "parameters",
+        "residual",
+        "soft_prior",
+    }
+    for work_index, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) != expected_row_fields:
+            raise ValueError("calibration progress candidate row is malformed")
+        checkpoint_index = work_index // len(candidates)
+        checkpoint = checkpoint_candidates[checkpoint_index]
+        parameters = candidates[work_index % len(candidates)]
+        if (
+            row.get("model_epoch") != int(checkpoint["epoch"])
+            or row.get("model_checkpoint")
+            != {
+                "path": str(checkpoint["path"]),
+                "sha256": str(checkpoint["sha256"]),
+            }
+            or row.get("parameters") != asdict(parameters)
+        ):
+            raise ValueError("calibration progress candidate order is inconsistent")
+
+        digest = row.get("logits_sha256")
+        latency = row.get("inference_latency_seconds")
+        if (
+            not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or type(latency) not in (int, float)
+            or not math.isfinite(latency)
+            or latency < 0
+        ):
+            raise ValueError("calibration progress inference measurement is malformed")
+        measurement = (digest, float(latency))
+        previous = checkpoint_measurements.setdefault(checkpoint_index, measurement)
+        if previous != measurement:
+            raise ValueError("calibration progress checkpoint measurements diverge")
+
+        score_nlls: list[float] = []
+        for method in ("soft_prior", "residual"):
+            score = row.get(method)
+            if not isinstance(score, dict) or set(score) != {
+                "block_errors",
+                "invalid_count",
+                "nll",
+            }:
+                raise ValueError(f"calibration progress {method} score is malformed")
+            invalid_count = score["invalid_count"]
+            block_errors = score["block_errors"]
+            nll = score["nll"]
+            if (
+                type(invalid_count) is not int
+                or type(block_errors) is not int
+                or not 0 <= invalid_count <= block_errors <= shots
+                or type(nll) not in (int, float)
+                or not math.isfinite(nll)
+                or nll < 0
+            ):
+                raise ValueError(f"calibration progress {method} score is invalid")
+            score_nlls.append(float(nll))
+        if score_nlls[0] != score_nlls[1]:
+            raise ValueError("calibration progress method NLL values diverge")
+    return rows
 
 
 def calibrated_probabilities(

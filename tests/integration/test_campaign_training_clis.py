@@ -441,6 +441,29 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     assert "teacher correction cache SHA-256 mismatch" in rejected_corrupted_teacher.stderr
     teacher_corrections_path.write_bytes(teacher_corrections)
 
+    partial_calibration = _run(
+        "experiments/16_calibrate_hybrid_priors.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--calibration",
+        calibration,
+        "--model",
+        model,
+        "--grid-limit",
+        2,
+        "--max-work-units-this-run",
+        1,
+        "--out",
+        calibration,
+    )
+    assert partial_calibration.returncode == 0, partial_calibration.stderr
+    progress = json.loads((calibration / "progress.json").read_text())
+    assert progress["completed_work_units"] == 1
+    assert progress["total_work_units"] == 4
+    assert not (calibration / "selected.json").exists()
+
     calibrated = _run(
         "experiments/16_calibrate_hybrid_priors.py",
         "--config",
@@ -453,6 +476,7 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         model,
         "--grid-limit",
         2,
+        "--resume",
         "--out",
         calibration,
     )
@@ -477,6 +501,7 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     for epoch in (1, 2):
         epoch_rows = [row for row in grid["candidates"] if row["model_epoch"] == epoch]
         assert len({row["logits_sha256"] for row in epoch_rows}) == 1
+        assert len({row["inference_latency_seconds"] for row in epoch_rows}) == 1
     assert selected["complete"] is True
     assert selected["source_role"] == "calibration"
     assert set(selected["selected"]) == {"residual", "soft_prior"}

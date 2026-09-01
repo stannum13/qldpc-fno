@@ -395,6 +395,7 @@ def main() -> None:
     parser.add_argument("--train", type=Path, required=True)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--initialize-only", action="store_true")
+    parser.add_argument("--prepare-teacher-only", action="store_true")
     parser.add_argument("--max-teacher-chunks-this-run", type=int)
     parser.add_argument("--max-epochs-this-run", type=int)
     parser.add_argument("--out", type=Path, required=True)
@@ -405,6 +406,8 @@ def main() -> None:
         raise ValueError("max-epochs-this-run must be positive")
     if args.max_teacher_chunks_this_run is not None and args.max_teacher_chunks_this_run <= 0:
         raise ValueError("max-teacher-chunks-this-run must be positive")
+    if args.initialize_only and args.prepare_teacher_only:
+        raise ValueError("initialize-only and prepare-teacher-only are mutually exclusive")
     code_manifest_path = args.code / "code.json"
     _, hx, _, logical_x = load_campaign_code(args.code)
     shards = load_verified_shards(
@@ -496,6 +499,8 @@ def main() -> None:
         "teacher_progress_sha256": preparation.progress_sha256,
     }
     _write_json_atomic(resume_path, resume)
+    if args.prepare_teacher_only:
+        return
 
     torch.use_deterministic_algorithms(True)
     torch.manual_seed(config.training_seed)

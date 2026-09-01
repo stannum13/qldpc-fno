@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 import pytest
 
@@ -7,7 +9,63 @@ from qldpc_fno.training.calibration import (
     CalibrationScore,
     calibrated_probabilities,
     select_calibration,
+    validate_calibration_progress_rows,
 )
+
+
+def _progress_row(
+    parameters: CalibrationParameters,
+    *,
+    digest: str = "a" * 64,
+    latency: float = 1.25,
+) -> dict[str, object]:
+    return {
+        "inference_latency_seconds": latency,
+        "logits_sha256": digest,
+        "model_checkpoint": {"path": "epoch-0001.pt", "sha256": "b" * 64},
+        "model_epoch": 1,
+        "parameters": {
+            "alpha": parameters.alpha,
+            "beta": parameters.beta,
+            "temperature": parameters.temperature,
+        },
+        "residual": {"block_errors": 2, "invalid_count": 1, "nll": 0.5},
+        "soft_prior": {"block_errors": 1, "invalid_count": 0, "nll": 0.5},
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda rows: rows[0].__setitem__("inference_latency_seconds", np.nan),
+        lambda rows: rows[0].__setitem__("logits_sha256", "not-a-digest"),
+        lambda rows: rows[0]["soft_prior"].__setitem__("unexpected", 1),
+        lambda rows: rows[0]["soft_prior"].__setitem__("block_errors", -1),
+        lambda rows: rows[0]["soft_prior"].__setitem__("invalid_count", 9),
+        lambda rows: rows[0]["soft_prior"].__setitem__("nll", np.inf),
+        lambda rows: rows[0]["soft_prior"].__setitem__("nll", 0.25),
+        lambda rows: rows[1].__setitem__("logits_sha256", "c" * 64),
+        lambda rows: rows[1].__setitem__("inference_latency_seconds", 2.5),
+    ],
+)
+def test_resumed_calibration_rejects_malformed_or_divergent_measurements(
+    mutation: object,
+) -> None:
+    candidates = (
+        CalibrationParameters(0.25, 0.0, 0.5),
+        CalibrationParameters(0.25, 0.0, 1.0),
+    )
+    rows = [_progress_row(candidate) for candidate in candidates]
+    malformed = copy.deepcopy(rows)
+    mutation(malformed)
+
+    with pytest.raises(ValueError, match="calibration progress"):
+        validate_calibration_progress_rows(
+            malformed,
+            checkpoint_candidates=[{"epoch": 1, "path": "epoch-0001.pt", "sha256": "b" * 64}],
+            candidates=candidates,
+            shots=8,
+        )
 
 
 def test_calibrated_probabilities_apply_noise_condition_and_clip() -> None:
