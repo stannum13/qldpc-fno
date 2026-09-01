@@ -356,6 +356,50 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         == model_metadata["split"]["validation_shots"]
     )
 
+    completed_teacher = json.loads(teacher_path.read_text())
+    completed_chunk_manifest_path = model / min(completed_teacher["chunks"])
+    completed_chunk_manifest = json.loads(completed_chunk_manifest_path.read_text())
+    completed_chunk_path = completed_chunk_manifest_path.parent / completed_chunk_manifest["path"]
+    completed_chunk = completed_chunk_path.read_bytes()
+    completed_chunk_path.unlink()
+    rejected_missing_chunk = _run(
+        "experiments/15_train_conditional_fno.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--train",
+        train,
+        "--resume",
+        "--out",
+        model,
+    )
+    assert rejected_missing_chunk.returncode != 0
+    assert "teacher chunk" in rejected_missing_chunk.stderr
+    completed_chunk_path.write_bytes(completed_chunk)
+
+    corrupted_chunk = bytearray(completed_chunk)
+    corrupted_chunk[0] ^= 1
+    completed_chunk_path.write_bytes(corrupted_chunk)
+    rejected_corrupted_chunk = _run(
+        "experiments/16_calibrate_hybrid_priors.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--calibration",
+        calibration,
+        "--model",
+        model,
+        "--grid-limit",
+        2,
+        "--out",
+        calibration,
+    )
+    assert rejected_corrupted_chunk.returncode != 0
+    assert "teacher chunk" in rejected_corrupted_chunk.stderr
+    completed_chunk_path.write_bytes(completed_chunk)
+
     teacher_corrections_path = model / "teacher_corrections.b8"
     teacher_corrections = teacher_corrections_path.read_bytes()
     teacher_corrections_path.unlink()

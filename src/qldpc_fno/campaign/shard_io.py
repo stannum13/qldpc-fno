@@ -184,6 +184,104 @@ def load_campaign_code(
     return metadata, hx, hz, logical_x
 
 
+def verify_teacher_chunk(
+    manifest_path: Path,
+    *,
+    chunk_index: int,
+    start: int,
+    stop: int,
+    source: dict[str, object],
+    decoder: dict[str, object],
+) -> dict[str, object]:
+    """Verify one atomically published teacher chunk and its packed rows."""
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"teacher chunk manifest is missing: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text())
+    if set(manifest) != {
+        "bits_per_shot",
+        "chunk_index",
+        "decoder",
+        "path",
+        "sha256",
+        "shots",
+        "source",
+        "start",
+        "stop",
+    }:
+        raise ValueError("teacher chunk manifest fields do not match the declared schema")
+    integer_fields = ("bits_per_shot", "chunk_index", "shots", "start", "stop")
+    if any(type(manifest.get(field)) is not int for field in integer_fields):
+        raise ValueError("teacher chunk coordinates must be exact integers")
+    if not isinstance(manifest.get("path"), str) or not isinstance(manifest.get("sha256"), str):
+        raise TypeError("teacher chunk path and SHA-256 must be strings")
+    expected = {
+        "bits_per_shot": _TEACHER_BITS_PER_SHOT,
+        "chunk_index": chunk_index,
+        "decoder": decoder,
+        "path": f"chunk-{chunk_index:05d}.b8",
+        "shots": stop - start,
+        "source": source,
+        "start": start,
+        "stop": stop,
+    }
+    for key, value in expected.items():
+        if manifest.get(key) != value:
+            raise ValueError(f"teacher chunk {chunk_index} has mismatched {key}")
+    chunk_path = manifest_path.parent / manifest["path"]
+    if not chunk_path.is_file():
+        raise FileNotFoundError(f"teacher chunk data is missing: {chunk_path}")
+    expected_size = (stop - start) * math.ceil(_TEACHER_BITS_PER_SHOT / 8)
+    if chunk_path.stat().st_size != expected_size:
+        raise ValueError(f"teacher chunk {chunk_index} size mismatch")
+    verify_sha256(chunk_path, manifest["sha256"], label=f"teacher chunk {chunk_index}")
+    return manifest
+
+
+def verify_teacher_chunks(
+    model_dir: Path,
+    *,
+    expected_shots: int,
+    chunk_shots: int,
+    source: dict[str, object],
+    decoder: dict[str, object],
+) -> dict[str, str]:
+    """Verify the exact complete manifest/data set for a packed teacher cache."""
+    if type(expected_shots) is not int or expected_shots <= 0:
+        raise ValueError("expected teacher shots must be a positive integer")
+    if type(chunk_shots) is not int or not 0 < chunk_shots <= 2_048:
+        raise ValueError("teacher chunk_shots must be an integer between 1 and 2048")
+    if not isinstance(source, dict) or not isinstance(decoder, dict):
+        raise TypeError("teacher chunk source and decoder provenance must be objects")
+    chunk_dir = model_dir / "teacher_chunks"
+    expected_count = (expected_shots + chunk_shots - 1) // chunk_shots
+    expected_manifest_names = {
+        f"chunk-{chunk_index:05d}.json" for chunk_index in range(expected_count)
+    }
+    expected_data_names = {f"chunk-{chunk_index:05d}.b8" for chunk_index in range(expected_count)}
+    discovered_manifest_names = {path.name for path in chunk_dir.glob("chunk-*.json")}
+    if discovered_manifest_names != expected_manifest_names:
+        raise ValueError("teacher chunk manifest set is incomplete or contains extras")
+    discovered_data_names = {path.name for path in chunk_dir.glob("chunk-*.b8")}
+    if discovered_data_names != expected_data_names:
+        raise ValueError("teacher chunk data set is incomplete or contains extras")
+
+    chunks: dict[str, str] = {}
+    for chunk_index in range(expected_count):
+        start = chunk_index * chunk_shots
+        stop = min(start + chunk_shots, expected_shots)
+        manifest_path = chunk_dir / f"chunk-{chunk_index:05d}.json"
+        verify_teacher_chunk(
+            manifest_path,
+            chunk_index=chunk_index,
+            start=start,
+            stop=stop,
+            source=source,
+            decoder=decoder,
+        )
+        chunks[str(manifest_path.relative_to(model_dir))] = sha256_file(manifest_path)
+    return chunks
+
+
 def load_verified_teacher_artifact(
     model_dir: Path,
     *,
@@ -239,6 +337,16 @@ def load_verified_teacher_artifact(
         or any(type(count) is not int or count < 0 for count in positive_counts)
     ):
         raise ValueError("teacher positive counts must be 58 non-negative integers")
+
+    verified_chunks = verify_teacher_chunks(
+        model_dir,
+        expected_shots=expected_shots,
+        chunk_shots=chunk_shots,
+        source=metadata["source"],
+        decoder=metadata["decoder"],
+    )
+    if chunks != verified_chunks:
+        raise ValueError("teacher metadata does not declare the exact verified chunks")
 
     cache_path = model_dir / "teacher_corrections.b8"
     if not cache_path.is_file():

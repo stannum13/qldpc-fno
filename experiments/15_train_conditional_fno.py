@@ -22,6 +22,8 @@ from qldpc_fno.campaign.shard_io import (
     load_campaign_code,
     load_verified_shards,
     load_verified_teacher_artifact,
+    verify_teacher_chunk,
+    verify_teacher_chunks,
 )
 from qldpc_fno.data.conditional_fields import add_noise_channel
 from qldpc_fno.data.ring_fields import to_ring_field
@@ -143,17 +145,9 @@ def _prepare_teacher_cache(
             raise ValueError("teacher cache decoder configuration mismatch")
         if metadata.get("chunk_shots") != chunk_shots:
             raise ValueError("teacher chunk cadence does not match training configuration")
-        declared_chunks = metadata["chunks"]
-        if not isinstance(declared_chunks, dict):
+        verified_chunks = metadata["chunks"]
+        if not isinstance(verified_chunks, dict):
             raise TypeError("teacher chunk provenance must be an object")
-        verified_chunks = _verify_teacher_chunks(
-            output,
-            shards=shards,
-            identity=identity,
-            chunk_shots=chunk_shots,
-        )
-        if declared_chunks != verified_chunks:
-            raise ValueError("teacher metadata does not declare the exact verified chunks")
         positives = _teacher_positive_counts(
             cache_path,
             shards=shards,
@@ -189,12 +183,13 @@ def _prepare_teacher_cache(
         stop = min(start + chunk_shots, shards.shots)
         manifest_path = chunk_dir / f"chunk-{chunk_index:05d}.json"
         if manifest_path.exists():
-            _verify_teacher_chunk(
+            verify_teacher_chunk(
                 manifest_path,
                 chunk_index=chunk_index,
                 start=start,
                 stop=stop,
-                identity=identity,
+                source=identity,
+                decoder=_TEACHER_CONFIGURATION,
             )
         else:
             if max_new_chunks is not None and generated >= max_new_chunks:
@@ -239,11 +234,12 @@ def _prepare_teacher_cache(
             shots=shards.shots,
         )
 
-    verified_chunks = _verify_teacher_chunks(
+    verified_chunks = verify_teacher_chunks(
         output,
-        shards=shards,
-        identity=identity,
+        expected_shots=shards.shots,
         chunk_shots=chunk_shots,
+        source=identity,
+        decoder=_TEACHER_CONFIGURATION,
     )
     if chunks != verified_chunks:
         raise ValueError("teacher chunk set changed before final assembly")
@@ -283,84 +279,6 @@ def _prepare_teacher_cache(
         teacher_metadata_sha256=metadata_sha256,
     )
     return _TeacherPreparation(metadata, metadata_sha256, progress_sha256)
-
-
-def _verify_teacher_chunk(
-    manifest_path: Path,
-    *,
-    chunk_index: int,
-    start: int,
-    stop: int,
-    identity: dict[str, object],
-) -> dict[str, object]:
-    manifest = json.loads(manifest_path.read_text())
-    if set(manifest) != {
-        "bits_per_shot",
-        "chunk_index",
-        "decoder",
-        "path",
-        "sha256",
-        "shots",
-        "source",
-        "start",
-        "stop",
-    }:
-        raise ValueError("teacher chunk manifest fields do not match the declared schema")
-    integer_fields = ("bits_per_shot", "chunk_index", "shots", "start", "stop")
-    if any(type(manifest.get(field)) is not int for field in integer_fields):
-        raise ValueError("teacher chunk coordinates must be exact integers")
-    if not isinstance(manifest.get("path"), str) or not isinstance(manifest.get("sha256"), str):
-        raise TypeError("teacher chunk path and SHA-256 must be strings")
-    expected = {
-        "bits_per_shot": _TEACHER_BITS_PER_SHOT,
-        "chunk_index": chunk_index,
-        "decoder": _TEACHER_CONFIGURATION,
-        "path": f"chunk-{chunk_index:05d}.b8",
-        "shots": stop - start,
-        "source": identity,
-        "start": start,
-        "stop": stop,
-    }
-    for key, value in expected.items():
-        if manifest.get(key) != value:
-            raise ValueError(f"teacher chunk {chunk_index} has mismatched {key}")
-    chunk_path = manifest_path.parent / str(manifest["path"])
-    if not chunk_path.is_file():
-        raise FileNotFoundError(f"teacher chunk data is missing: {chunk_path}")
-    expected_size = (stop - start) * ((_TEACHER_BITS_PER_SHOT + 7) // 8)
-    if chunk_path.stat().st_size != expected_size:
-        raise ValueError(f"teacher chunk {chunk_index} size mismatch")
-    verify_sha256(chunk_path, str(manifest["sha256"]), label=f"teacher chunk {chunk_index}")
-    return manifest
-
-
-def _verify_teacher_chunks(
-    output: Path,
-    *,
-    shards: VerifiedShardSet,
-    identity: dict[str, object],
-    chunk_shots: int,
-) -> dict[str, str]:
-    chunk_dir = output / "teacher_chunks"
-    expected_count = (shards.shots + chunk_shots - 1) // chunk_shots
-    expected_names = {f"chunk-{index:05d}.json" for index in range(expected_count)}
-    discovered_names = {path.name for path in chunk_dir.glob("chunk-*.json")}
-    if discovered_names != expected_names:
-        raise ValueError("teacher chunk manifest set is incomplete or contains extras")
-    chunks: dict[str, str] = {}
-    for chunk_index in range(expected_count):
-        start = chunk_index * chunk_shots
-        stop = min(start + chunk_shots, shards.shots)
-        manifest_path = chunk_dir / f"chunk-{chunk_index:05d}.json"
-        _verify_teacher_chunk(
-            manifest_path,
-            chunk_index=chunk_index,
-            start=start,
-            stop=stop,
-            identity=identity,
-        )
-        chunks[str(manifest_path.relative_to(output))] = sha256_file(manifest_path)
-    return chunks
 
 
 def _write_teacher_progress(
