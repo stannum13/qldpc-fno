@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 
 import pytest
+from google.api_core.exceptions import ServiceUnavailable
 
-from qldpc_fno.campaign.storage import LocalArtifactStore, materialize_completion
+from qldpc_fno.campaign.storage import (
+    GCSArtifactStore,
+    LocalArtifactStore,
+    materialize_completion,
+)
 
 
 class RecordingLocalStore(LocalArtifactStore):
@@ -46,6 +51,87 @@ def test_publication_refuses_to_start_after_its_absolute_deadline(tmp_path: Path
 
     assert store.uploaded_keys == []
     assert store.verify_completion("evaluation") is False
+
+
+def test_gcs_request_retry_and_timeout_share_remaining_absolute_budget() -> None:
+    captured: dict[str, object] = {}
+
+    class FailingBlob:
+        def exists(self, **kwargs: object) -> bool:
+            captured.update(kwargs)
+            raise ServiceUnavailable("transient GCS outage")
+
+    class FakeBucket:
+        def blob(self, name: str) -> FailingBlob:
+            captured["name"] = name
+            return FailingBlob()
+
+    class FakeClient:
+        def bucket(self, name: str) -> FakeBucket:
+            captured["bucket"] = name
+            return FakeBucket()
+
+    store = GCSArtifactStore(
+        "campaign-bucket",
+        "campaign-prefix",
+        client=FakeClient(),  # type: ignore[arg-type]
+        monotonic_clock=lambda: 10.0,
+    )
+    with pytest.raises(TimeoutError, match="bounded GCS persistence"):
+        store.exists("inputs/_COMPLETE.json", deadline_monotonic=15.0)
+
+    assert captured["timeout"] == 5.0
+    assert captured["retry"].deadline == 5.0  # type: ignore[union-attr]
+
+
+def test_gcs_recovery_listing_is_paged_bounded_and_does_not_stop_at_a_gap() -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeBlob:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class FakeIterator:
+        def __init__(self, names: list[str], next_page_token: str | None) -> None:
+            self._page = [FakeBlob(name) for name in names]
+            self.next_page_token = next_page_token
+
+        @property
+        def pages(self):
+            yield self._page
+
+    class FakeClient:
+        def bucket(self, name: str) -> str:
+            return name
+
+        def list_blobs(self, bucket: object, **kwargs: object) -> FakeIterator:
+            calls.append({"bucket": bucket, **kwargs})
+            root = "campaign-prefix/training/.recovery/"
+            if kwargs["page_token"] is None:
+                return FakeIterator(
+                    [f"{root}00000001/_COMPLETE.json", f"{root}00000001/artifact.bin"],
+                    "page-2",
+                )
+            return FakeIterator([f"{root}00000003/_COMPLETE.json"], None)
+
+    store = GCSArtifactStore(
+        "campaign-bucket",
+        "campaign-prefix",
+        client=FakeClient(),  # type: ignore[arg-type]
+        monotonic_clock=lambda: 10.0,
+    )
+    with store._deadline_scope(15.0):
+        recoveries = store._recovery_prefixes("training")
+
+    assert recoveries == (
+        "training/.recovery/00000001",
+        "training/.recovery/00000003",
+    )
+    assert [call["page_token"] for call in calls] == [None, "page-2"]
+    assert all(call["page_size"] == 1_000 for call in calls)
+    assert all(call["max_results"] == 1_000 for call in calls)
+    assert all(call["timeout"] == 5.0 for call in calls)
+    assert all(call["retry"].deadline == 5.0 for call in calls)  # type: ignore[union-attr]
 
 
 def test_partial_files_and_corruption_never_verify_as_complete(tmp_path: Path) -> None:

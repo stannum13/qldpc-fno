@@ -20,6 +20,7 @@ from time import monotonic
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
 from qldpc_fno.campaign.config import CampaignConfig
+from qldpc_fno.campaign.inputs import CampaignInputRequest, prepare_campaign_inputs
 from qldpc_fno.campaign.local import resolve_git_commit
 from qldpc_fno.campaign.shard_io import load_campaign_code, load_verified_shards
 from qldpc_fno.campaign.storage import (
@@ -111,7 +112,10 @@ class CampaignRunner:
         while count < 1_000_000:
             prefix = f".checkpoints/{stage.name}/{count:08d}"
             completion_key = f"{prefix}/_COMPLETE.json"
-            if not self._store.exists(completion_key) and not self._store.verify_completion(
+            if not self._store.exists(
+                completion_key,
+                deadline_monotonic=deadline_monotonic,
+            ) and not self._store.verify_completion(
                 prefix,
                 deadline_monotonic=deadline_monotonic,
             ):
@@ -225,7 +229,10 @@ class CampaignRunner:
         deadline_monotonic: float | None,
     ) -> CampaignStatus:
         if self._on_deadline is not None:
-            self._on_deadline(reason, deadline_monotonic)
+            try:
+                self._on_deadline(reason, deadline_monotonic)
+            except (OSError, TimeoutError):
+                pass
         try:
             if stage.directory.is_dir() and self._checkpoint_changed(
                 stage,
@@ -804,7 +811,10 @@ def _publish_partial_summary(
         completion_key = f"{prefix}/_COMPLETE.json"
         if store.verify_completion(prefix, deadline_monotonic=deadline_monotonic):
             continue
-        if store.exists(completion_key):
+        if store.exists(
+            completion_key,
+            deadline_monotonic=deadline_monotonic,
+        ):
             raise ValueError(f"partial summary completion is corrupt: {prefix}")
         if output.exists():
             continue
@@ -849,6 +859,7 @@ class _CampaignCommands:
         command_runner: Callable[[list[str], float | None], None],
         calibration_grid_limit: int | None,
         bootstrap_samples: int,
+        campaign_mode: str = "canonical",
         monotonic_clock: Callable[[], float] = monotonic,
     ) -> None:
         self.config_path = config_path.resolve()
@@ -857,6 +868,7 @@ class _CampaignCommands:
         self.command_runner = command_runner
         self.calibration_grid_limit = calibration_grid_limit
         self.bootstrap_samples = bootstrap_samples
+        self.campaign_mode = campaign_mode
         self.monotonic = monotonic_clock
         self.repo = Path(__file__).resolve().parents[3]
         self.experiments = self.repo / "experiments"
@@ -973,6 +985,8 @@ class _CampaignCommands:
             output,
             "--model",
             self.workspace / "model",
+            "--campaign-mode",
+            self.campaign_mode,
             "--out",
             output,
         ]
@@ -1011,6 +1025,8 @@ class _CampaignCommands:
             self.workspace / "calibration",
             "--bootstrap-samples",
             self.bootstrap_samples,
+            "--campaign-mode",
+            self.campaign_mode,
             "--max-batches-this-run",
             1,
             "--out",
@@ -1050,6 +1066,8 @@ class _CampaignCommands:
             self.workspace / "calibration",
             "--bootstrap-samples",
             self.bootstrap_samples,
+            "--campaign-mode",
+            self.campaign_mode,
             "--deadline-monotonic",
             0,
             "--resume",
@@ -1099,6 +1117,7 @@ def build_campaign_runner(
         command_runner=command_runner,
         calibration_grid_limit=calibration_grid_limit,
         bootstrap_samples=bootstrap_samples,
+        campaign_mode=campaign_mode,
         monotonic_clock=monotonic_clock,
     )
     commit = _git_commit(commands.repo)
@@ -1165,6 +1184,68 @@ def _argument_or_environment(value: str | None, name: str) -> str:
     return result
 
 
+def _input_execution_identity(
+    store_location: str,
+    config: CampaignConfig,
+) -> dict[str, object]:
+    if not store_location.startswith("gs://"):
+        return {"kind": "local", "store": str(Path(store_location).resolve())}
+    environment_names = (
+        "CAMPAIGN_BUCKET",
+        "CAMPAIGN_CLOUD_JOB",
+        "CAMPAIGN_CLOUD_PROJECT",
+        "CAMPAIGN_CLOUD_REGION",
+        "CAMPAIGN_IMAGE",
+        "CAMPAIGN_IMAGE_DIGEST",
+        "CAMPAIGN_FINALIZATION_RESERVE_SECONDS",
+        "CAMPAIGN_OUTER_TIMEOUT_SECONDS",
+        "CAMPAIGN_PREFIX",
+        "CAMPAIGN_SERVICE_ACCOUNT",
+        "CAMPAIGN_WORK_CUTOFF_SECONDS",
+    )
+    values = {name: os.environ.get(name) for name in environment_names}
+    if not all(values.values()):
+        missing = sorted(name for name, value in values.items() if not value)
+        raise ValueError(f"cloud campaign execution identity is incomplete: {missing}")
+    expected_seconds = {
+        "CAMPAIGN_FINALIZATION_RESERVE_SECONDS": config.checkpoint_grace_seconds,
+        "CAMPAIGN_OUTER_TIMEOUT_SECONDS": config.cloud_timeout_seconds,
+        "CAMPAIGN_WORK_CUTOFF_SECONDS": config.cloud_timeout_seconds
+        - config.checkpoint_grace_seconds,
+    }
+    for name, expected in expected_seconds.items():
+        if values[name] != str(expected):
+            raise ValueError(f"cloud campaign execution identity has mismatched {name}")
+    expected_store = f"gs://{values['CAMPAIGN_BUCKET']}/{values['CAMPAIGN_PREFIX']}"
+    if store_location != expected_store:
+        raise ValueError("cloud campaign execution identity has mismatched bucket/prefix/store")
+    digest = values["CAMPAIGN_IMAGE_DIGEST"]
+    image = values["CAMPAIGN_IMAGE"]
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+        or not isinstance(image, str)
+        or not image.endswith(f"@{digest}")
+    ):
+        raise ValueError("cloud campaign execution identity has malformed image digest")
+    return {
+        "bucket": values["CAMPAIGN_BUCKET"],
+        "finalization_reserve_seconds": config.checkpoint_grace_seconds,
+        "image": values["CAMPAIGN_IMAGE"],
+        "image_digest": values["CAMPAIGN_IMAGE_DIGEST"],
+        "job": values["CAMPAIGN_CLOUD_JOB"],
+        "kind": "cloud",
+        "outer_timeout_seconds": config.cloud_timeout_seconds,
+        "prefix": values["CAMPAIGN_PREFIX"],
+        "project": values["CAMPAIGN_CLOUD_PROJECT"],
+        "region": values["CAMPAIGN_CLOUD_REGION"],
+        "service_account": values["CAMPAIGN_SERVICE_ACCOUNT"],
+        "store": store_location,
+        "work_cutoff_seconds": config.cloud_timeout_seconds
+        - config.checkpoint_grace_seconds,
+    }
+
+
 def _status_payload(status: CampaignStatus) -> dict[str, str]:
     """Build terminal status and an injection-safe cloud resume hint when available."""
     payload = {"status": status.value}
@@ -1188,10 +1269,16 @@ def _status_payload(status: CampaignStatus) -> dict[str, str]:
         value = identity[name]
         if not isinstance(value, str) or re.fullmatch(pattern, value) is None:
             raise ValueError(f"{name} is invalid")
+    job = identity["CAMPAIGN_CLOUD_JOB"]
+    assert isinstance(job, str)
+    campaign_id = job.removeprefix("qldpc-fno-")
+    if campaign_id == job or re.fullmatch(r"[a-z][a-z0-9-]{0,30}[a-z0-9]", campaign_id) is None:
+        raise ValueError("CAMPAIGN_CLOUD_JOB does not encode the exact campaign ID")
     payload["resume_command"] = (
-        f"gcloud run jobs execute {identity['CAMPAIGN_CLOUD_JOB']} "
-        f"--region={identity['CAMPAIGN_CLOUD_REGION']} "
-        f"--project={identity['CAMPAIGN_CLOUD_PROJECT']} --async"
+        f"CLOUD_PROJECT={identity['CAMPAIGN_CLOUD_PROJECT']} "
+        f"CLOUD_REGION={identity['CAMPAIGN_CLOUD_REGION']} "
+        f"CAMPAIGN_ID={campaign_id} "
+        "bash scripts/launch_cloud_campaign.sh --execute --resume"
     )
     return payload
 
@@ -1199,7 +1286,9 @@ def _status_payload(status: CampaignStatus) -> dict[str, str]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config")
+    parser.add_argument("--canonical-config")
     parser.add_argument("--code")
+    parser.add_argument("--git-commit")
     parser.add_argument("--workdir")
     parser.add_argument("--store", "--output", dest="store")
     parser.add_argument("--deadline-monotonic", type=float)
@@ -1211,15 +1300,39 @@ def main() -> None:
         default="canonical",
     )
     parser.add_argument("--fail-on-stage-execution", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--stop-after-inputs", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
-    config_path = Path(_argument_or_environment(args.config, "CAMPAIGN_CONFIG"))
-    code_path = Path(_argument_or_environment(args.code, "CAMPAIGN_CODE"))
+    source_config_path = Path(_argument_or_environment(args.config, "CAMPAIGN_CONFIG"))
+    canonical_config_path = Path(
+        _argument_or_environment(args.canonical_config, "CAMPAIGN_CANONICAL_CONFIG")
+    )
+    source_code_path = Path(_argument_or_environment(args.code, "CAMPAIGN_CODE"))
+    git_commit = _argument_or_environment(args.git_commit, "CAMPAIGN_GIT_COMMIT")
     workspace = Path(_argument_or_environment(args.workdir, "CAMPAIGN_WORKDIR"))
     store_location = _argument_or_environment(args.store, "CAMPAIGN_STORE")
-    config = CampaignConfig.from_json(config_path)
+    source_config = CampaignConfig.from_json(source_config_path)
     deadline = args.deadline_monotonic
     if deadline is None:
-        deadline = monotonic() + config.cloud_timeout_seconds
+        deadline = monotonic() + source_config.cloud_timeout_seconds
+    store = open_artifact_store(store_location)
+    prepared = prepare_campaign_inputs(
+        store,
+        workspace,
+        CampaignInputRequest(
+            canonical_config=canonical_config_path,
+            effective_config=source_config_path,
+            code=source_code_path,
+            git_commit=git_commit,
+            campaign_mode=args.campaign_mode,
+            calibration_grid_limit=args.calibration_grid_limit,
+            bootstrap_samples=args.bootstrap_samples,
+            execution_identity=_input_execution_identity(store_location, source_config),
+        ),
+        deadline_monotonic=deadline,
+    )
+    if args.stop_after_inputs:
+        print(json.dumps({"status": "inputs_complete"}, sort_keys=True))
+        return
     command_runner = _default_command_runner
     if args.fail_on_stage_execution:
 
@@ -1228,10 +1341,10 @@ def main() -> None:
             raise RuntimeError(f"completed resume unexpectedly executed stage command: {command}")
 
     runner = build_campaign_runner(
-        config_path=config_path,
-        code_path=code_path,
+        config_path=prepared.config,
+        code_path=prepared.code,
         workspace=workspace,
-        store=open_artifact_store(store_location),
+        store=store,
         calibration_grid_limit=args.calibration_grid_limit,
         bootstrap_samples=args.bootstrap_samples,
         campaign_mode=args.campaign_mode,

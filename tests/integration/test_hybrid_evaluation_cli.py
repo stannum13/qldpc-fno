@@ -116,6 +116,8 @@ def _evaluate(
         calibration,
         "--bootstrap-samples",
         200,
+        "--campaign-mode",
+        "reduced_non_scientific",
         "--out",
         out,
         *extra,
@@ -176,6 +178,8 @@ def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
         model,
         "--grid-limit",
         1,
+        "--campaign-mode",
+        "reduced_non_scientific",
         "--out",
         calibration,
     )
@@ -183,6 +187,72 @@ def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
 
     selected_path = calibration / "selected.json"
     selected_text = selected_path.read_text()
+    canonical_reject = _run(
+        "experiments/17_evaluate_hybrid_decoders.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--selection",
+        selection,
+        "--test",
+        test,
+        "--model",
+        model,
+        "--calibration",
+        calibration,
+        "--bootstrap-samples",
+        10_000,
+        "--out",
+        evaluation,
+    )
+    assert canonical_reject.returncode != 0
+    assert "two-stage policy" in canonical_reject.stderr
+
+    grid_path = calibration / "grid.json"
+    grid_text = grid_path.read_text()
+    impossible_proxy = json.loads(grid_text)
+    impossible_proxy["screening_candidates"][0][
+        "mean_residual_syndrome_weight"
+    ] = 10_000.0
+    write_canonical_json(grid_path, impossible_proxy)
+    selected = json.loads(selected_text)
+    selected["source_sha256"]["grid"] = sha256_file(grid_path)
+    write_canonical_json(selected_path, selected)
+    impossible_proxy_reject = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=evaluation,
+    )
+    assert impossible_proxy_reject.returncode != 0
+    assert "screening grid is inconsistent" in impossible_proxy_reject.stderr
+    grid_path.write_text(grid_text)
+    selected_path.write_text(selected_text)
+
+    incomplete_grid = json.loads(grid_text)
+    incomplete_grid["screening_candidates"].pop()
+    write_canonical_json(grid_path, incomplete_grid)
+    selected = json.loads(selected_text)
+    selected["source_sha256"]["grid"] = sha256_file(grid_path)
+    write_canonical_json(selected_path, selected)
+    incomplete_reject = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=evaluation,
+    )
+    assert incomplete_reject.returncode != 0
+    assert "two-stage policy is malformed" in incomplete_reject.stderr
+    grid_path.write_text(grid_text)
+    selected_path.write_text(selected_text)
+
     selected = json.loads(selected_text)
     selected["source_sha256"]["config"] = "0" * 64
     write_canonical_json(selected_path, selected)

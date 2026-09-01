@@ -9,6 +9,7 @@ import pytest
 
 COMMIT = "0123456789abcdef0123456789abcdef01234567"
 CAMPAIGN_ID = "accuracy-20260901-010203-a1b2c3"
+DIGEST = f"sha256:{'1' * 64}"
 
 
 def _write_executable(path: Path, source: str) -> None:
@@ -53,10 +54,22 @@ else:
         binary_dir / "gcloud",
         """#!/usr/bin/env python3
 import json
+import hashlib
 import os
 import sys
 import tarfile
 from pathlib import Path
+
+DIGEST = "sha256:" + "1" * 64
+
+
+def canonical_bytes(payload):
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\\n").encode()
+
+
+def record(path):
+    data = path.read_bytes()
+    return {"sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
 arguments = sys.argv[1:]
 with Path(os.environ["FAKE_GCLOUD_LOG"]).open("a") as handle:
@@ -68,6 +81,71 @@ if arguments[:2] == ["builds", "submit"]:
         )
 if arguments == ["config", "get-value", "project"]:
     print(os.environ.get("FAKE_GCLOUD_PROJECT", "science-project"))
+    raise SystemExit(0)
+if arguments[:4] == ["artifacts", "docker", "images", "describe"]:
+    print(DIGEST)
+    raise SystemExit(0)
+
+if arguments[:3] == ["storage", "cp", "--recursive"]:
+    destination = Path(arguments[-1]) / "inputs"
+    (destination / "code").mkdir(parents=True)
+    canonical_config = Path(os.environ["FAKE_GIT_ROOT"]) / "configs/accuracy_campaign.json"
+    (destination / "config.json").write_bytes(canonical_config.read_bytes())
+    (destination / "code/code.json").write_bytes(canonical_bytes({"name": "lp_3_7_16"}))
+    image = (
+        "us-central1-docker.pkg.dev/science-project/"
+        f"qldpc-fno-{os.environ['CAMPAIGN_ID']}/accuracy-campaign@{DIGEST}"
+    )
+    identity = {
+        "bucket": f"science-project-{os.environ['CAMPAIGN_ID']}",
+        "finalization_reserve_seconds": 2700,
+        "image": image,
+        "image_digest": DIGEST,
+        "job": f"qldpc-fno-{os.environ['CAMPAIGN_ID']}",
+        "kind": "cloud",
+        "outer_timeout_seconds": 28800,
+        "prefix": f"campaigns/{os.environ['CAMPAIGN_ID']}/{os.environ['FAKE_GIT_COMMIT']}",
+        "project": "science-project",
+        "region": "us-central1",
+        "service_account": (
+            "qfno-abcdef0123456789abcdef01@science-project.iam.gserviceaccount.com"
+        ),
+        "store": (
+            f"gs://science-project-{os.environ['CAMPAIGN_ID']}/campaigns/"
+            f"{os.environ['CAMPAIGN_ID']}/{os.environ['FAKE_GIT_COMMIT']}"
+        ),
+        "work_cutoff_seconds": 26100,
+    }
+    mode = {
+        "canonical_config": "accuracy_campaign.json",
+        "canonical_config_sha256": hashlib.sha256(canonical_config.read_bytes()).hexdigest(),
+        "code_manifest_sha256": record(destination / "code/code.json")["sha256"],
+        "effective_config_sha256": record(destination / "config.json")["sha256"],
+        "execution_controls": {
+            "bootstrap_samples": 10000,
+            "calibration_grid_limit": None,
+        },
+        "execution_identity": identity,
+        "git_commit": os.environ["FAKE_GIT_COMMIT"],
+        "mode": "canonical",
+        "overrides": {},
+        "schema_version": 2,
+        "scientific_claims_permitted": True,
+    }
+    (destination / "run-mode.json").write_bytes(canonical_bytes(mode))
+    files = {
+        relative: record(destination / relative)
+        for relative in ("code/code.json", "config.json", "run-mode.json")
+    }
+    completion = {
+        "deleted": [],
+        "files": files,
+        "prefix": "inputs",
+        "publication_id": "fake-input-publication",
+        "schema_version": 1,
+        "status": "complete",
+    }
+    (destination / "_COMPLETE.json").write_bytes(canonical_bytes(completion))
     raise SystemExit(0)
 
 existing = os.environ.get("FAKE_GCLOUD_EXISTING", "")
@@ -86,11 +164,78 @@ if arguments[:3] == ["storage", "buckets", "describe"]:
         print("NOT_FOUND", file=sys.stderr)
     raise SystemExit(0 if resume or existing == "bucket" else 1)
 if arguments[:3] == ["run", "jobs", "describe"]:
-    if any(argument == "--format=value(metadata.labels.qldpc-fno-identity)" for argument in arguments):
-        print(os.environ["FAKE_JOB_IDENTITY"])
-        raise SystemExit(0)
-    if any(argument == "--format=value(spec.template.spec.template.spec.containers[0].image)" for argument in arguments):
-        print(os.environ["FAKE_JOB_IMAGE"])
+    if "--format=json" in arguments:
+        campaign_id = os.environ["CAMPAIGN_ID"]
+        commit = os.environ["FAKE_GIT_COMMIT"]
+        bucket = f"science-project-{campaign_id}"
+        prefix = f"campaigns/{campaign_id}/{commit}"
+        service_account = os.environ.get(
+            "FAKE_JOB_SERVICE_ACCOUNT",
+            "qfno-abcdef0123456789abcdef01@science-project.iam.gserviceaccount.com",
+        )
+        store = os.environ.get("FAKE_JOB_STORE", f"gs://{bucket}/{prefix}")
+        environment = {
+            "CAMPAIGN_BOOTSTRAP_SAMPLES": "10000",
+            "CAMPAIGN_BUCKET": bucket,
+            "CAMPAIGN_CALIBRATION_GRID_LIMIT": "",
+            "CAMPAIGN_CANONICAL_CONFIG": "/app/configs/accuracy_campaign.json",
+            "CAMPAIGN_CLOUD_JOB": f"qldpc-fno-{campaign_id}",
+            "CAMPAIGN_CLOUD_PROJECT": "science-project",
+            "CAMPAIGN_CLOUD_REGION": "us-central1",
+            "CAMPAIGN_CODE": "/app/campaign-code",
+            "CAMPAIGN_CONFIG": "/app/configs/accuracy_campaign.json",
+            "CAMPAIGN_FINALIZATION_RESERVE_SECONDS": "2700",
+            "CAMPAIGN_GIT_COMMIT": commit,
+            "CAMPAIGN_IMAGE": os.environ["FAKE_JOB_IMAGE"],
+            "CAMPAIGN_IMAGE_DIGEST": DIGEST,
+            "CAMPAIGN_MODE": "canonical",
+            "CAMPAIGN_OUTER_TIMEOUT_SECONDS": "28800",
+            "CAMPAIGN_PREFIX": prefix,
+            "CAMPAIGN_SERVICE_ACCOUNT": (
+                "qfno-abcdef0123456789abcdef01@science-project.iam.gserviceaccount.com"
+            ),
+            "CAMPAIGN_STORE": store,
+            "CAMPAIGN_WORKDIR": "/tmp/qldpc-fno-work",
+            "CAMPAIGN_WORK_CUTOFF_SECONDS": "26100",
+        }
+        payload = {
+            "metadata": {
+                "labels": {
+                    "qldpc-fno-identity": os.environ["FAKE_JOB_IDENTITY"],
+                    "qldpc-fno-mode": "canonical",
+                }
+            },
+            "spec": {
+                "template": {
+                    "spec": {
+                        "parallelism": 1,
+                        "taskCount": 1,
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "env": [
+                                            {"name": name, "value": value}
+                                            for name, value in sorted(environment.items())
+                                        ],
+                                        "image": os.environ["FAKE_JOB_IMAGE"],
+                                        "resources": {
+                                            "limits": {"cpu": "8", "memory": "32Gi"}
+                                        },
+                                    }
+                                ],
+                                "maxRetries": 0,
+                                "serviceAccountName": service_account,
+                                "timeoutSeconds": os.environ.get(
+                                    "FAKE_JOB_TIMEOUT_SECONDS", "28800"
+                                ),
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        print(json.dumps(payload))
         raise SystemExit(0)
     if describe_error:
         print("PERMISSION_DENIED", file=sys.stderr)
@@ -127,7 +272,7 @@ def _launch(
             "FAKE_JOB_IDENTITY": "abcdef0123456789abcdef0123456789abcdef01",
             "FAKE_JOB_IMAGE": (
                 f"us-central1-docker.pkg.dev/science-project/qldpc-fno-{CAMPAIGN_ID}"
-                f"/accuracy-campaign:{COMMIT}"
+                f"/accuracy-campaign@{DIGEST}"
             ),
             "PATH": f"{binary_dir}:{environment['PATH']}",
         }
@@ -169,6 +314,7 @@ def test_dry_run_resolves_every_resource_and_performs_no_mutation(tmp_path: Path
         "timeout": "8h",
         "retries": "0",
         "tasks": "1",
+        "canonical_execution_gate": "blocked_representative_decoder_benchmark",
         "git_commit": COMMIT,
         "service_account": (
             "qfno-abcdef0123456789abcdef01@science-project.iam.gserviceaccount.com"
@@ -181,11 +327,19 @@ def test_dry_run_resolves_every_resource_and_performs_no_mutation(tmp_path: Path
     assert "gcloud builds submit" in result.stdout
     assert "gcloud run jobs create" in result.stdout
     assert "gcloud run jobs execute" in result.stdout
+    assert "CLOUD_PROJECT=science-project" in result.stdout
+    assert f"CAMPAIGN_ID={CAMPAIGN_ID}" in result.stdout
+    assert "launch_cloud_campaign.sh --execute --resume" in result.stdout
     assert "cleanup commands (not executed):" in result.stdout
+    assert "canonical cloud execution is blocked" in result.stdout
 
 
-def test_execute_creates_one_bounded_cpu_job_and_returns_after_submission(tmp_path: Path) -> None:
-    result, calls = _launch(tmp_path, "--execute", "--multi-execution")
+def test_reduced_execute_creates_one_bounded_cpu_job(tmp_path: Path) -> None:
+    result, calls = _launch(tmp_path, "--execute", "--reduced")
+    expected_pinned_image = (
+        f"us-central1-docker.pkg.dev/science-project/qldpc-fno-{CAMPAIGN_ID}"
+        f"/accuracy-campaign@{DIGEST}"
+    )
 
     assert result.returncode == 0, result.stderr
     assert calls[0] == ["config", "get-value", "project"]
@@ -210,12 +364,20 @@ def test_execute_creates_one_bounded_cpu_job_and_returns_after_submission(tmp_pa
     assert "--task-timeout=8h" in create_job
     assert "--max-retries=0" in create_job
     assert "--tasks=1" in create_job
+    assert "--parallelism=1" in create_job
+    assert not any(argument.startswith("--execution-environment") for argument in create_job)
+    assert f"--image={expected_pinned_image}" in create_job
     assert not any(argument.startswith("--gpu") for argument in create_job)
     env_argument = next(argument for argument in create_job if argument.startswith("--set-env-vars="))
     assert f"CAMPAIGN_BUCKET=science-project-{CAMPAIGN_ID}" in env_argument
     assert f"CAMPAIGN_PREFIX=campaigns/{CAMPAIGN_ID}/{COMMIT}" in env_argument
     assert f"CAMPAIGN_GIT_COMMIT={COMMIT}" in env_argument
-    assert "CAMPAIGN_CONFIG=/app/configs/accuracy_campaign.json" in env_argument
+    assert "CAMPAIGN_CONFIG=/app/configs/accuracy_campaign_cloud_reduced.json" in env_argument
+    assert f"CAMPAIGN_IMAGE={expected_pinned_image}" in env_argument
+    assert f"CAMPAIGN_IMAGE_DIGEST={DIGEST}" in env_argument
+    assert "CAMPAIGN_OUTER_TIMEOUT_SECONDS=28800" in env_argument
+    assert "CAMPAIGN_WORK_CUTOFF_SECONDS=26100" in env_argument
+    assert "CAMPAIGN_FINALIZATION_RESERVE_SECONDS=2700" in env_argument
     assert (
         "--service-account=qfno-abcdef0123456789abcdef01@science-project.iam.gserviceaccount.com"
         in create_job
@@ -231,8 +393,8 @@ def test_execute_creates_one_bounded_cpu_job_and_returns_after_submission(tmp_pa
     }
     assert not any("roles/storage.objectAdmin" in argument for call in calls for argument in call)
     execute_job = next(call for call in calls if call[:3] == ["run", "jobs", "execute"])
-    assert "--async" in execute_job
-    assert "--wait" not in execute_job
+    assert "--wait" in execute_job
+    assert "--async" not in execute_job
     assert not any("delete" in call for call in calls)
 
 
@@ -244,6 +406,16 @@ def test_canonical_execute_requires_multi_execution_acknowledgement(tmp_path: Pa
     assert not any("create" in call or call[:2] == ["builds", "submit"] for call in calls)
 
 
+def test_canonical_execute_fails_closed_at_representative_benchmark_gate(
+    tmp_path: Path,
+) -> None:
+    result, calls = _launch(tmp_path, "--execute", "--multi-execution")
+
+    assert result.returncode == 2
+    assert "representative decoder benchmark gate" in result.stderr
+    assert calls == [["config", "get-value", "project"]]
+
+
 def test_resume_verifies_exact_job_identity_and_never_recreates_resources(tmp_path: Path) -> None:
     result, calls = _launch(
         tmp_path,
@@ -252,15 +424,16 @@ def test_resume_verifies_exact_job_identity_and_never_recreates_resources(tmp_pa
         environment_overrides={"FAKE_GCLOUD_RESUME": "1"},
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 2
     assert "mode=resume" in result.stdout
+    assert "representative decoder benchmark gate" in result.stderr
     mutation_calls = [
         call
         for call in calls
         if "describe" not in call and call != ["config", "get-value", "project"]
+        and call[:2] != ["storage", "cp"]
     ]
-    assert [call[:3] for call in mutation_calls] == [["run", "jobs", "execute"]]
-    assert "--async" in mutation_calls[0]
+    assert mutation_calls == []
     assert not any("create" in call or call[:2] == ["builds", "submit"] for call in calls)
 
     mismatched, mismatch_calls = _launch(
@@ -275,6 +448,34 @@ def test_resume_verifies_exact_job_identity_and_never_recreates_resources(tmp_pa
     assert mismatched.returncode == 2
     assert "identity" in mismatched.stderr
     assert not any(call[:3] == ["run", "jobs", "execute"] for call in mismatch_calls)
+
+
+@pytest.mark.parametrize(
+    ("environment", "message"),
+    [
+        ({"FAKE_JOB_STORE": "gs://wrong/store"}, "environment"),
+        (
+            {"FAKE_JOB_SERVICE_ACCOUNT": "wrong@science-project.iam.gserviceaccount.com"},
+            "service_account",
+        ),
+        ({"FAKE_JOB_TIMEOUT_SECONDS": "28799"}, "timeout_seconds"),
+    ],
+)
+def test_resume_rejects_any_meaningful_cloud_job_contract_drift(
+    tmp_path: Path,
+    environment: dict[str, str],
+    message: str,
+) -> None:
+    result, calls = _launch(
+        tmp_path,
+        "--execute",
+        "--resume",
+        environment_overrides={"FAKE_GCLOUD_RESUME": "1", **environment},
+    )
+
+    assert result.returncode == 2
+    assert message in result.stderr
+    assert not any(call[:3] == ["run", "jobs", "execute"] for call in calls)
 
 
 def test_reduced_execute_uses_non_scientific_config_and_waits(tmp_path: Path) -> None:
@@ -318,7 +519,7 @@ def test_execute_refuses_existing_campaign_resources_before_mutation(
     result, calls = _launch(
         tmp_path,
         "--execute",
-        "--multi-execution",
+        "--reduced",
         environment_overrides={"FAKE_GCLOUD_EXISTING": existing},
     )
 
@@ -340,7 +541,7 @@ def test_execute_fails_closed_when_resource_absence_cannot_be_verified(tmp_path:
     result, calls = _launch(
         tmp_path,
         "--execute",
-        "--multi-execution",
+        "--reduced",
         environment_overrides={"FAKE_GCLOUD_DESCRIBE_ERROR": "1"},
     )
 

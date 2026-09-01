@@ -395,6 +395,8 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         model,
         "--grid-limit",
         2,
+        "--campaign-mode",
+        "reduced_non_scientific",
         "--out",
         calibration,
     )
@@ -421,6 +423,24 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     assert "teacher correction cache" in rejected_missing_teacher.stderr
     teacher_corrections_path.write_bytes(teacher_corrections)
 
+    canonical_reduced_control = _run(
+        "experiments/16_calibrate_hybrid_priors.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--calibration",
+        calibration,
+        "--model",
+        model,
+        "--grid-limit",
+        2,
+        "--out",
+        calibration,
+    )
+    assert canonical_reduced_control.returncode != 0
+    assert "canonical calibration cannot reduce" in canonical_reduced_control.stderr
+
     corrupted_teacher = bytearray(teacher_corrections)
     corrupted_teacher[0] ^= 1
     teacher_corrections_path.write_bytes(corrupted_teacher)
@@ -436,6 +456,8 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         model,
         "--grid-limit",
         2,
+        "--campaign-mode",
+        "reduced_non_scientific",
         "--out",
         calibration,
     )
@@ -455,6 +477,8 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         model,
         "--grid-limit",
         2,
+        "--campaign-mode",
+        "reduced_non_scientific",
         "--max-work-units-this-run",
         1,
         "--out",
@@ -487,6 +511,8 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
             model,
             "--grid-limit",
             2,
+            "--campaign-mode",
+            "reduced_non_scientific",
             "--max-work-units-this-run",
             1,
             "--resume",
@@ -510,13 +536,42 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         model,
         "--grid-limit",
         2,
+        "--campaign-mode",
+        "reduced_non_scientific",
         "--max-work-units-this-run",
-        2,
+        1,
         "--resume",
         "--out",
         calibration,
     )
     assert second_partial.returncode == 0, second_partial.stderr
+    transition_progress = json.loads(progress_path.read_text())
+    assert transition_progress["hybrid_candidates"] == []
+    assert transition_progress["shortlists"] is not None
+    transition_progress["shortlists"] = None
+    transition_progress["decode_work_indices"] = None
+    write_canonical_json(progress_path, transition_progress)
+    recovered_transition = _run(
+        "experiments/16_calibrate_hybrid_priors.py",
+        "--config",
+        config,
+        "--code",
+        code,
+        "--calibration",
+        calibration,
+        "--model",
+        model,
+        "--grid-limit",
+        2,
+        "--campaign-mode",
+        "reduced_non_scientific",
+        "--max-work-units-this-run",
+        1,
+        "--resume",
+        "--out",
+        calibration,
+    )
+    assert recovered_transition.returncode == 0, recovered_transition.stderr
     second_progress_text = progress_path.read_text()
     second_progress = json.loads(second_progress_text)
     assert len(second_progress["hybrid_candidates"]) == 1
@@ -535,6 +590,8 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
             model,
             "--grid-limit",
             2,
+            "--campaign-mode",
+            "reduced_non_scientific",
             "--max-work-units-this-run",
             1,
             "--resume",
@@ -558,6 +615,8 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         model,
         "--grid-limit",
         2,
+        "--campaign-mode",
+        "reduced_non_scientific",
         "--resume",
         "--out",
         calibration,

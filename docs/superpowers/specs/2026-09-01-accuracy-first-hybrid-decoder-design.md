@@ -84,9 +84,10 @@ ring positions.
 
 Training labels are the syndrome-valid corrections selected by the pinned BP-LSD
 teacher. Weighted binary cross-entropy remains a diagnostic imitation loss.
-Calibration screens every saved checkpoint and fixed parameter tuple with cheap
-calibration-only NLL/proposal proxies. It independently shortlists four candidates
-per hybrid, decodes their at-most-eight-candidate union on a deterministic
+Calibration screens every saved checkpoint and fixed parameter tuple with
+calibration-only NLL/proposal proxies that make no hybrid decoder calls. It
+independently shortlists four candidates per hybrid, decodes their
+at-most-eight-candidate union on a deterministic
 rate-stratified 512-shot calibration subset, and selects each method only from its
 own shortlist. Final selection prefers no invalid corrections, then fewer hybrid
 block errors, lower NLL, earlier epoch, and fixed parameter order. Measured
@@ -214,12 +215,15 @@ printed but never executed automatically.
 ### Cost and safety boundary
 
 The launcher prints the selected project, region, CPU, memory, timeout, Git commit,
-bucket, and exact command, then requires an explicit `--execute` flag. Canonical
-creation additionally requires `--multi-execution`; the first execution is
-asynchronous. `--resume` requires the exact campaign ID and commit and verifies the
-existing repository, bucket, service account, job identity label, and commit-tagged
-image before executing only that job. The job has an 8-hour hard timeout and cannot
-allocate a GPU. It never deletes pre-existing resources or campaign prefixes.
+bucket, exact planned command, and the canonical benchmark-gate state, then
+requires an explicit `--execute` flag. Reduced non-scientific execution is the only
+Cloud mutation enabled in this revision. Canonical creation additionally requires
+`--multi-execution`, but fails before mutation because the representative decoder
+benchmark gate is closed. `--resume` requires the exact campaign ID and commit,
+verifies immutable inputs plus the complete existing Cloud Run Job contract, and
+then fails before submitting a new execution. The declared job contract has an
+8-hour hard timeout and cannot allocate a GPU. The launcher never deletes
+pre-existing resources or campaign prefixes.
 
 ## Atomic commands and artifacts
 
@@ -303,18 +307,26 @@ model, checkpoint, code, and calibration-shard hashes are part of progress and
 selection provenance. Resume accepts only an exact ordered prefix of this policy;
 any policy or source change is rejected.
 
-The canonical campaign is not claimed to fit one execution. The pre-change
-benchmark proves only that the expensive revised calibration second stage has a
-conservative planning bound near 23 minutes; it does not validate whole-campaign
-speed. Canonical cloud creation therefore requires explicit acknowledgement that
-multiple executions may be necessary, and later executions reuse the same job and
-immutable store through a dedicated resume command.
+Before evaluation, the complete publication is re-derived rather than trusted:
+canonical mode requires all 48 parameters for every declared checkpoint, the two
+shortlists are recomputed independently, decoded rows must equal their exact
+union, and each frozen method must equal its declared lexicographic argmin.
 
-Cloud Run keeps an eight-hour outer task timeout. New scientific work stops at
-7h15m at the latest, reserving at least 45 minutes for a small immutable partial
-summary and, time permitting, checkpoint snapshots. Absolute monotonic deadlines
-are propagated into publication and materialization operations; a partial summary
-is attempted before optional large snapshots.
+The canonical campaign is not claimed to fit one execution. Audit of the
+pre-change benchmark found that one real eight-shot hybrid candidate did not
+finish within a 10m45s diagnostic ceiling; the former 23-minute second-stage
+planning bound is withdrawn. Canonical Cloud creation is therefore fail-closed
+before resource mutation. Resume of an older job verifies the downloaded immutable
+input publication and complete digest-pinned Cloud Run job contract, then also
+fails closed without submitting work. Reopening requires killable per-decoder work
+units and a representative worst-case 8-vCPU benchmark in a reviewed change.
+
+If the canonical gate is reopened, Cloud Run keeps an eight-hour outer task
+timeout. New scientific work stops at 7h15m at the latest, reserving at least 45
+minutes for a small immutable partial summary and, time permitting, checkpoint
+snapshots. Absolute monotonic deadlines are propagated into publication and
+materialization operations; a partial summary is attempted before optional large
+snapshots.
 
 Cloud build input is a Git archive of the exact committed runtime paths, not the
 working tree. The Docker ignore policy is default-deny as defense in depth, and

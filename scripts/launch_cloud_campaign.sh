@@ -64,11 +64,12 @@ done
 (( ! resume || ! reduced )) || die "--resume targets canonical campaigns; omit --reduced"
 (( ! resume || ! multi_execution )) || die "--resume and --multi-execution are mutually exclusive"
 if (( execute && ! reduced && ! resume && ! multi_execution )); then
-  die "canonical execution cannot finish safely in one allocation; pass --multi-execution and plan to resume"
+  die "canonical execution requires explicit --multi-execution acknowledgement before benchmark-gate evaluation"
 fi
 
 command -v git >/dev/null 2>&1 || die "git is required"
 command -v gcloud >/dev/null 2>&1 || die "gcloud is required"
+command -v uv >/dev/null 2>&1 || die "uv is required"
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" \
   || die "launcher must run from a Git checkout"
@@ -101,6 +102,9 @@ project="$(gcloud config get-value project 2>/dev/null)" \
 [[ -n "$project" && "$project" != "(unset)" ]] || die "active gcloud project is empty"
 [[ "$project" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] \
   || die "active gcloud project is not a valid project ID"
+if [[ -n "${CLOUD_PROJECT:-}" && "$project" != "$CLOUD_PROJECT" ]]; then
+  die "active gcloud project does not match CLOUD_PROJECT"
+fi
 
 repository="qldpc-fno-${campaign_id}"
 job="qldpc-fno-${campaign_id}"
@@ -142,15 +146,14 @@ service_account_describe=(
 )
 
 context_archive=""
-temporary_root=""
+temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/qldpc-fno-cloud-context.XXXXXX")"
+cleanup_temporary() {
+  if [[ -n "$temporary_root" && -d "$temporary_root" ]]; then
+    rm -rf -- "$temporary_root"
+  fi
+}
+trap cleanup_temporary EXIT
 if (( ! resume )); then
-  temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/qldpc-fno-cloud-context.XXXXXX")"
-  cleanup_temporary() {
-    if [[ -n "$temporary_root" && -d "$temporary_root" ]]; then
-      rm -rf -- "$temporary_root"
-    fi
-  }
-  trap cleanup_temporary EXIT
   context_archive="$temporary_root/qldpc-fno-${git_commit}.tar.gz"
   build_context_paths=(
     .dockerignore
@@ -199,20 +202,38 @@ grant_bucket_create_access=(
 build_image=(
   gcloud builds submit --tag "$image" "--project=$project" "$context_archive"
 )
-environment_variables="CAMPAIGN_BUCKET=${bucket},CAMPAIGN_PREFIX=${prefix},CAMPAIGN_STORE=${store},CAMPAIGN_CONFIG=${config_path},CAMPAIGN_CODE=/app/campaign-code,CAMPAIGN_WORKDIR=/tmp/qldpc-fno-work,CAMPAIGN_GIT_COMMIT=${git_commit},CAMPAIGN_CLOUD_JOB=${job},CAMPAIGN_CLOUD_REGION=${region},CAMPAIGN_CLOUD_PROJECT=${project}"
-create_job=(
-  gcloud run jobs create "$job" "--image=$image"
-  --cpu=8 --memory=32Gi --task-timeout=8h --max-retries=0 --tasks=1
-  "--service-account=$service_account"
-  "--set-env-vars=$environment_variables"
-  "--labels=qldpc-fno-identity=${resource_digest},qldpc-fno-mode=${campaign_mode}"
+describe_image=(
+  gcloud artifacts docker images describe "$image"
+  "--project=$project" "--format=value(image_summary.digest)"
 )
-if (( reduced )); then
-  create_job+=(
-    "--args=--campaign-mode=reduced_non_scientific,--calibration-grid-limit=1,--bootstrap-samples=100"
+image_digest="sha256:<resolved-after-build>"
+pinned_image=""
+environment_variables=""
+create_job=()
+configure_job_contract() {
+  pinned_image="${image%:*}@${image_digest}"
+  calibration_grid_limit=""
+  bootstrap_samples="10000"
+  if (( reduced )); then
+    calibration_grid_limit="1"
+    bootstrap_samples="100"
+  fi
+  environment_variables="CAMPAIGN_BOOTSTRAP_SAMPLES=${bootstrap_samples},CAMPAIGN_BUCKET=${bucket},CAMPAIGN_CALIBRATION_GRID_LIMIT=${calibration_grid_limit},CAMPAIGN_CANONICAL_CONFIG=/app/configs/accuracy_campaign.json,CAMPAIGN_CLOUD_JOB=${job},CAMPAIGN_CLOUD_PROJECT=${project},CAMPAIGN_CLOUD_REGION=${region},CAMPAIGN_CODE=/app/campaign-code,CAMPAIGN_CONFIG=${config_path},CAMPAIGN_FINALIZATION_RESERVE_SECONDS=2700,CAMPAIGN_GIT_COMMIT=${git_commit},CAMPAIGN_IMAGE=${pinned_image},CAMPAIGN_IMAGE_DIGEST=${image_digest},CAMPAIGN_MODE=${campaign_mode},CAMPAIGN_OUTER_TIMEOUT_SECONDS=28800,CAMPAIGN_PREFIX=${prefix},CAMPAIGN_SERVICE_ACCOUNT=${service_account},CAMPAIGN_STORE=${store},CAMPAIGN_WORKDIR=/tmp/qldpc-fno-work,CAMPAIGN_WORK_CUTOFF_SECONDS=26100"
+  create_job=(
+    gcloud run jobs create "$job" "--image=$pinned_image"
+    --cpu=8 --memory=32Gi --task-timeout=8h --max-retries=0 --tasks=1 --parallelism=1
+    "--service-account=$service_account"
+    "--set-env-vars=$environment_variables"
+    "--labels=qldpc-fno-identity=${resource_digest},qldpc-fno-mode=${campaign_mode}"
   )
-fi
-create_job+=("--region=$region" "--project=$project" --quiet)
+  if (( reduced )); then
+    create_job+=(
+      "--args=--campaign-mode=reduced_non_scientific,--calibration-grid-limit=1,--bootstrap-samples=100"
+    )
+  fi
+  create_job+=("--region=$region" "--project=$project" --quiet)
+}
+configure_job_contract
 execute_job=(
   gcloud run jobs execute "$job" "--region=$region" "--project=$project"
   "$execution_completion"
@@ -247,6 +268,7 @@ echo "project=$project"
 echo "region=$region"
 echo "repository=$repository"
 echo "image=$image"
+echo "pinned_image=$pinned_image"
 echo "bucket=$bucket"
 echo "prefix=$prefix"
 echo "store=$store"
@@ -258,6 +280,11 @@ echo "timeout=8h"
 echo "work_cutoff=7h15m"
 echo "finalization_reserve=45m"
 echo "multi_execution_required=$(( ! reduced ))"
+if (( reduced )); then
+  echo "canonical_execution_gate=not_applicable_reduced_non_scientific"
+else
+  echo "canonical_execution_gate=blocked_representative_decoder_benchmark"
+fi
 echo "retries=0"
 echo "tasks=1"
 echo "git_commit=$git_commit"
@@ -269,11 +296,13 @@ if (( ! resume )); then
   print_command "${grant_bucket_read_access[@]}"
   print_command "${grant_bucket_create_access[@]}"
   print_command "${build_image[@]}"
+  print_command "${describe_image[@]}"
   print_command "${create_job[@]}"
 fi
 print_command "${execute_job[@]}"
 echo "verified resume command:"
-print_command "${execute_job[@]}"
+print_command env "CLOUD_PROJECT=${project}" "CLOUD_REGION=${region}" \
+  "CAMPAIGN_ID=${campaign_id}" bash scripts/launch_cloud_campaign.sh --execute --resume
 echo "cleanup commands (not executed):"
 print_command "${cleanup_job[@]}"
 print_command "${cleanup_bucket_objects[@]}"
@@ -285,7 +314,7 @@ if (( ! execute )); then
   if (( reduced )); then
     echo "dry-run only; pass --execute to create and run the reduced non-scientific job"
   else
-    echo "dry-run only; canonical creation requires --execute --multi-execution"
+    echo "dry-run only; canonical cloud execution is blocked by the representative decoder benchmark gate"
   fi
   exit 0
 fi
@@ -295,20 +324,77 @@ if (( resume )); then
   require_present bucket "$bucket" "${bucket_describe[@]}"
   require_present job "$job" "${job_describe[@]}"
   require_present service-account "$service_account" "${service_account_describe[@]}"
-  job_identity="$(
-    gcloud run jobs describe "$job" "--region=$region" "--project=$project" \
-      "--format=value(metadata.labels.qldpc-fno-identity)"
-  )" || die "cannot read existing campaign job identity"
-  [[ "$job_identity" == "$resource_digest" ]] \
-    || die "existing campaign job identity does not match CAMPAIGN_ID and Git commit"
-  job_image="$(
-    gcloud run jobs describe "$job" "--region=$region" "--project=$project" \
-      "--format=value(spec.template.spec.template.spec.containers[0].image)"
-  )" || die "cannot read existing campaign job image"
-  [[ "$job_image" == "$image" ]] \
-    || die "existing campaign job image does not match the exact Git commit"
-  "${execute_job[@]}"
-  exit 0
+  downloaded_store="$temporary_root/downloaded-store"
+  mkdir -p -- "$downloaded_store"
+  gcloud storage cp --recursive "${store}/inputs" "$downloaded_store" \
+    || die "cannot download existing campaign input publication"
+  stored_identity="$(uv run python -c '
+import json
+import sys
+from pathlib import Path
+
+from qldpc_fno.campaign.inputs import verify_downloaded_cloud_inputs
+
+expected = {
+    "bucket": sys.argv[4],
+    "finalization_reserve_seconds": 2700,
+    "job": sys.argv[5],
+    "kind": "cloud",
+    "outer_timeout_seconds": 28800,
+    "prefix": sys.argv[6],
+    "project": sys.argv[7],
+    "region": sys.argv[8],
+    "service_account": sys.argv[9],
+    "store": sys.argv[10],
+    "work_cutoff_seconds": 26100,
+}
+identity = verify_downloaded_cloud_inputs(
+    Path(sys.argv[1]),
+    Path(sys.argv[2]),
+    git_commit=sys.argv[3],
+    campaign_mode="canonical",
+    calibration_grid_limit=None,
+    bootstrap_samples=10000,
+    expected_execution_identity=expected,
+)
+print(json.dumps(identity, sort_keys=True))
+' "$downloaded_store" "$repo_root/configs/accuracy_campaign.json" "$git_commit" "$bucket" "$job" "$prefix" "$project" "$region" "$service_account" "$store")" \
+    || die "existing campaign input publication failed provenance verification"
+  image_digest="$(printf '%s' "$stored_identity" | uv run python -c 'import json,sys; print(json.load(sys.stdin)["image_digest"])')"
+  configure_job_contract
+  job_contract="$(gcloud run jobs describe "$job" "--region=$region" "--project=$project" --format=json)" \
+    || die "cannot read existing campaign job contract"
+  printf '%s' "$job_contract" | uv run python -c '
+import json
+import sys
+
+from qldpc_fno.campaign.cloud_contract import verify_cloud_job_contract
+
+environment = dict(item.split("=", 1) for item in sys.argv[6].split(","))
+expected = {
+    "args": [],
+    "command": [],
+    "cpu": "8",
+    "env": environment,
+    "execution_environment": "gen2",
+    "identity_label": sys.argv[3],
+    "image": sys.argv[1],
+    "max_retries": 0,
+    "memory": "32Gi",
+    "mode_label": "canonical",
+    "parallelism": 1,
+    "service_account": sys.argv[2],
+    "task_count": 1,
+    "timeout_seconds": 28800,
+}
+verify_cloud_job_contract(json.load(sys.stdin), expected)
+' "$pinned_image" "$service_account" "$resource_digest" "$job" "$store" "$environment_variables" \
+    || die "existing Cloud Run job contract failed exact provenance verification"
+  die "canonical Cloud execution is blocked by the representative decoder benchmark gate"
+fi
+
+if (( ! reduced )); then
+  die "canonical Cloud execution is blocked by the representative decoder benchmark gate"
 fi
 
 require_absent repository "$repository" "${repo_describe[@]}"
@@ -322,5 +408,8 @@ require_absent service-account "$service_account" "${service_account_describe[@]
 "${grant_bucket_read_access[@]}"
 "${grant_bucket_create_access[@]}"
 "${build_image[@]}"
+image_digest="$("${describe_image[@]}")" || die "cannot resolve built image digest"
+[[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || die "built image digest is invalid"
+configure_job_contract
 "${create_job[@]}"
 "${execute_job[@]}"

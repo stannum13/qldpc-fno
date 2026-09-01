@@ -93,7 +93,7 @@ configured Cloud Storage prefix) publishes:
 | Path | Meaning |
 | --- | --- |
 | `inputs/config.json` | Immutable effective campaign configuration |
-| `inputs/run-mode.json` | Git commit, canonical-config hash, mode, and permitted claims |
+| `inputs/run-mode.json` | Git commit, config/code hashes, exact controls, execution identity, mode, and permitted claims |
 | `inputs/code/` | Canonical `Hx`/`Hz`, source metadata, validation, and hashes |
 | `pilot/selection.json` | Pilot rows and deterministic noise-point selection |
 | `pilot/manifest.json` | Pilot completion and shard hashes |
@@ -152,8 +152,10 @@ bash scripts/run_accuracy_campaign.sh --resume
 ```
 
 For Cloud Run, repeat the original clean commit, active project, region, and
-campaign ID. The launcher verifies the existing job and commit-tagged image and
-does not recreate resources:
+campaign ID. The launcher verifies the immutable input publication and the
+existing job's digest-pinned image, literal environment, command/arguments,
+service account, CPU/memory, tasks/parallelism, retry policy, timeout, and
+generation-2 Jobs contract. It does not recreate resources:
 
 ```bash
 CAMPAIGN_ID=accuracy-20260901-a1b2 \
@@ -161,10 +163,13 @@ CLOUD_REGION=us-central1 \
 bash scripts/launch_cloud_campaign.sh --execute --resume
 ```
 
-Canonical Cloud executions are bounded to 8 hours and stop new work by 7 hours
-15 minutes, reserving at least 45 minutes for summary/checkpoint persistence.
-Partial status includes the exact asynchronous `gcloud run jobs execute` command
-for the next allocation.
+The canonical Cloud execution gate is closed because a representative real
+candidate did not complete inside its 10m45s diagnostic ceiling. The command above
+verifies old resources and provenance but refuses to submit an execution. A future
+reviewed change needs killable decoder-unit timeouts and a conservative 8-vCPU
+benchmark before reopening the 8-hour / 7h15m work-cutoff policy. Historical
+partial status points through this verified launcher and never tells an operator
+to bypass provenance checks with a direct execution command.
 
 ## Resuming campaign training
 
@@ -227,6 +232,7 @@ uv run python experiments/17_evaluate_hybrid_decoders.py \
   --test artifacts/accuracy-campaign/test \
   --model artifacts/accuracy-campaign/model \
   --calibration artifacts/accuracy-campaign/calibration \
+  --campaign-mode canonical \
   --max-batches-this-run 1 \
   --out artifacts/accuracy-campaign/evaluation
 ```

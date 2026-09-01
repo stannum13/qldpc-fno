@@ -36,8 +36,15 @@ class FakeStore:
         self.manifests: dict[str, dict[str, object]] = {}
         self.publications: list[str] = []
         self.publication_deadlines: list[float | None] = []
+        self.existence_deadlines: list[float | None] = []
 
-    def exists(self, key: str) -> bool:
+    def exists(
+        self,
+        key: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bool:
+        self.existence_deadlines.append(deadline_monotonic)
         return key in self.manifests
 
     def download(self, key: str, destination: Path) -> None:
@@ -134,7 +141,7 @@ def test_runner_rejects_an_invalid_image_bound_commit(monkeypatch: pytest.Monkey
         runner_module._git_commit(Path("/image-without-git"))
 
 
-def test_partial_cloud_status_includes_exact_async_resume_command(
+def test_partial_cloud_status_includes_verified_launcher_resume_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CAMPAIGN_CLOUD_JOB", "qldpc-fno-accuracy-20260901-a1b2c3")
@@ -143,8 +150,9 @@ def test_partial_cloud_status_includes_exact_async_resume_command(
 
     assert _status_payload(CampaignStatus.PARTIAL_DEADLINE) == {
         "resume_command": (
-            "gcloud run jobs execute qldpc-fno-accuracy-20260901-a1b2c3 "
-            "--region=us-central1 --project=science-project --async"
+            "CLOUD_PROJECT=science-project CLOUD_REGION=us-central1 "
+            "CAMPAIGN_ID=accuracy-20260901-a1b2c3 "
+            "bash scripts/launch_cloud_campaign.sh --execute --resume"
         ),
         "status": "partial_deadline",
     }
@@ -489,7 +497,29 @@ def test_failing_optional_snapshot_does_not_erase_published_partial_status(
 
     assert runner.run(100.0) is CampaignStatus.PARTIAL_DEADLINE
     assert store.verify_completion(".partial-summaries/00000000") is True
-    assert store.verify_completion(".checkpoints/training/00000000") is False
+
+
+def test_failing_partial_summary_store_still_returns_bounded_deadline_status(
+    tmp_path: Path,
+) -> None:
+    store = FakeStore()
+    stage = _stage(tmp_path, "training", FakeAction(StageResult.CHECKPOINTED))
+
+    def failing_summary(reason: str, deadline: float | None) -> None:
+        assert reason == "deadline_before_training_unit"
+        assert deadline == 100.0
+        raise OSError("transient summary publication failure")
+
+    runner = CampaignRunner(
+        store=store,
+        stages=(stage,),
+        checkpoint_grace_seconds=10,
+        monotonic=lambda: 95.0,
+        on_deadline=failing_summary,
+    )
+
+    assert runner.run(100.0) is CampaignStatus.PARTIAL_DEADLINE
+    assert store.verify_completion(".checkpoints/training/00000000") is True
 
 
 def test_training_adapter_separates_teacher_chunk_from_epoch(tmp_path: Path) -> None:
@@ -900,12 +930,25 @@ def test_deadline_summaries_are_versioned_and_do_not_complete_summary_stage(
 ) -> None:
     store = FakeStore()
 
-    first = _publish_partial_summary(store, tmp_path, "abc123", "deadline_before_training_unit")
-    second = _publish_partial_summary(store, tmp_path, "abc123", "deadline_before_training_unit")
+    first = _publish_partial_summary(
+        store,
+        tmp_path,
+        "abc123",
+        "deadline_before_training_unit",
+        deadline_monotonic=100.0,
+    )
+    second = _publish_partial_summary(
+        store,
+        tmp_path,
+        "abc123",
+        "deadline_before_training_unit",
+        deadline_monotonic=100.0,
+    )
 
     assert first == ".partial-summaries/00000000"
     assert second == ".partial-summaries/00000001"
     assert store.publications == [first, second]
+    assert store.existence_deadlines == [100.0, 100.0]
     assert store.verify_completion("summary") is False
 
 

@@ -177,12 +177,21 @@ def main() -> None:
     parser.add_argument("--calibration", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--grid-limit", type=int)
+    parser.add_argument(
+        "--campaign-mode",
+        choices=("canonical", "reduced_non_scientific"),
+        default="canonical",
+    )
     parser.add_argument("--max-work-units-this-run", type=int)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
     config = CampaignConfig.from_json(args.config)
+    if args.campaign_mode == "canonical" and args.grid_limit is not None:
+        raise ValueError("canonical calibration cannot reduce the fixed full grid")
+    if args.campaign_mode == "reduced_non_scientific" and args.grid_limit is None:
+        raise ValueError("reduced calibration requires an explicit grid-limit")
     candidates = CALIBRATION_GRID
     if args.grid_limit is not None:
         if args.grid_limit <= 0 or args.grid_limit > len(CALIBRATION_GRID):
@@ -264,7 +273,11 @@ def main() -> None:
         "config": sha256_file(args.config),
         "model_manifest": sha256_file(model_manifest_path),
     }
-    grid_policy = "fixed_prefix_for_reduced_runs" if args.grid_limit else "fixed_full_grid"
+    grid_policy = (
+        "fixed_prefix_for_reduced_runs"
+        if args.campaign_mode == "reduced_non_scientific"
+        else "fixed_full_grid"
+    )
     shots = shards.shots
     rates = sorted({shard.rate_index for shard in shards.shards})
     decode_indices, decode_subset = deterministic_calibration_subset(
@@ -371,9 +384,8 @@ def main() -> None:
                 raise ValueError("calibration progress checkpoint measurements diverge")
         raw_shortlists = progress.get("shortlists")
         raw_decode_work = progress.get("decode_work_indices")
-        screening_complete = len(screening_rows) == len(checkpoint_candidates) * len(candidates)
         if raw_shortlists is None or raw_decode_work is None:
-            if raw_shortlists is not None or raw_decode_work is not None or screening_complete:
+            if raw_shortlists is not None or raw_decode_work is not None:
                 raise ValueError("calibration progress shortlist transition is inconsistent")
             if hybrid_rows:
                 raise ValueError("calibration progress decoded before screening completed")

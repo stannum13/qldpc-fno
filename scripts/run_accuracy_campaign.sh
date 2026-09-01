@@ -113,11 +113,9 @@ cleanup() {
 trap cleanup EXIT
 
 requested_mode="canonical"
-requested_bootstrap=10000
 if [[ "$reduced" == "1" ]]; then
   git_commit="$(git rev-parse HEAD)"
   requested_mode="reduced_non_scientific"
-  requested_bootstrap="$bootstrap_samples"
   echo "NON-SCIENTIFIC REDUCED CAMPAIGN: execution coverage only; do not report these measurements." >&2
 else
   git_commit="$(uv run python -c '
@@ -130,182 +128,22 @@ print(verify_canonical_checkout(Path(sys.argv[1]), Path(sys.argv[2])))
 ' "$repo_root" "$canonical_config")"
 fi
 
-input_state="$(uv run python -c '
-import sys
-from pathlib import Path
-
-from qldpc_fno.campaign.storage import LocalArtifactStore
-
-try:
-    store = LocalArtifactStore(Path(sys.argv[1]))
-    if store.verify_completion("inputs"):
-        print("verified")
-    else:
-        established = store.exists("inputs/_COMPLETE.json")
-        for index in range(1_000_000):
-            key = f"inputs/.recovery/{index:08d}/_COMPLETE.json"
-            if not store.exists(key):
-                break
-            established = True
-        execution_state = any(path.name != "inputs" for path in store.root.iterdir())
-        print("corrupt" if established or execution_state else "unpublished")
-except (OSError, TypeError, ValueError):
-    print("corrupt")
-' "$output")"
-
-if [[ "$input_state" == "corrupt" ]]; then
-  echo "established campaign input publication is corrupt; refusing unsafe recovery" >&2
-  exit 2
-fi
-if [[ "$input_state" == "unpublished" ]]; then
-  input_staging="$temporary_root/inputs"
-  mkdir -p -- "$input_staging"
-  effective_staging="$input_staging/config.json"
-  code_staging="$input_staging/code"
-  mode_staging="$input_staging/run-mode.json"
-  if [[ "$reduced" == "1" ]]; then
-    uv run python -c '
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-from qldpc_fno.artifacts import write_canonical_json
-
-source = Path(sys.argv[1])
-effective = Path(sys.argv[2])
-mode_path = Path(sys.argv[3])
-commit = sys.argv[4]
-pilot, train, calibration, test, epochs, candidates, bootstrap = map(int, sys.argv[5:])
-payload = json.loads(source.read_text())
-overrides = {
-    "pilot_shots_per_point": pilot,
-    "train_shots_cap": train,
-    "calibration_shots_cap": calibration,
-    "calibration_decode_shots_cap": calibration,
-    "calibration_shortlist_per_method": min(candidates, 4),
-    "test_batch_shots": test,
-    "max_test_shots_per_point": test,
-    "target_failures": test,
-    "training_epochs": epochs,
-}
-payload.update(overrides)
-write_canonical_json(effective, payload)
-write_canonical_json(
-    mode_path,
-    {
-        "canonical_config": str(source.resolve()),
-        "canonical_config_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-        "effective_config_sha256": hashlib.sha256(effective.read_bytes()).hexdigest(),
-        "execution_controls": {
-            "bootstrap_samples": bootstrap,
-            "calibration_candidates": candidates,
-        },
-        "git_commit": commit,
-        "mode": "reduced_non_scientific",
-        "overrides": overrides,
-        "scientific_claims_permitted": False,
-    },
-)
-' "$canonical_config" "$effective_staging" "$mode_staging" "$git_commit" "$pilot_shots" "$train_shots" "$calibration_shots" "$test_shots" "$epochs" "$calibration_candidates" "$bootstrap_samples"
-  else
-    /bin/cp -- "$canonical_config" "$effective_staging"
-    uv run python -c '
-import hashlib
-import sys
-from pathlib import Path
-
-from qldpc_fno.artifacts import write_canonical_json
-
-source = Path(sys.argv[1])
-effective = Path(sys.argv[2])
-write_canonical_json(
-    Path(sys.argv[3]),
-    {
-        "canonical_config": str(source.resolve()),
-        "canonical_config_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
-        "effective_config_sha256": hashlib.sha256(effective.read_bytes()).hexdigest(),
-        "execution_controls": {"bootstrap_samples": 10000},
-        "git_commit": sys.argv[4],
-        "mode": "canonical",
-        "overrides": {},
-        "scientific_claims_permitted": True,
-    },
-)
-' "$canonical_config" "$effective_staging" "$mode_staging" "$git_commit"
-  fi
-  uv run python experiments/01_build_lp_codes.py --out "$code_staging"
-  uv run python experiments/02_validate_lp_codes.py --code "$code_staging"
+bootstrap_root="$temporary_root/bootstrap"
+mkdir -p -- "$bootstrap_root"
+effective_config="$bootstrap_root/config.json"
+code="$bootstrap_root/code"
+if [[ "$reduced" == "1" ]]; then
   uv run python -c '
-import sys
-from pathlib import Path
-
-from qldpc_fno.campaign.storage import LocalArtifactStore
-
-LocalArtifactStore(Path(sys.argv[1])).publish_directory(Path(sys.argv[2]), "inputs")
-' "$output" "$input_staging"
-fi
-
-verified_inputs="$temporary_root/verified-inputs"
-uv run python -c '
-import sys
-from pathlib import Path
-
-from qldpc_fno.campaign.storage import LocalArtifactStore, materialize_completion
-
-materialize_completion(
-    LocalArtifactStore(Path(sys.argv[1])),
-    "inputs",
-    Path(sys.argv[2]),
-)
-' "$output" "$verified_inputs"
-
-effective_config="$verified_inputs/config.json"
-code="$verified_inputs/code"
-uv run python -c '
-import hashlib
 import json
 import sys
 from pathlib import Path
 
-from qldpc_fno.campaign.config import CampaignConfig
-root = Path(sys.argv[1])
-canonical = Path(sys.argv[2])
-requested_mode = sys.argv[3]
-commit = sys.argv[4]
-pilot, train, calibration, test, epochs, candidates, bootstrap = map(int, sys.argv[5:])
-effective = root / "config.json"
-mode_path = root / "run-mode.json"
-mode = json.loads(mode_path.read_text())
-expected_keys = {
-    "canonical_config",
-    "canonical_config_sha256",
-    "effective_config_sha256",
-    "execution_controls",
-    "git_commit",
-    "mode",
-    "overrides",
-    "scientific_claims_permitted",
-}
-if set(mode) != expected_keys:
-    raise ValueError("campaign mode manifest schema is invalid")
-if mode["mode"] != requested_mode or mode["git_commit"] != commit:
-    raise ValueError("resume mode or Git commit does not match the original campaign")
-canonical_digest = hashlib.sha256(canonical.read_bytes()).hexdigest()
-effective_digest = hashlib.sha256(effective.read_bytes()).hexdigest()
-if mode["canonical_config"] != str(canonical.resolve()):
-    raise ValueError("campaign is not bound to the committed canonical configuration")
-if mode["canonical_config_sha256"] != canonical_digest:
-    raise ValueError("committed canonical configuration changed since campaign creation")
-if mode["effective_config_sha256"] != effective_digest:
-    raise ValueError("effective campaign configuration failed SHA-256 verification")
-if requested_mode == "canonical":
-    expected_overrides = {}
-    expected_controls = {"bootstrap_samples": 10000}
-    if effective_digest != canonical_digest or mode["scientific_claims_permitted"] is not True:
-        raise ValueError("canonical campaign inputs differ from committed policy")
-else:
-    expected_overrides = {
+from qldpc_fno.artifacts import write_canonical_json
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+pilot, train, calibration, test, epochs, candidates = map(int, sys.argv[3:])
+payload.update(
+    {
         "pilot_shots_per_point": pilot,
         "train_shots_cap": train,
         "calibration_shots_cap": calibration,
@@ -316,27 +154,22 @@ else:
         "target_failures": test,
         "training_epochs": epochs,
     }
-    expected_controls = {
-        "bootstrap_samples": bootstrap,
-        "calibration_candidates": candidates,
-    }
-    if mode["scientific_claims_permitted"] is not False:
-        raise ValueError("reduced campaign cannot permit scientific claims")
-if mode["overrides"] != expected_overrides or mode["execution_controls"] != expected_controls:
-    raise ValueError("resume controls do not match the original campaign")
-CampaignConfig.from_json(effective)
-' "$verified_inputs" "$canonical_config" "$requested_mode" "$git_commit" "$pilot_shots" "$train_shots" "$calibration_shots" "$test_shots" "$epochs" "$calibration_candidates" "$requested_bootstrap"
-
-if [[ "$stop_after_inputs" == "1" ]]; then
-  echo "campaign inputs published and verified; stopping before stage execution"
-  exit 0
+)
+write_canonical_json(Path(sys.argv[2]), payload)
+' "$canonical_config" "$effective_config" "$pilot_shots" "$train_shots" "$calibration_shots" "$test_shots" "$epochs" "$calibration_candidates"
+else
+  /bin/cp -- "$canonical_config" "$effective_config"
 fi
+uv run python experiments/01_build_lp_codes.py --out "$code"
+uv run python experiments/02_validate_lp_codes.py --code "$code"
 
 workdir="$temporary_root/work"
 runner=(
   uv run python -c 'from qldpc_fno.campaign.runner import main; main()'
   --config "$effective_config"
+  --canonical-config "$canonical_config"
   --code "$code"
+  --git-commit "$git_commit"
   --workdir "$workdir"
   --store "$output"
   --campaign-mode "$requested_mode"
@@ -350,7 +183,14 @@ fi
 if [[ "$stage_execution_guard" == "1" ]]; then
   runner+=(--fail-on-stage-execution)
 fi
-runner_output="$("${runner[@]}")"
+if [[ "$stop_after_inputs" == "1" ]]; then
+  runner+=(--stop-after-inputs)
+fi
+runner_stdout="$temporary_root/runner.stdout"
+if ! "${runner[@]}" >"$runner_stdout"; then
+  exit 2
+fi
+runner_output="$(<"$runner_stdout")"
 echo "$runner_output"
 runner_status="$(printf '%s\n' "$runner_output" | uv run python -c '
 import json
@@ -359,7 +199,9 @@ import sys
 lines = [line for line in sys.stdin.read().splitlines() if line]
 print(json.loads(lines[-1])["status"])
 ')"
-if [[ "$runner_status" == "complete" ]]; then
+if [[ "$runner_status" == "inputs_complete" ]]; then
+  echo "campaign inputs published and verified; stopping before stage execution"
+elif [[ "$runner_status" == "complete" ]]; then
   echo "accuracy campaign complete: $output"
 elif [[ "$runner_status" == "partial_deadline" ]]; then
   echo "accuracy campaign paused at deadline and is resumable: $output"

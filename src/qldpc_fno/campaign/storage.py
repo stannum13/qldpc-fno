@@ -13,7 +13,9 @@ from pathlib import Path, PurePosixPath
 from time import monotonic
 from typing import Protocol, runtime_checkable
 
+from google.api_core.exceptions import GoogleAPICallError, RetryError
 from google.cloud import storage as google_storage
+from google.cloud.storage.retry import DEFAULT_RETRY
 
 from qldpc_fno.artifacts import sha256_file, write_canonical_json
 
@@ -66,7 +68,12 @@ def _source_records(source: Path) -> tuple[dict[str, dict[str, object]], dict[st
 class ArtifactStore(Protocol):
     """Storage operations required by the resumable campaign runner."""
 
-    def exists(self, key: str) -> bool: ...
+    def exists(
+        self,
+        key: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bool: ...
 
     def download(self, key: str, destination: Path) -> None: ...
 
@@ -95,7 +102,12 @@ class ArtifactStore(Protocol):
 class _PublishingStore:
     """Backend-independent completion-manifest-last publication logic."""
 
-    def exists(self, key: str) -> bool:
+    def exists(
+        self,
+        key: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bool:
         raise NotImplementedError
 
     def download(self, key: str, destination: Path) -> None:
@@ -355,9 +367,14 @@ class LocalArtifactStore(_PublishingStore):
                 result.append(f"{prefix}/.recovery/{generation.name}")
         return tuple(result)
 
-    def exists(self, key: str) -> bool:
-        self._remaining_timeout()
-        return self._path(key).is_file()
+    def exists(
+        self,
+        key: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bool:
+        with self._deadline_scope(deadline_monotonic):
+            return self._path(key).is_file()
 
     def download(self, key: str, destination: Path) -> None:
         self._remaining_timeout()
@@ -438,72 +455,129 @@ class GCSArtifactStore(_PublishingStore):
         key = _safe_key(key)
         return f"{self._prefix}/{key}" if self._prefix else key
 
-    def _recovery_prefixes(self, prefix: str) -> tuple[str, ...]:
-        relative_root = f"{_safe_key(prefix, label='prefix')}/.recovery/"
-        object_root = self._name(relative_root.rstrip("/")) + "/"
-        result: list[str] = []
-        timeout = self._remaining_timeout()
-        for blob in self._client.list_blobs(self._bucket, prefix=object_root, timeout=timeout):
-            relative = blob.name[len(object_root) :]
-            generation, separator, leaf = relative.partition("/")
-            if (
-                separator
-                and leaf == _COMPLETION_NAME
-                and len(generation) == 8
-                and generation.isdecimal()
-            ):
-                result.append(f"{prefix}/.recovery/{generation}")
-        return tuple(sorted(result))
+    def _request_options(self) -> tuple[float, object]:
+        remaining = self._remaining_timeout()
+        if remaining is None:
+            return 60.0, DEFAULT_RETRY
+        return remaining, DEFAULT_RETRY.with_deadline(remaining)
 
-    def exists(self, key: str) -> bool:
-        timeout = self._remaining_timeout()
-        return bool(
-            self._bucket.blob(self._name(key)).exists(client=self._client, timeout=timeout)
-        )
+    @contextmanager
+    def _bounded_gcs_errors(self):
+        try:
+            yield
+        except (GoogleAPICallError, RetryError) as error:
+            if getattr(self, "_active_deadline_monotonic", None) is not None:
+                raise TimeoutError("bounded GCS persistence request failed") from error
+            raise OSError("GCS persistence request failed") from error
+
+    def _recovery_prefixes(self, prefix: str) -> tuple[str, ...]:
+        prefix = _safe_key(prefix, label="prefix")
+        object_root = self._name(f"{prefix}/.recovery") + "/"
+        result: list[str] = []
+        page_token: str | None = None
+        first_page = True
+        with self._bounded_gcs_errors():
+            while first_page or page_token is not None:
+                first_page = False
+                timeout, retry = self._request_options()
+                iterator = self._client.list_blobs(
+                    self._bucket,
+                    prefix=object_root,
+                    page_token=page_token,
+                    page_size=1_000,
+                    max_results=1_000,
+                    timeout=timeout,
+                    retry=retry,
+                )
+                page = next(iterator.pages, None)
+                self._remaining_timeout()
+                if page is None:
+                    break
+                for blob in page:
+                    relative = blob.name[len(object_root) :]
+                    generation, separator, leaf = relative.partition("/")
+                    if (
+                        separator
+                        and leaf == _COMPLETION_NAME
+                        and len(generation) == 8
+                        and generation.isdecimal()
+                    ):
+                        result.append(f"{prefix}/.recovery/{generation}")
+                page_token = iterator.next_page_token
+        return tuple(sorted(set(result)))
+
+    def exists(
+        self,
+        key: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> bool:
+        with self._deadline_scope(deadline_monotonic):
+            timeout, retry = self._request_options()
+            with self._bounded_gcs_errors():
+                return bool(
+                    self._bucket.blob(self._name(key)).exists(
+                        client=self._client,
+                        timeout=timeout,
+                        retry=retry,
+                    )
+                )
 
     def download(self, key: str, destination: Path) -> None:
         blob = self._bucket.blob(self._name(key))
-        timeout = self._remaining_timeout()
-        if not blob.exists(client=self._client, timeout=timeout):
-            raise FileNotFoundError(key)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-        blob.download_to_filename(str(temporary), timeout=self._remaining_timeout())
-        os.replace(temporary, destination)
-        self._remaining_timeout()
+        with self._bounded_gcs_errors():
+            timeout, retry = self._request_options()
+            if not blob.exists(client=self._client, timeout=timeout, retry=retry):
+                raise FileNotFoundError(key)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+            timeout, retry = self._request_options()
+            blob.download_to_filename(str(temporary), timeout=timeout, retry=retry)
+            os.replace(temporary, destination)
+            self._remaining_timeout()
 
     def upload(self, source: Path, key: str) -> None:
         if not source.is_file() or source.is_symlink():
             raise FileNotFoundError(source)
         blob = self._bucket.blob(self._name(key))
-        if blob.exists(client=self._client, timeout=self._remaining_timeout()):
-            if self._object_matches(key, _file_record(source)):
-                return
-            raise FileExistsError(f"refusing to overwrite immutable artifact: {key}")
-        blob.metadata = {"sha256": sha256_file(source)}
-        blob.upload_from_filename(
-            str(source),
-            if_generation_match=0,
-            timeout=self._remaining_timeout(),
-        )
-        self._remaining_timeout()
+        with self._bounded_gcs_errors():
+            timeout, retry = self._request_options()
+            if blob.exists(client=self._client, timeout=timeout, retry=retry):
+                if self._object_matches(key, _file_record(source)):
+                    return
+                raise FileExistsError(f"refusing to overwrite immutable artifact: {key}")
+            blob.metadata = {"sha256": sha256_file(source)}
+            timeout, retry = self._request_options()
+            blob.upload_from_filename(
+                str(source),
+                if_generation_match=0,
+                timeout=timeout,
+                retry=retry,
+            )
+            self._remaining_timeout()
 
     def read_json(self, key: str) -> object:
         blob = self._bucket.blob(self._name(key))
-        if not blob.exists(client=self._client, timeout=self._remaining_timeout()):
-            raise FileNotFoundError(key)
-        return json.loads(blob.download_as_bytes(timeout=self._remaining_timeout()))
+        with self._bounded_gcs_errors():
+            timeout, retry = self._request_options()
+            if not blob.exists(client=self._client, timeout=timeout, retry=retry):
+                raise FileNotFoundError(key)
+            timeout, retry = self._request_options()
+            return json.loads(blob.download_as_bytes(timeout=timeout, retry=retry))
 
     def _copy(self, source_key: str, destination_key: str) -> None:
         source = self._bucket.blob(self._name(source_key))
-        self._bucket.copy_blob(
-            source,
-            self._bucket,
-            new_name=self._name(destination_key),
-            if_generation_match=0,
-            timeout=self._remaining_timeout(),
-        )
-        self._remaining_timeout()
+        with self._bounded_gcs_errors():
+            timeout, retry = self._request_options()
+            self._bucket.copy_blob(
+                source,
+                self._bucket,
+                new_name=self._name(destination_key),
+                if_generation_match=0,
+                timeout=timeout,
+                retry=retry,
+            )
+            self._remaining_timeout()
 
 
 def open_artifact_store(location: str | Path) -> ArtifactStore:

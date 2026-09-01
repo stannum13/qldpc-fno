@@ -148,15 +148,14 @@ decode. `progress.json` binds the exact config, calibration shard manifests,
 model/checkpoints, screening policy, decode subset, shortlists, and ordered work;
 resume rejects any divergence.
 
-The pre-policy benchmark in
-[Calibration throughput benchmark](calibration-throughput-benchmark.md) measured
-the real hybrid scoring path at a median 4.2167 candidate-shots/s on an Apple M2
-Max. Planning conservatively at 3 candidate-shots/s, the at-most 8 × 512 decoded
-candidate-shots take about 23 minutes; FNO-only screening is intentionally not
-assigned an unmeasured speed claim. The canonical launcher therefore does not
-promise one-allocation completion: it requires resumable multi-execution, stops
-new work after 7 hours 15 minutes of each 8-hour allocation, and reserves at
-least 45 minutes for persistence.
+The audited pre-policy capacity diagnostic in
+[Calibration throughput benchmark](calibration-throughput-benchmark.md) did not
+complete one real eight-shot candidate within 10m45s. The earlier 4.2167
+candidate-shots/s estimate is withdrawn. FNO-only screening avoids hybrid decoder
+calls but has no assigned runtime, and the hybrid stage has no validated
+conservative bound. Canonical Cloud execution is therefore fail-closed until
+killable decoder-unit timeouts and a representative worst-case 8-vCPU benchmark
+are reviewed.
 
 ## Metrics: accuracy before speed
 

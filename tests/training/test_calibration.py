@@ -12,6 +12,7 @@ from qldpc_fno.training.calibration import (
     deterministic_calibration_subset,
     select_calibration,
     validate_calibration_progress_rows,
+    validate_two_stage_calibration,
 )
 
 
@@ -185,6 +186,189 @@ def test_calibration_shortlists_are_independent_and_deterministic() -> None:
     selected = calibration_shortlists(rows, per_method=1)
 
     assert selected == {"residual": [1], "soft_prior": [0]}
+
+
+def _two_stage_publication() -> tuple[
+    list[dict[str, object]],
+    list[dict[str, object]],
+    dict[str, list[int]],
+    dict[str, object],
+    list[dict[str, object]],
+    tuple[CalibrationParameters, ...],
+]:
+    candidates = CALIBRATION_GRID[:2]
+    checkpoints = [{"epoch": 1, "path": "epoch-0001.pt", "sha256": "b" * 64}]
+    screening: list[dict[str, object]] = []
+    for work_index, parameters in enumerate(candidates):
+        screening.append(
+            {
+                "inference_latency_seconds": 1.25,
+                "logits_sha256": "a" * 64,
+                "mean_residual_syndrome_weight": 2.0 - work_index,
+                "model_checkpoint": {"path": "epoch-0001.pt", "sha256": "b" * 64},
+                "model_epoch": 1,
+                "nll": 0.1 + work_index * 0.1,
+                "parameters": {
+                    "alpha": parameters.alpha,
+                    "beta": parameters.beta,
+                    "temperature": parameters.temperature,
+                },
+                "proposal_invalid_count": 1 - work_index,
+                "work_index": work_index,
+            }
+        )
+    shortlists = {"residual": [1], "soft_prior": [0]}
+    hybrids: list[dict[str, object]] = []
+    for work_index in (0, 1):
+        screen = screening[work_index]
+        hybrids.append(
+            {
+                "inference_latency_seconds": 0.5,
+                "logits_sha256": "c" * 64,
+                "model_checkpoint": screen["model_checkpoint"],
+                "model_epoch": screen["model_epoch"],
+                "parameters": screen["parameters"],
+                "residual": {
+                    "block_errors": work_index,
+                    "invalid_count": work_index,
+                    "nll": screen["nll"],
+                },
+                "screening_proxy": {
+                    "mean_residual_syndrome_weight": screen[
+                        "mean_residual_syndrome_weight"
+                    ],
+                    "nll": screen["nll"],
+                    "proposal_invalid_count": screen["proposal_invalid_count"],
+                },
+                "soft_prior": {
+                    "block_errors": 1 - work_index,
+                    "invalid_count": 1 - work_index,
+                    "nll": screen["nll"],
+                },
+                "work_index": work_index,
+            }
+        )
+    selected = {
+        "residual": {
+            **hybrids[1]["residual"],
+            **{key: hybrids[1][key] for key in (
+                "inference_latency_seconds",
+                "model_checkpoint",
+                "model_epoch",
+                "parameters",
+                "screening_proxy",
+                "work_index",
+            )},
+        },
+        "soft_prior": {
+            **hybrids[0]["soft_prior"],
+            **{key: hybrids[0][key] for key in (
+                "inference_latency_seconds",
+                "model_checkpoint",
+                "model_epoch",
+                "parameters",
+                "screening_proxy",
+                "work_index",
+            )},
+        },
+    }
+    return screening, hybrids, shortlists, selected, checkpoints, candidates
+
+
+def test_two_stage_calibration_validator_requires_complete_enumeration_and_argmins() -> None:
+    screening, hybrids, shortlists, selected, checkpoints, candidates = (
+        _two_stage_publication()
+    )
+
+    validate_two_stage_calibration(
+        screening,
+        hybrids,
+        shortlists,
+        selected,
+        checkpoint_candidates=checkpoints,
+        candidates=candidates,
+        screening_shots=8,
+        syndrome_checks=10,
+        decode_shots=4,
+        shortlist_per_method=1,
+    )
+
+    impossible_residual_weight = copy.deepcopy(screening)
+    impossible_residual_weight[0]["mean_residual_syndrome_weight"] = 11.0
+    with pytest.raises(ValueError, match="screening grid is inconsistent"):
+        validate_two_stage_calibration(
+            impossible_residual_weight,
+            hybrids,
+            shortlists,
+            selected,
+            checkpoint_candidates=checkpoints,
+            candidates=candidates,
+            screening_shots=8,
+            syndrome_checks=10,
+            decode_shots=4,
+            shortlist_per_method=1,
+        )
+
+    missing_screen = copy.deepcopy(screening[:-1])
+    with pytest.raises(ValueError, match="complete ordered screening grid"):
+        validate_two_stage_calibration(
+            missing_screen,
+            hybrids,
+            shortlists,
+            selected,
+            checkpoint_candidates=checkpoints,
+            candidates=candidates,
+            screening_shots=8,
+            syndrome_checks=10,
+            decode_shots=4,
+            shortlist_per_method=1,
+        )
+
+    wrong_shortlist = copy.deepcopy(shortlists)
+    wrong_shortlist["soft_prior"] = [1]
+    with pytest.raises(ValueError, match="shortlists"):
+        validate_two_stage_calibration(
+            screening,
+            hybrids,
+            wrong_shortlist,
+            selected,
+            checkpoint_candidates=checkpoints,
+            candidates=candidates,
+            screening_shots=8,
+            syndrome_checks=10,
+            decode_shots=4,
+            shortlist_per_method=1,
+        )
+
+    with pytest.raises(ValueError, match="shortlist union"):
+        validate_two_stage_calibration(
+            screening,
+            hybrids[:-1],
+            shortlists,
+            selected,
+            checkpoint_candidates=checkpoints,
+            candidates=candidates,
+            screening_shots=8,
+            syndrome_checks=10,
+            decode_shots=4,
+            shortlist_per_method=1,
+        )
+
+    wrong_selected = copy.deepcopy(selected)
+    wrong_selected["soft_prior"] = wrong_selected["residual"]
+    with pytest.raises(ValueError, match="argmin"):
+        validate_two_stage_calibration(
+            screening,
+            hybrids,
+            shortlists,
+            wrong_selected,
+            checkpoint_candidates=checkpoints,
+            candidates=candidates,
+            screening_shots=8,
+            syndrome_checks=10,
+            decode_shots=4,
+            shortlist_per_method=1,
+        )
 
 
 @pytest.mark.parametrize("nll", [np.nan, np.inf, -np.inf])

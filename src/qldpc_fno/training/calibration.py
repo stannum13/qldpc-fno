@@ -156,6 +156,206 @@ def calibration_shortlists(
     }
 
 
+def _calibration_selection_key(
+    row: Mapping[str, object], method: str
+) -> tuple[object, ...]:
+    score = row.get(method)
+    parameters = row.get("parameters")
+    if not isinstance(score, Mapping) or not isinstance(parameters, Mapping):
+        raise TypeError("calibration candidate row is malformed")
+    return (
+        int(int(score["invalid_count"]) != 0),
+        int(score["block_errors"]),
+        float(score["nll"]),
+        int(row["model_epoch"]),
+        float(parameters["alpha"]),
+        float(parameters["beta"]),
+        float(parameters["temperature"]),
+    )
+
+
+def _selected_payload(row: Mapping[str, object], method: str) -> dict[str, object]:
+    score = row.get(method)
+    if not isinstance(score, Mapping):
+        raise TypeError("calibration candidate score is malformed")
+    return {
+        **score,
+        "inference_latency_seconds": row.get("inference_latency_seconds"),
+        "model_checkpoint": row.get("model_checkpoint"),
+        "model_epoch": row.get("model_epoch"),
+        "parameters": row.get("parameters"),
+        "screening_proxy": row.get("screening_proxy"),
+        "work_index": row.get("work_index"),
+    }
+
+
+def validate_two_stage_calibration(
+    screening_rows: object,
+    hybrid_rows: object,
+    shortlists: object,
+    selected: object,
+    *,
+    checkpoint_candidates: object,
+    candidates: Sequence[CalibrationParameters],
+    screening_shots: int,
+    syndrome_checks: int,
+    decode_shots: int,
+    shortlist_per_method: int,
+) -> None:
+    """Verify full deterministic screening, shortlist, decode, and argmin policy."""
+    if not isinstance(checkpoint_candidates, list) or any(
+        not isinstance(checkpoint, Mapping) for checkpoint in checkpoint_candidates
+    ):
+        raise TypeError("calibration checkpoint candidates are malformed")
+    if not candidates or type(screening_shots) is not int or screening_shots <= 0:
+        raise ValueError("calibration screening policy is malformed")
+    if type(syndrome_checks) is not int or syndrome_checks <= 0:
+        raise ValueError("calibration syndrome-check policy is malformed")
+    if type(decode_shots) is not int or decode_shots <= 0:
+        raise ValueError("calibration decode policy is malformed")
+    if not isinstance(screening_rows, list) or len(screening_rows) != len(
+        checkpoint_candidates
+    ) * len(candidates):
+        raise ValueError("calibration publication lacks the complete ordered screening grid")
+
+    screening_fields = {
+        "inference_latency_seconds",
+        "logits_sha256",
+        "mean_residual_syndrome_weight",
+        "model_checkpoint",
+        "model_epoch",
+        "nll",
+        "parameters",
+        "proposal_invalid_count",
+        "work_index",
+    }
+    checkpoint_measurements: dict[int, tuple[str, float]] = {}
+    for work_index, row in enumerate(screening_rows):
+        if not isinstance(row, Mapping) or set(row) != screening_fields:
+            raise ValueError("calibration publication screening row is malformed")
+        checkpoint_index = work_index // len(candidates)
+        checkpoint = checkpoint_candidates[checkpoint_index]
+        parameters = candidates[work_index % len(candidates)]
+        latency = row.get("inference_latency_seconds")
+        nll = row.get("nll")
+        mean_residual = row.get("mean_residual_syndrome_weight")
+        invalid = row.get("proposal_invalid_count")
+        digest = row.get("logits_sha256")
+        if (
+            row.get("work_index") != work_index
+            or row.get("model_epoch") != checkpoint.get("epoch")
+            or row.get("model_checkpoint")
+            != {"path": checkpoint.get("path"), "sha256": checkpoint.get("sha256")}
+            or row.get("parameters") != asdict(parameters)
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or any(
+                type(value) not in (int, float)
+                or not math.isfinite(float(value))
+                or float(value) < 0.0
+                for value in (latency, nll, mean_residual)
+            )
+            or float(mean_residual) > syndrome_checks
+            or type(invalid) is not int
+            or not 0 <= invalid <= screening_shots
+        ):
+            raise ValueError("calibration publication screening grid is inconsistent")
+        measurement = (digest, float(latency))
+        previous = checkpoint_measurements.setdefault(checkpoint_index, measurement)
+        if previous != measurement:
+            raise ValueError("calibration publication checkpoint screening diverges")
+
+    expected_shortlists = calibration_shortlists(
+        screening_rows,
+        per_method=shortlist_per_method,
+    )
+    if shortlists != expected_shortlists:
+        raise ValueError("calibration publication shortlists were not recomputed exactly")
+    expected_union = sorted(
+        set(expected_shortlists["soft_prior"]) | set(expected_shortlists["residual"])
+    )
+    if not isinstance(hybrid_rows, list) or [
+        row.get("work_index") if isinstance(row, Mapping) else None for row in hybrid_rows
+    ] != expected_union:
+        raise ValueError("calibration publication does not decode the exact shortlist union")
+
+    hybrid_fields = {
+        "inference_latency_seconds",
+        "logits_sha256",
+        "model_checkpoint",
+        "model_epoch",
+        "parameters",
+        "residual",
+        "screening_proxy",
+        "soft_prior",
+        "work_index",
+    }
+    for row in hybrid_rows:
+        if not isinstance(row, Mapping) or set(row) != hybrid_fields:
+            raise ValueError("calibration publication hybrid row is malformed")
+        work_index = int(row["work_index"])
+        screening = screening_rows[work_index]
+        latency = row.get("inference_latency_seconds")
+        digest = row.get("logits_sha256")
+        if (
+            any(row.get(field) != screening.get(field) for field in (
+                "model_checkpoint",
+                "model_epoch",
+                "parameters",
+            ))
+            or row.get("screening_proxy")
+            != {
+                "mean_residual_syndrome_weight": screening["mean_residual_syndrome_weight"],
+                "nll": screening["nll"],
+                "proposal_invalid_count": screening["proposal_invalid_count"],
+            }
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or type(latency) not in (int, float)
+            or not math.isfinite(float(latency))
+            or float(latency) < 0.0
+        ):
+            raise ValueError("calibration publication hybrid provenance is inconsistent")
+        method_nlls: list[float] = []
+        for method in ("soft_prior", "residual"):
+            score = row.get(method)
+            if not isinstance(score, Mapping) or set(score) != {
+                "block_errors",
+                "invalid_count",
+                "nll",
+            }:
+                raise ValueError(f"calibration publication {method} score is malformed")
+            block_errors = score.get("block_errors")
+            invalid_count = score.get("invalid_count")
+            nll = score.get("nll")
+            if (
+                type(block_errors) is not int
+                or type(invalid_count) is not int
+                or not 0 <= invalid_count <= block_errors <= decode_shots
+                or type(nll) not in (int, float)
+                or not math.isfinite(float(nll))
+                or float(nll) < 0.0
+            ):
+                raise ValueError(f"calibration publication {method} score is invalid")
+            method_nlls.append(float(nll))
+        if method_nlls[0] != method_nlls[1]:
+            raise ValueError("calibration publication method NLL values diverge")
+
+    if not isinstance(selected, Mapping) or set(selected) != {"soft_prior", "residual"}:
+        raise ValueError("calibration publication selected methods are malformed")
+    for method in ("soft_prior", "residual"):
+        expected_row = min(
+            (
+                row
+                for row in hybrid_rows
+                if int(row["work_index"]) in expected_shortlists[method]
+            ),
+            key=lambda row: _calibration_selection_key(row, method),
+        )
+        if selected.get(method) != _selected_payload(expected_row, method):
+            raise ValueError(f"calibration publication {method} is not the declared argmin")
+
+
 def validate_calibration_progress_rows(
     rows: object,
     *,

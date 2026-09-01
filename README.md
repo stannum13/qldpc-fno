@@ -198,8 +198,10 @@ CLOUD_REGION=us-central1 \
 bash scripts/launch_cloud_campaign.sh --execute --reduced
 ```
 
-Canonical work cannot safely finish in one allocation. Its first launch is
-asynchronous and therefore requires an explicit multi-execution acknowledgement:
+Canonical Cloud execution is currently fail-closed. A hash-verified diagnostic
+did not finish one real eight-shot candidate within 10 minutes 45 seconds, so no
+safe bound exists for a 512-shot candidate work unit. The launcher refuses before
+creating resources even when multi-execution is acknowledged:
 
 ```bash
 CAMPAIGN_ID=accuracy-20260901-a1b2 \
@@ -207,10 +209,16 @@ CLOUD_REGION=us-central1 \
 bash scripts/launch_cloud_campaign.sh --execute --multi-execution
 ```
 
+Reopen this gate only in a reviewed code change after representative worst-case
+hybrid decoding has a killable per-unit timeout policy and a conservative 8-vCPU
+benchmark. Do not use the reduced check for scientific results.
+
 Each execution uses one task, 8 vCPUs, 32 GiB memory, no GPU, no retries, and an
 8-hour Cloud Run timeout. New work stops by 7 hours 15 minutes, leaving at least
 45 minutes to publish a small partial summary and optional verified snapshots.
-Resume from the identical clean commit, project, region, and campaign ID:
+For a canonical job created by an older revision, the resume command still checks
+the identical clean commit, project, region, campaign ID, immutable inputs, and
+full job contract, but this revision refuses to submit another execution:
 
 ```bash
 CAMPAIGN_ID=accuracy-20260901-a1b2 \
@@ -218,10 +226,14 @@ CLOUD_REGION=us-central1 \
 bash scripts/launch_cloud_campaign.sh --execute --resume
 ```
 
-Resume verifies the existing repository, bucket, service account, job identity,
-and exact commit-tagged image, then executes only that job. It neither recreates
-resources nor bypasses name collisions. Cloud partial status also prints the
-exact direct `gcloud run jobs execute ... --async` command for the next execution.
+Resume verification covers the existing repository, bucket, service account,
+immutable input publication, digest-pinned image, command/arguments, literal
+environment, CPU, memory, tasks, parallelism, retry policy, timeout, and the
+generation-2 Cloud Run Jobs execution contract. It neither recreates resources
+nor bypasses name collisions, and then fails closed at the benchmark gate.
+Historical partial status may print the exact
+`launch_cloud_campaign.sh --execute --resume` verification command; that command
+does not bypass the gate.
 
 Cloud Build, Artifact Registry, Cloud Run, and Cloud Storage can incur charges;
 stored artifacts continue to incur charges after a job stops. The launcher only
@@ -276,6 +288,7 @@ uv run python experiments/16_calibrate_hybrid_priors.py \
   --code artifacts/accuracy-campaign/code \
   --calibration artifacts/accuracy-campaign/calibration \
   --model artifacts/accuracy-campaign/model \
+  --campaign-mode canonical \
   --out artifacts/accuracy-campaign/calibration
 
 uv run python experiments/14_generate_campaign_shards.py \
@@ -292,6 +305,7 @@ uv run python experiments/17_evaluate_hybrid_decoders.py \
   --test artifacts/accuracy-campaign/test \
   --model artifacts/accuracy-campaign/model \
   --calibration artifacts/accuracy-campaign/calibration \
+  --campaign-mode canonical \
   --out artifacts/accuracy-campaign/evaluation
 ```
 
@@ -359,6 +373,7 @@ and provenance chain.
 | `scripts/run_smoke.sh` | End-to-end smoke orchestrator |
 | `scripts/run_accuracy_campaign.sh` | Resumable local campaign runner |
 | `scripts/launch_cloud_campaign.sh` | Dry-run-first Cloud Run launcher and verified resume |
+| `scripts/benchmark_calibration_candidate.py` | Reproduction harness for the pre-policy capacity benchmark |
 | `Dockerfile`, `.dockerignore` | Exact, default-deny cloud build context |
 | `src/qldpc_fno/codes/` | Lifted-product construction and GF(2) operations |
 | `src/qldpc_fno/stim/` | Detector-error-model and packed-sample utilities |

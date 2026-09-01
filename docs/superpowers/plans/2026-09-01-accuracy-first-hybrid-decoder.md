@@ -2,7 +2,10 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build and run a reproducible overnight campaign comparing uniform BP-LSD, FNO-conditioned BP-LSD, and residual BP-LSD repair on identical held-out `lp(3,7)_16` code-capacity samples.
+**Goal:** Build a reproducible overnight campaign comparing uniform BP-LSD,
+FNO-conditioned BP-LSD, and residual BP-LSD repair on identical held-out
+`lp(3,7)_16` code-capacity samples. Running canonical Cloud work remains gated by
+the release-hardening capacity audit below.
 
 **Architecture:** Scientific logic stays in small local Python modules with deterministic packed artifacts. A single conditional FNO supplies calibrated per-bit probabilities to two algebraically checked hybrid decoders. A resumable campaign runner executes locally or through repeated bounded executions of one immutable Cloud Run Job and publishes completion manifests to Cloud Storage.
 
@@ -18,7 +21,8 @@
 - Test decoders consume identical shots and retain paired outcomes.
 - The canonical cloud job is CPU-only, 8 vCPUs, 32 GiB, and has an 8-hour task timeout.
 - Each cloud execution stops new work by 7h15m and reserves at least 45 minutes for persistence.
-- Canonical cloud creation is asynchronous and explicitly acknowledges multi-execution resume.
+- Canonical cloud creation/resume is fail-closed before mutation or execution until
+  a reviewed killable decoder-unit policy and conservative benchmark reopen the gate.
 - No stage overwrites a completed campaign prefix or trusts an unverified artifact.
 - Cloud commands are dry-run by default and require `--execute` for billable mutation.
 - Commit messages are concise technical descriptions of repository changes or measured results.
@@ -603,9 +607,10 @@ git commit -m "feat: add one-command hybrid accuracy campaign"
 **Interfaces:**
 - Dry-run prints project, region, repository, image, bucket, prefix, CPU, memory,
   timeout, Git commit, and exact gcloud mutations.
-- `--execute --multi-execution` creates only uniquely named canonical resources and
-  launches the first execution asynchronously; `--execute --resume` verifies and
-  executes only the exact existing commit-bound job.
+- Reduced `--execute` creates only uniquely named resources and runs the explicit
+  non-scientific check. Canonical `--execute --multi-execution` and exact-contract
+  `--execute --resume` both fail closed before mutation/execution while the
+  representative decoder benchmark gate is closed.
 
 - [ ] **Step 1: Write dry-run tests with a fake `gcloud` executable**
 
@@ -767,24 +772,29 @@ commands. Expected: no resources created.
 bash scripts/launch_cloud_campaign.sh --execute --reduced
 ```
 
-Wait for completion, download the summary, and verify all hashes locally. If this
-fails, diagnose before launching canonical work.
+Wait for completion, download the summary, and verify all hashes locally. This is
+execution coverage only and cannot reopen the canonical benchmark gate.
 
-- [ ] **Step 6: Launch the overnight campaign**
+- [ ] **Step 6: Reopen the benchmark gate before any overnight campaign**
 
 ```bash
 bash scripts/launch_cloud_campaign.sh --execute --multi-execution
 ```
 
-Record the Cloud Run execution name and GCS summary prefix. Do not wait locally;
-the cloud job owns its deadline and persistence.
+Expected in this revision: refusal before resource creation. Do not launch
+canonical work. First add killable per-decoder units with timeout-as-failure
+provenance, complete a representative worst-case 8-vCPU benchmark, and review a
+conservative capacity estimate against the 7h15m internal cutoff.
 
-Continue a partial canonical campaign from the identical clean commit with:
+The verification-only resume path for a historical canonical campaign is:
 
 ```bash
 CAMPAIGN_ID=<original-id> CLOUD_REGION=<original-region> \
   bash scripts/launch_cloud_campaign.sh --execute --resume
 ```
+
+It validates immutable inputs and the exact normalized Cloud Run Job contract,
+then refuses before submitting another execution while the gate remains closed.
 
 - [ ] **Step 7: Commit any machine-generated result pointers only after completion**
 
@@ -814,65 +824,70 @@ or partial-deadline state.
 - Produces: deterministic calibration screening, method-specific shortlists, and
   a rate-stratified decode subset whose complete policy is hash-bound on resume.
 - Produces: artifact-store operations with optional absolute monotonic deadlines.
-- Produces: canonical cloud `--multi-execution` creation and `--resume` execution
-  modes against one immutable job/store identity.
+- Produces: an immutable canonical job/store contract whose `--multi-execution`
+  creation and `--resume` paths verify intent or prior state, then fail closed at
+  the representative decoder benchmark gate.
 
-- [ ] **Step 1: Preserve the pre-change benchmark**
+- [x] **Step 1: Audit the pre-change benchmark**
 
-Run the existing `_score_candidate` path over verified calibration-role shots
-from the current-HEAD reduced artifact, with one warm-up and five timed trials.
-Record hardware, threads, artifact identity, timed region, raw samples, median,
+Run the existing `_score_candidate` path over hash-verified calibration-role shots
+from the current-HEAD reduced artifact under a whole-process diagnostic ceiling.
+The exact reproduction did not finish one eight-shot trial within 645 seconds, so
+the earlier ad hoc samples and derived throughput are withdrawn. Record the
+hardware, threads, immutable artifact identities, timed region, timeout result,
 and scope limitations in `docs/calibration-throughput-benchmark.md`.
 
-- [ ] **Step 2: Write failing configuration and calibration tests**
+- [x] **Step 2: Write failing configuration and calibration tests**
 
 Assert a 512-shot deterministic stratified subset, four candidates per method,
 independent shortlist membership/selection, strict progress provenance, no test
 input, and a 45-minute finalization reserve. Run focused tests and confirm failure
 for missing fields and APIs.
 
-- [ ] **Step 3: Implement deterministic two-stage calibration**
+- [x] **Step 3: Implement deterministic two-stage calibration**
 
 Screen all checkpoint/parameter pairs using calibration-only NLL and proposal
 validity/residual-weight proxies. Persist one bounded checkpoint screen or hybrid
 decode work unit per runner invocation. Decode the union of independent shortlists
 on the configured subset, then select each hybrid only from its own shortlist.
 
-- [ ] **Step 4: Write failing cloud-context and resume tests**
+- [x] **Step 4: Write failing cloud-context and resume tests**
 
 Place an ignored sentinel under a normally copied directory. Assert cloud submit
 receives a temporary archive created by `git archive` from the exact clean commit,
 the sentinel is absent, `.dockerignore` starts with `**`, canonical execute refuses
-without `--multi-execution`, and `--resume` executes only an existing job.
+without `--multi-execution`, and `--resume` verifies only the exact existing job.
 
-- [ ] **Step 5: Implement exact build context and cloud resume**
+- [x] **Step 5: Implement exact build context and fail-closed cloud resume**
 
 Archive only Dockerfile, lock/package metadata, the two campaign configs, required
-numbered entry points, and `src/qldpc_fno` from the clean commit. Keep the eight-hour
-outer job limit, require explicit multi-execution acknowledgement for canonical
-creation, and execute the existing job for resume without recreating resources.
+numbered entry points, and `src/qldpc_fno` from the clean commit. Bind immutable
+inputs and the complete normalized job contract to the exact clean commit. Keep
+the eight-hour outer job limit, require explicit multi-execution acknowledgement,
+and fail canonical creation/resume before mutation or execution until killable
+decoder units and a conservative representative benchmark reopen the gate.
 
-- [ ] **Step 6: Write failing deadline/store tests**
+- [x] **Step 6: Write failing deadline/store tests**
 
 Assert the small partial summary is attempted before a changed-stage snapshot,
 all publication/materialization operations receive the absolute deadline, and
 delayed/failing stores return a bounded partial-deadline result without publishing
 an unverified completion.
 
-- [ ] **Step 7: Implement bounded finalization**
+- [x] **Step 7: Implement bounded finalization**
 
 Set `checkpoint_grace_seconds=2700`. Thread the absolute monotonic deadline through
 runner publications and storage APIs, convert it to bounded GCS request timeouts,
 publish a partial summary first, then attempt optional snapshots while time remains.
 
-- [ ] **Step 8: Correct operator documentation**
+- [x] **Step 8: Correct operator documentation**
 
 Document prerequisites, local canonical/reduced/resume commands, cloud dry-run,
-multi-execution creation/resume, cleanup, billing, and exact CPU/memory/time bounds.
-Separate runner-store and manual layouts. Remove campaign runner source-lock claims
-and update the repository map.
+reduced execution, fail-closed canonical creation/resume, cleanup, billing, and
+exact CPU/memory/time bounds. Separate runner-store and manual layouts, bind the
+runner's immutable source/input contract, and update the repository map.
 
-- [ ] **Step 9: Verify before release**
+- [x] **Step 9: Verify before release**
 
 Run focused red/green tests, the full suite, Ruff, Bash syntax checks, lock checks,
 Docker/build-context inspection, and a fresh reduced local campaign plus resume.
@@ -882,14 +897,17 @@ Review `git diff --check` and request independent final re-review.
 
 ## Completion audit
 
-- [ ] Uniform, soft-prior, and residual decoders see identical held-out shots.
-- [ ] All final corrections are independently syndrome-checked.
-- [ ] Train, calibration, and test seeds are disjoint.
-- [ ] Calibration never reads test outcomes.
-- [ ] Paired statistical intervals are deterministic and shot-level.
-- [ ] Local artifacts and GCS stages reject corruption and cross-run mixing.
-- [ ] Reduced local and container campaigns complete from clean state.
-- [ ] Cloud dry run creates nothing; execution requires `--execute`.
-- [ ] Cloud job has 8 CPU, 32Gi, no GPU, zero retries, and an 8-hour timeout.
-- [ ] README serves lay readers, engineers, and scientists without overstating scope.
-- [ ] No speed claim is made unless a later experiment establishes it.
+- [x] Uniform, soft-prior, and residual decoders see identical held-out shots.
+- [x] All final corrections are independently syndrome-checked.
+- [x] Train, calibration, and test seeds are disjoint.
+- [x] Calibration never reads test outcomes.
+- [x] Paired statistical intervals are deterministic and shot-level.
+- [x] Local artifacts and GCS stages reject corruption and cross-run mixing.
+- [x] The fresh reduced local campaign completes and resumes from verified state.
+- [ ] A container build/run was not executed because the local Docker daemon was
+  unavailable; exact archive, ignored-sentinel, Dockerfile, and launcher contract
+  regressions pass.
+- [x] Cloud dry-run tests create nothing; execution requires `--execute`.
+- [x] Cloud job contract has 8 CPU, 32Gi, no GPU, zero retries, and an 8-hour timeout.
+- [x] README serves lay readers, engineers, and scientists without overstating scope.
+- [x] No speed claim is made unless a later experiment establishes it.

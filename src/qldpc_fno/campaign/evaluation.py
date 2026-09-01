@@ -32,7 +32,13 @@ from qldpc_fno.metrics.paired import (
     paired_decoder_summary,
 )
 from qldpc_fno.models.fno1d import RingFNO
-from qldpc_fno.training.calibration import CalibrationParameters, calibrated_probabilities
+from qldpc_fno.training.calibration import (
+    CALIBRATION_GRID,
+    CalibrationParameters,
+    calibrated_probabilities,
+    deterministic_calibration_subset,
+    validate_two_stage_calibration,
+)
 
 _DECODERS = ("baseline", "soft_prior", "residual")
 _HYBRIDS = ("soft_prior", "residual")
@@ -92,6 +98,7 @@ class EvaluationRequest:
     model: Path
     calibration: Path
     out: Path
+    campaign_mode: str = "canonical"
     bootstrap_samples: int = 10_000
     deadline_monotonic: float | None = None
     max_batches_this_run: int | None = None
@@ -226,7 +233,10 @@ def _load_selected_models(
     model_dir: Path,
     calibration_dir: Path,
     calibration_shards: VerifiedShardSet,
+    campaign_mode: str,
+    syndrome_checks: int,
 ) -> tuple[dict[str, _SelectedModel], dict[str, object]]:
+    config = CampaignConfig.from_json(config_path)
     model_manifest_path = model_dir / "model.json"
     model_manifest = json.loads(model_manifest_path.read_text())
     sources = _model_sources(
@@ -269,6 +279,14 @@ def _load_selected_models(
 
     selected_path = calibration_dir / "selected.json"
     selected = json.loads(selected_path.read_text())
+    if not isinstance(selected, dict) or set(selected) != {
+        "complete",
+        "selected",
+        "selection_rule",
+        "source_role",
+        "source_sha256",
+    }:
+        raise ValueError("calibration selection publication schema is malformed")
     if selected.get("complete") is not True or selected.get("source_role") != "calibration":
         raise ValueError("calibration is not a completed calibration-role publication")
     if selected.get("selection_rule") != _SELECTION_RULE:
@@ -301,6 +319,16 @@ def _load_selected_models(
     grid_path = calibration_dir / "grid.json"
     verify_sha256(grid_path, str(selected_sources["grid"]), label="calibration grid")
     grid = json.loads(grid_path.read_text())
+    if not isinstance(grid, dict) or set(grid) != {
+        "hybrid_candidates",
+        "logit_evaluations",
+        "policy",
+        "screening_candidates",
+        "shortlists",
+        "source_role",
+        "source_sha256",
+    }:
+        raise ValueError("calibration grid publication schema is malformed")
     grid_sources = grid.get("source_sha256")
     if grid.get("source_role") != "calibration" or not isinstance(grid_sources, dict):
         raise ValueError("calibration grid provenance is malformed")
@@ -328,13 +356,6 @@ def _load_selected_models(
         or not isinstance(decode_subset.get("indices_sha256"), str)
     ):
         raise ValueError("calibration decode subset provenance is malformed")
-    for method, work_indices in shortlists.items():
-        if (
-            not isinstance(work_indices, list)
-            or not work_indices
-            or any(type(index) is not int or not 0 <= index < len(screening) for index in work_indices)
-        ):
-            raise ValueError(f"calibration {method} shortlist is malformed")
     selected_methods = selected.get("selected")
     if not isinstance(selected_methods, dict) or set(selected_methods) != set(_HYBRIDS):
         raise ValueError("calibration must select soft_prior and residual independently")
@@ -342,6 +363,59 @@ def _load_selected_models(
     checkpoint_candidates = model_manifest.get("checkpoints")
     if not isinstance(checkpoint_candidates, list) or not checkpoint_candidates:
         raise ValueError("model manifest does not declare checkpoint candidates")
+    if campaign_mode == "canonical":
+        expected_candidates = CALIBRATION_GRID
+        grid_policy = "fixed_full_grid"
+    elif campaign_mode == "reduced_non_scientific":
+        candidate_count = policy.get("screening_candidate_count")
+        if (
+            type(candidate_count) is not int
+            or not 0 < candidate_count <= len(CALIBRATION_GRID)
+        ):
+            raise ValueError("reduced calibration grid candidate count is malformed")
+        expected_candidates = CALIBRATION_GRID[:candidate_count]
+        grid_policy = "fixed_prefix_for_reduced_runs"
+    else:
+        raise ValueError("evaluation campaign mode is invalid")
+    rate_indices = sorted({shard.rate_index for shard in calibration_shards.shards})
+    _, expected_decode_subset = deterministic_calibration_subset(
+        {
+            rate_index: calibration_shards.indices_for_rate(rate_index)
+            for rate_index in rate_indices
+        },
+        max_shots=config.calibration_decode_shots_cap,
+        seed=config.campaign_seed,
+    )
+    shortlist_size = min(config.calibration_shortlist_per_method, len(expected_candidates))
+    expected_policy = {
+        "decode_subset": expected_decode_subset,
+        "grid_policy": grid_policy,
+        "screening_candidate_count": len(expected_candidates),
+        "screening_checkpoint_count": len(checkpoint_candidates),
+        "screening_proxy": [
+            "correction_nll",
+            "threshold_proposal_invalid_count",
+            "mean_residual_syndrome_weight",
+        ],
+        "screening_shots": calibration_shards.shots,
+        "shortlist_per_method": shortlist_size,
+    }
+    if policy != expected_policy:
+        raise ValueError("calibration two-stage policy does not match the declared campaign mode")
+    if grid.get("logit_evaluations") != len(checkpoint_candidates):
+        raise ValueError("calibration grid logit evaluation count is incomplete")
+    validate_two_stage_calibration(
+        screening,
+        candidates,
+        shortlists,
+        selected_methods,
+        checkpoint_candidates=checkpoint_candidates,
+        candidates=expected_candidates,
+        screening_shots=calibration_shards.shots,
+        syndrome_checks=syndrome_checks,
+        decode_shots=int(expected_decode_subset["shots"]),
+        shortlist_per_method=shortlist_size,
+    )
     declared_checkpoints = {
         (candidate.get("path"), candidate.get("sha256"), candidate.get("epoch"))
         for candidate in checkpoint_candidates
@@ -1176,6 +1250,10 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         raise ValueError("max-batches-this-run must be positive")
     if args.deadline_monotonic is not None and not math.isfinite(args.deadline_monotonic):
         raise ValueError("deadline-monotonic must be finite")
+    if args.campaign_mode == "canonical" and args.bootstrap_samples != 10_000:
+        raise ValueError("canonical evaluation requires 10000 bootstrap samples")
+    if args.campaign_mode not in {"canonical", "reduced_non_scientific"}:
+        raise ValueError("evaluation campaign mode is invalid")
     config = CampaignConfig.from_json(args.config)
     code_manifest_path = args.code / "code.json"
     _, hx, _, logical_x = load_campaign_code(args.code)
@@ -1208,6 +1286,8 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         model_dir=args.model,
         calibration_dir=args.calibration,
         calibration_shards=calibration_shards,
+        campaign_mode=args.campaign_mode,
+        syndrome_checks=hx.shape[0],
     )
     selected_calibration: dict[str, object] = {
         method: {
