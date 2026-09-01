@@ -18,6 +18,8 @@ class CampaignConfig:
     pilot_shots_per_point: int
     train_shots_cap: int
     calibration_shots_cap: int
+    calibration_decode_shots_cap: int
+    calibration_shortlist_per_method: int
     test_batch_shots: int
     max_test_shots_per_point: int
     target_failures: int
@@ -37,6 +39,8 @@ class CampaignConfig:
             "pilot_shots_per_point",
             "train_shots_cap",
             "calibration_shots_cap",
+            "calibration_decode_shots_cap",
+            "calibration_shortlist_per_method",
             "test_batch_shots",
             "max_test_shots_per_point",
             "target_failures",
@@ -106,5 +110,13 @@ class CampaignConfig:
             raise ValueError("noise_grid probabilities must be strictly increasing")
         if self.target_failures > self.max_test_shots_per_point:
             raise ValueError("target_failures must not exceed max_test_shots_per_point")
+        if self.calibration_decode_shots_cap > self.calibration_shots_cap:
+            raise ValueError(
+                "calibration_decode_shots_cap must not exceed calibration_shots_cap"
+            )
+        if self.calibration_shortlist_per_method > 48:
+            raise ValueError("calibration_shortlist_per_method must not exceed 48")
+        if self.checkpoint_grace_seconds < 45 * 60:
+            raise ValueError("checkpoint_grace_seconds must reserve at least 2700 seconds")
         if self.checkpoint_grace_seconds >= self.cloud_timeout_seconds:
             raise ValueError("checkpoint_grace_seconds must be less than cloud_timeout_seconds")

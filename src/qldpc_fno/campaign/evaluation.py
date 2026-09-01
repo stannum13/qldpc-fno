@@ -47,7 +47,6 @@ _SELECTION_RULE = [
     "has_any_invalid_correction",
     "block_errors",
     "nll",
-    "inference_latency_seconds",
     "model_epoch",
     "alpha",
     "beta",
@@ -215,6 +214,8 @@ def _selected_payload_from_grid(row: dict[str, object], method: str) -> dict[str
         "model_checkpoint": row.get("model_checkpoint"),
         "model_epoch": row.get("model_epoch"),
         "parameters": row.get("parameters"),
+        "screening_proxy": row.get("screening_proxy"),
+        "work_index": row.get("work_index"),
     }
 
 
@@ -305,9 +306,35 @@ def _load_selected_models(
         raise ValueError("calibration grid provenance is malformed")
     if grid_sources != {key: value for key, value in selected_sources.items() if key != "grid"}:
         raise ValueError("calibration grid provenance disagrees with selected.json")
-    candidates = grid.get("candidates")
+    candidates = grid.get("hybrid_candidates")
     if not isinstance(candidates, list) or not candidates:
-        raise ValueError("calibration grid must contain candidate results")
+        raise ValueError("calibration grid must contain shortlisted hybrid candidate results")
+    screening = grid.get("screening_candidates")
+    shortlists = grid.get("shortlists")
+    policy = grid.get("policy")
+    if (
+        not isinstance(screening, list)
+        or not screening
+        or not isinstance(shortlists, dict)
+        or set(shortlists) != set(_HYBRIDS)
+        or not isinstance(policy, dict)
+    ):
+        raise ValueError("calibration grid two-stage policy is malformed")
+    decode_subset = policy.get("decode_subset")
+    if (
+        not isinstance(decode_subset, dict)
+        or type(decode_subset.get("shots")) is not int
+        or decode_subset["shots"] <= 0
+        or not isinstance(decode_subset.get("indices_sha256"), str)
+    ):
+        raise ValueError("calibration decode subset provenance is malformed")
+    for method, work_indices in shortlists.items():
+        if (
+            not isinstance(work_indices, list)
+            or not work_indices
+            or any(type(index) is not int or not 0 <= index < len(screening) for index in work_indices)
+        ):
+            raise ValueError(f"calibration {method} shortlist is malformed")
     selected_methods = selected.get("selected")
     if not isinstance(selected_methods, dict) or set(selected_methods) != set(_HYBRIDS):
         raise ValueError("calibration must select soft_prior and residual independently")
@@ -327,7 +354,9 @@ def _load_selected_models(
         if not isinstance(method_selection, dict):
             raise TypeError(f"selected {method} calibration must be an object")
         if method_selection not in [
-            _selected_payload_from_grid(row, method) for row in candidates if isinstance(row, dict)
+            _selected_payload_from_grid(row, method)
+            for row in candidates
+            if isinstance(row, dict) and row.get("work_index") in shortlists[method]
         ]:
             raise ValueError(f"selected {method} calibration is absent from the verified grid")
         checkpoint = method_selection.get("model_checkpoint")

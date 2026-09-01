@@ -29,6 +29,8 @@ def _write_config(path: Path) -> None:
             "pilot_shots_per_point": 1,
             "train_shots_cap": 16,
             "calibration_shots_cap": 8,
+            "calibration_decode_shots_cap": 8,
+            "calibration_shortlist_per_method": 1,
             "test_batch_shots": 1,
             "max_test_shots_per_point": 1,
             "target_failures": 1,
@@ -39,8 +41,8 @@ def _write_config(path: Path) -> None:
             "checkpoint_every_epochs": 1,
             "cloud_cpu": 1,
             "cloud_memory": "1Gi",
-            "cloud_timeout_seconds": 60,
-            "checkpoint_grace_seconds": 1,
+            "cloud_timeout_seconds": 3600,
+            "checkpoint_grace_seconds": 2700,
         },
     )
 
@@ -462,6 +464,9 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     progress = json.loads((calibration / "progress.json").read_text())
     assert progress["completed_work_units"] == 1
     assert progress["total_work_units"] == 4
+    assert progress["shortlists"] is None
+    assert len(progress["screening_candidates"]) == 2
+    assert progress["hybrid_candidates"] == []
     assert not (calibration / "selected.json").exists()
 
     calibrated = _run(
@@ -483,8 +488,13 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
     assert calibrated.returncode == 0, calibrated.stderr
     grid = json.loads((calibration / "grid.json").read_text())
     selected = json.loads((calibration / "selected.json").read_text())
-    assert len(grid["candidates"]) == 4
-    assert {row["model_epoch"] for row in grid["candidates"]} == {1, 2}
+    assert len(grid["screening_candidates"]) == 4
+    assert 1 <= len(grid["hybrid_candidates"]) <= 2
+    assert set(grid["shortlists"]) == {"residual", "soft_prior"}
+    assert all(len(indices) == 1 for indices in grid["shortlists"].values())
+    assert grid["policy"]["decode_subset"]["shots"] == 8
+    assert grid["policy"]["decode_subset"]["indices_sha256"]
+    assert {row["model_epoch"] for row in grid["screening_candidates"]} == {1, 2}
     assert all(
         set(row)
         >= {
@@ -495,11 +505,14 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
             "parameters",
             "residual",
             "soft_prior",
+            "work_index",
         }
-        for row in grid["candidates"]
+        for row in grid["hybrid_candidates"]
     )
-    for epoch in (1, 2):
-        epoch_rows = [row for row in grid["candidates"] if row["model_epoch"] == epoch]
+    for epoch in {row["model_epoch"] for row in grid["screening_candidates"]}:
+        epoch_rows = [
+            row for row in grid["screening_candidates"] if row["model_epoch"] == epoch
+        ]
         assert len({row["logits_sha256"] for row in epoch_rows}) == 1
         assert len({row["inference_latency_seconds"] for row in epoch_rows}) == 1
     assert selected["complete"] is True
@@ -518,7 +531,6 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
         "has_any_invalid_correction",
         "block_errors",
         "nll",
-        "inference_latency_seconds",
         "model_epoch",
         "alpha",
         "beta",
@@ -532,8 +544,11 @@ def test_reduced_training_resume_and_independent_hybrid_calibration(tmp_path: Pa
             | {
                 "inference_latency_seconds": row["inference_latency_seconds"],
                 "model_checkpoint": row["model_checkpoint"],
-                "model_epoch": row["model_epoch"],
-                "parameters": row["parameters"],
-            }
-            for row in grid["candidates"]
+                    "model_epoch": row["model_epoch"],
+                    "parameters": row["parameters"],
+                    "screening_proxy": row["screening_proxy"],
+                    "work_index": row["work_index"],
+                }
+            for row in grid["hybrid_candidates"]
+            if row["work_index"] in grid["shortlists"][method]
         ]

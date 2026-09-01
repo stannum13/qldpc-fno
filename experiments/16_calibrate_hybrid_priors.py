@@ -28,7 +28,8 @@ from qldpc_fno.training.calibration import (
     CalibrationParameters,
     CalibrationScore,
     calibrated_probabilities,
-    validate_calibration_progress_rows,
+    calibration_shortlists,
+    deterministic_calibration_subset,
 )
 
 
@@ -61,7 +62,6 @@ def _selection_key(row: dict[str, object], method: str) -> tuple[object, ...]:
         int(int(score["invalid_count"]) != 0),
         int(score["block_errors"]),
         float(score["nll"]),
-        float(row["inference_latency_seconds"]),
         int(row["model_epoch"]),
         float(parameters["alpha"]),
         float(parameters["beta"]),
@@ -79,6 +79,8 @@ def _selected_payload(row: dict[str, object], method: str) -> dict[str, object]:
         "model_checkpoint": row["model_checkpoint"],
         "model_epoch": row["model_epoch"],
         "parameters": row["parameters"],
+        "screening_proxy": row["screening_proxy"],
+        "work_index": row["work_index"],
     }
 
 
@@ -130,6 +132,41 @@ def _score_candidate(
         CalibrationScore(parameters, soft_invalid, soft_failures, nll),
         CalibrationScore(parameters, residual_invalid, residual_failures, nll),
     )
+
+
+def _screen_candidate(
+    *,
+    parameters: CalibrationParameters,
+    logits: np.ndarray,
+    syndromes: np.ndarray,
+    actual_errors: np.ndarray,
+    error_rates: np.ndarray,
+    hx: object,
+    batch_size: int,
+) -> dict[str, object]:
+    """Compute cheap calibration-only proxies without invoking either BP-LSD hybrid."""
+    nll_sum = 0.0
+    proposal_invalid_count = 0
+    residual_weight_sum = 0
+    shots = logits.shape[0]
+    for offset in range(0, shots, batch_size):
+        batch = slice(offset, min(offset + batch_size, shots))
+        probabilities = calibrated_probabilities(logits[batch], error_rates[batch], parameters)
+        flat_probabilities = probabilities.reshape(probabilities.shape[0], -1)
+        nll_sum += _probability_nll(flat_probabilities, actual_errors[batch]) * len(
+            flat_probabilities
+        )
+        proposal = (flat_probabilities >= 0.5).astype(np.uint8)
+        proposal_syndromes = np.asarray((hx @ proposal.T).T, dtype=np.uint8) % 2
+        residual = syndromes[batch] ^ proposal_syndromes
+        residual_weights = np.count_nonzero(residual, axis=1)
+        proposal_invalid_count += int(np.count_nonzero(residual_weights))
+        residual_weight_sum += int(residual_weights.sum())
+    return {
+        "mean_residual_syndrome_weight": residual_weight_sum / shots,
+        "nll": nll_sum / shots,
+        "proposal_invalid_count": proposal_invalid_count,
+    }
 
 
 def main() -> None:
@@ -227,32 +264,155 @@ def main() -> None:
         "model_manifest": sha256_file(model_manifest_path),
     }
     grid_policy = "fixed_prefix_for_reduced_runs" if args.grid_limit else "fixed_full_grid"
-    total_work_units = len(checkpoint_candidates) * len(candidates)
     shots = shards.shots
-    rows: list[dict[str, object]]
+    rates = sorted({shard.rate_index for shard in shards.shards})
+    decode_indices, decode_subset = deterministic_calibration_subset(
+        {rate_index: shards.indices_for_rate(rate_index) for rate_index in rates},
+        max_shots=config.calibration_decode_shots_cap,
+        seed=config.campaign_seed,
+    )
+    shortlist_size = min(config.calibration_shortlist_per_method, len(candidates))
+    policy: dict[str, object] = {
+        "decode_subset": decode_subset,
+        "grid_policy": grid_policy,
+        "screening_candidate_count": len(candidates),
+        "screening_checkpoint_count": len(checkpoint_candidates),
+        "screening_proxy": [
+            "correction_nll",
+            "threshold_proposal_invalid_count",
+            "mean_residual_syndrome_weight",
+        ],
+        "screening_shots": shots,
+        "shortlist_per_method": shortlist_size,
+    }
+    screening_rows: list[dict[str, object]] = []
+    hybrid_rows: list[dict[str, object]] = []
+    shortlists: dict[str, list[int]] | None = None
+    decode_work_indices: list[int] | None = None
     if args.resume:
         progress = json.loads(progress_path.read_text())
         if not isinstance(progress, dict):
             raise TypeError("calibration progress must be a JSON object")
+        expected_fields = {
+            "completed_work_units",
+            "decode_work_indices",
+            "hybrid_candidates",
+            "policy",
+            "screening_candidates",
+            "shortlists",
+            "source_role",
+            "source_sha256",
+            "total_work_units",
+        }
+        if set(progress) != expected_fields:
+            raise ValueError("calibration progress schema does not match the two-stage policy")
         if (
-            progress.get("source_sha256") != source_sha256
-            or progress.get("grid_policy") != grid_policy
-            or progress.get("total_work_units") != total_work_units
+            progress.get("source_role") != "calibration"
+            or progress.get("source_sha256") != source_sha256
+            or progress.get("policy") != policy
         ):
             raise ValueError("calibration progress provenance does not match this run")
-        progress_rows = progress.get("candidates")
-        if progress.get("completed_work_units") != (
-            len(progress_rows) if isinstance(progress_rows, list) else None
+        raw_screening = progress.get("screening_candidates")
+        raw_hybrid = progress.get("hybrid_candidates")
+        if not isinstance(raw_screening, list) or not isinstance(raw_hybrid, list):
+            raise TypeError("calibration progress candidate tables must be lists")
+        screening_rows = raw_screening
+        hybrid_rows = raw_hybrid
+        if len(screening_rows) % len(candidates) != 0:
+            raise ValueError("calibration progress screening is not a checkpoint-aligned prefix")
+        if len(screening_rows) > len(checkpoint_candidates) * len(candidates):
+            raise ValueError("calibration progress screening exceeds the declared grid")
+        screening_fields = {
+            "inference_latency_seconds",
+            "logits_sha256",
+            "mean_residual_syndrome_weight",
+            "model_checkpoint",
+            "model_epoch",
+            "nll",
+            "parameters",
+            "proposal_invalid_count",
+            "work_index",
+        }
+        for work_index, row in enumerate(screening_rows):
+            if not isinstance(row, dict) or set(row) != screening_fields:
+                raise ValueError("calibration progress screening row is malformed")
+            checkpoint = checkpoint_candidates[work_index // len(candidates)]
+            parameters = candidates[work_index % len(candidates)]
+            numeric = (
+                row.get("inference_latency_seconds"),
+                row.get("mean_residual_syndrome_weight"),
+                row.get("nll"),
+            )
+            if (
+                row.get("work_index") != work_index
+                or row.get("model_epoch") != int(checkpoint["epoch"])
+                or row.get("model_checkpoint")
+                != {"path": str(checkpoint["path"]), "sha256": str(checkpoint["sha256"])}
+                or row.get("parameters") != asdict(parameters)
+                or not isinstance(row.get("logits_sha256"), str)
+                or any(type(value) not in (int, float) or not np.isfinite(value) or value < 0 for value in numeric)
+                or type(row.get("proposal_invalid_count")) is not int
+                or not 0 <= int(row["proposal_invalid_count"]) <= shots
+            ):
+                raise ValueError("calibration progress screening order or measurement is invalid")
+        raw_shortlists = progress.get("shortlists")
+        raw_decode_work = progress.get("decode_work_indices")
+        screening_complete = len(screening_rows) == len(checkpoint_candidates) * len(candidates)
+        if raw_shortlists is None or raw_decode_work is None:
+            if raw_shortlists is not None or raw_decode_work is not None or screening_complete:
+                raise ValueError("calibration progress shortlist transition is inconsistent")
+            if hybrid_rows:
+                raise ValueError("calibration progress decoded before screening completed")
+        else:
+            expected_shortlists = calibration_shortlists(
+                screening_rows,
+                per_method=shortlist_size,
+            )
+            expected_decode_work = sorted(
+                set(expected_shortlists["soft_prior"]) | set(expected_shortlists["residual"])
+            )
+            if raw_shortlists != expected_shortlists or raw_decode_work != expected_decode_work:
+                raise ValueError("calibration progress shortlist provenance is inconsistent")
+            shortlists = expected_shortlists
+            decode_work_indices = expected_decode_work
+            if len(hybrid_rows) > len(decode_work_indices):
+                raise ValueError("calibration progress hybrid table exceeds the shortlist union")
+            for offset, row in enumerate(hybrid_rows):
+                if not isinstance(row, dict) or row.get("work_index") != decode_work_indices[offset]:
+                    raise ValueError("calibration progress hybrid rows are not an ordered prefix")
+                if set(row) != {
+                    "inference_latency_seconds",
+                    "logits_sha256",
+                    "model_checkpoint",
+                    "model_epoch",
+                    "parameters",
+                    "residual",
+                    "screening_proxy",
+                    "soft_prior",
+                    "work_index",
+                }:
+                    raise ValueError("calibration progress hybrid row is malformed")
+                screening = screening_rows[decode_work_indices[offset]]
+                for field in ("model_checkpoint", "model_epoch", "parameters"):
+                    if row.get(field) != screening.get(field):
+                        raise ValueError("calibration progress hybrid provenance diverges")
+                if row.get("screening_proxy") != {
+                    "mean_residual_syndrome_weight": screening["mean_residual_syndrome_weight"],
+                    "nll": screening["nll"],
+                    "proposal_invalid_count": screening["proposal_invalid_count"],
+                }:
+                    raise ValueError("calibration progress screening proxy diverges")
+        screened_checkpoints = len(screening_rows) // len(candidates)
+        expected_total = len(checkpoint_candidates) + (
+            len(decode_work_indices)
+            if decode_work_indices is not None
+            else min(2 * shortlist_size, len(checkpoint_candidates) * len(candidates))
+        )
+        if (
+            progress.get("completed_work_units") != screened_checkpoints + len(hybrid_rows)
+            or progress.get("total_work_units") != expected_total
         ):
             raise ValueError("calibration progress work-unit count is inconsistent")
-        rows = validate_calibration_progress_rows(
-            progress_rows,
-            checkpoint_candidates=checkpoint_candidates,
-            candidates=candidates,
-            shots=shots,
-        )
-    else:
-        rows = []
 
     model_inputs = np.empty((shots, 22, 45), dtype=np.float32)
     syndromes = np.empty((shots, 945), dtype=np.uint8)
@@ -270,22 +430,42 @@ def main() -> None:
         actual_observables[indices] = shards.read("obs_actual.b8", indices)
         error_rates[indices] = rate_batch
 
-    completed_at_start = len(rows)
     completed_this_run = 0
-    stop_requested = False
-    for checkpoint_index, candidate in enumerate(checkpoint_candidates):
-        if not isinstance(candidate, dict):
-            raise TypeError("model checkpoint candidate must be an object")
-        first_work_index = checkpoint_index * len(candidates)
-        if first_work_index + len(candidates) <= completed_at_start:
-            continue
+
+    def write_progress() -> None:
+        screened_checkpoints = len(screening_rows) // len(candidates)
+        total = len(checkpoint_candidates) + (
+            len(decode_work_indices)
+            if decode_work_indices is not None
+            else min(2 * shortlist_size, len(checkpoint_candidates) * len(candidates))
+        )
+        progress_temporary = args.out / ".progress.json.tmp"
+        write_canonical_json(
+            progress_temporary,
+            {
+                "completed_work_units": screened_checkpoints + len(hybrid_rows),
+                "decode_work_indices": decode_work_indices,
+                "hybrid_candidates": hybrid_rows,
+                "policy": policy,
+                "screening_candidates": screening_rows,
+                "shortlists": shortlists,
+                "source_role": "calibration",
+                "source_sha256": source_sha256,
+                "total_work_units": total,
+            },
+        )
+        os.replace(progress_temporary, progress_path)
+
+    def limit_reached() -> bool:
+        return (
+            args.max_work_units_this_run is not None
+            and completed_this_run >= args.max_work_units_this_run
+        )
+
+    def load_checkpoint_model(candidate: dict[str, object]) -> tuple[int, RingFNO]:
         epoch = int(candidate["epoch"])
         checkpoint_path = args.model / str(candidate["path"])
-        verify_sha256(
-            checkpoint_path,
-            str(candidate["sha256"]),
-            label=f"epoch {epoch} checkpoint",
-        )
+        verify_sha256(checkpoint_path, str(candidate["sha256"]), label=f"epoch {epoch} checkpoint")
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         if int(checkpoint.get("epoch", -1)) != epoch:
             raise ValueError("checkpoint epoch disagrees with model manifest")
@@ -299,6 +479,18 @@ def main() -> None:
         model.load_state_dict(checkpoint["model_state_dict"])
         model.requires_grad_(False)
         model.eval()
+        return epoch, model
+
+    screened_checkpoints = len(screening_rows) // len(candidates)
+    for checkpoint_index, candidate in enumerate(checkpoint_candidates):
+        if not isinstance(candidate, dict):
+            raise TypeError("model checkpoint candidate must be an object")
+        if checkpoint_index < screened_checkpoints:
+            continue
+        if limit_reached():
+            return
+        first_work_index = checkpoint_index * len(candidates)
+        epoch, model = load_checkpoint_model(candidate)
         logits = np.empty((shots, 58, 45), dtype=np.float32)
         inference_started = perf_counter()
         with torch.no_grad():
@@ -307,49 +499,18 @@ def main() -> None:
                 logits[batch] = model(torch.from_numpy(model_inputs[batch])).numpy()
         inference_latency = perf_counter() - inference_started
         logits_sha256 = _array_sha256(logits)
-        previous_checkpoint_rows = rows[
-            first_work_index : min(completed_at_start, first_work_index + len(candidates))
-        ]
-        if previous_checkpoint_rows:
-            previous_logits = {
-                row.get("logits_sha256")
-                for row in previous_checkpoint_rows
-                if isinstance(row, dict)
-            }
-            previous_latencies = {
-                row.get("inference_latency_seconds")
-                for row in previous_checkpoint_rows
-                if isinstance(row, dict)
-            }
-            if previous_logits != {logits_sha256} or len(previous_latencies) != 1:
-                raise ValueError("resumed checkpoint inference provenance is inconsistent")
-            stored_latency = next(iter(previous_latencies))
-            if type(stored_latency) not in (int, float) or stored_latency < 0:
-                raise ValueError("resumed checkpoint inference latency is invalid")
-            inference_latency = float(stored_latency)
-
         for parameter_index, parameters in enumerate(candidates):
             work_index = first_work_index + parameter_index
-            if work_index < completed_at_start:
-                continue
-            if (
-                args.max_work_units_this_run is not None
-                and completed_this_run >= args.max_work_units_this_run
-            ):
-                stop_requested = True
-                break
-            soft, residual = _score_candidate(
+            proxy = _screen_candidate(
                 parameters=parameters,
                 logits=logits,
                 syndromes=syndromes,
                 actual_errors=actual_errors,
-                actual_observables=actual_observables,
                 error_rates=error_rates,
                 hx=hx,
-                logical_x=logical_x,
                 batch_size=config.training_batch_size,
             )
-            rows.append(
+            screening_rows.append(
                 {
                     "inference_latency_seconds": inference_latency,
                     "logits_sha256": logits_sha256,
@@ -359,38 +520,75 @@ def main() -> None:
                     },
                     "model_epoch": epoch,
                     "parameters": asdict(parameters),
-                    "residual": _score_payload(residual),
-                    "soft_prior": _score_payload(soft),
+                    **proxy,
+                    "work_index": work_index,
                 }
             )
-            completed_this_run += 1
-            progress_temporary = args.out / ".progress.json.tmp"
-            write_canonical_json(
-                progress_temporary,
-                {
-                    "candidates": rows,
-                    "completed_work_units": len(rows),
-                    "grid_policy": grid_policy,
-                    "source_role": "calibration",
-                    "source_sha256": source_sha256,
-                    "total_work_units": total_work_units,
-                },
-            )
-            os.replace(progress_temporary, progress_path)
-        if stop_requested:
-            break
+        completed_this_run += 1
+        write_progress()
 
-    if len(rows) < total_work_units:
-        return
+    if shortlists is None:
+        shortlists = calibration_shortlists(screening_rows, per_method=shortlist_size)
+        decode_work_indices = sorted(set(shortlists["soft_prior"]) | set(shortlists["residual"]))
+        write_progress()
+    if decode_work_indices is None:
+        raise RuntimeError("calibration shortlist union was not established")
+
+    for work_index in decode_work_indices[len(hybrid_rows) :]:
+        if limit_reached():
+            return
+        screening = screening_rows[work_index]
+        candidate = checkpoint_candidates[work_index // len(candidates)]
+        parameters = candidates[work_index % len(candidates)]
+        epoch, model = load_checkpoint_model(candidate)
+        subset_inputs = model_inputs[decode_indices]
+        inference_started = perf_counter()
+        with torch.no_grad():
+            subset_logits = model(torch.from_numpy(subset_inputs)).numpy()
+        inference_latency = perf_counter() - inference_started
+        soft, residual = _score_candidate(
+            parameters=parameters,
+            logits=subset_logits,
+            syndromes=syndromes[decode_indices],
+            actual_errors=actual_errors[decode_indices],
+            actual_observables=actual_observables[decode_indices],
+            error_rates=error_rates[decode_indices],
+            hx=hx,
+            logical_x=logical_x,
+            batch_size=config.training_batch_size,
+        )
+        hybrid_rows.append(
+            {
+                "inference_latency_seconds": inference_latency,
+                "logits_sha256": _array_sha256(subset_logits),
+                "model_checkpoint": screening["model_checkpoint"],
+                "model_epoch": epoch,
+                "parameters": asdict(parameters),
+                "residual": _score_payload(residual),
+                "screening_proxy": {
+                    "mean_residual_syndrome_weight": screening[
+                        "mean_residual_syndrome_weight"
+                    ],
+                    "nll": screening["nll"],
+                    "proposal_invalid_count": screening["proposal_invalid_count"],
+                },
+                "soft_prior": _score_payload(soft),
+                "work_index": work_index,
+            }
+        )
+        completed_this_run += 1
+        write_progress()
+
     grid_path = args.out / "grid.json"
     grid_temporary = args.out / ".grid.json.tmp"
     write_canonical_json(
         grid_temporary,
         {
-            "candidates": rows,
-            "grid_policy": grid_policy,
+            "hybrid_candidates": hybrid_rows,
             "logit_evaluations": len(checkpoint_candidates),
-            "shots": shots,
+            "policy": policy,
+            "screening_candidates": screening_rows,
+            "shortlists": shortlists,
             "source_role": "calibration",
             "source_sha256": source_sha256,
         },
@@ -406,7 +604,6 @@ def main() -> None:
                 "has_any_invalid_correction",
                 "block_errors",
                 "nll",
-                "inference_latency_seconds",
                 "model_epoch",
                 "alpha",
                 "beta",
@@ -414,11 +611,25 @@ def main() -> None:
             ],
             "selected": {
                 "residual": _selected_payload(
-                    min(rows, key=lambda row: _selection_key(row, "residual")),
+                    min(
+                        (
+                            row
+                            for row in hybrid_rows
+                            if row["work_index"] in shortlists["residual"]
+                        ),
+                        key=lambda row: _selection_key(row, "residual"),
+                    ),
                     "residual",
                 ),
                 "soft_prior": _selected_payload(
-                    min(rows, key=lambda row: _selection_key(row, "soft_prior")),
+                    min(
+                        (
+                            row
+                            for row in hybrid_rows
+                            if row["work_index"] in shortlists["soft_prior"]
+                        ),
+                        key=lambda row: _selection_key(row, "soft_prior"),
+                    ),
                     "soft_prior",
                 ),
             },

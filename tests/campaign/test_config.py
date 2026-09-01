@@ -12,6 +12,9 @@ def test_canonical_config_has_disjoint_roles_and_bounded_cloud_job() -> None:
     assert config.cloud_cpu == 8
     assert config.cloud_memory == "32Gi"
     assert config.cloud_timeout_seconds == 8 * 60 * 60
+    assert config.checkpoint_grace_seconds == 45 * 60
+    assert config.calibration_decode_shots_cap == 512
+    assert config.calibration_shortlist_per_method == 4
     assert config.max_test_shots_per_point == 200_000
     assert config.target_failures == 200
 
@@ -23,6 +26,9 @@ def test_canonical_config_has_disjoint_roles_and_bounded_cloud_job() -> None:
         ({"noise_grid": [0.003, 0.003]}, "strictly increasing"),
         ({"noise_grid": [0.003, 0.5]}, "between 0 and 0.5"),
         ({"target_failures": 200_001}, "target_failures"),
+        ({"calibration_decode_shots_cap": 10_001}, "calibration_decode_shots_cap"),
+        ({"calibration_shortlist_per_method": 49}, "calibration_shortlist_per_method"),
+        ({"checkpoint_grace_seconds": 2_699}, "at least 2700"),
         ({"checkpoint_grace_seconds": 28_800}, "checkpoint_grace_seconds"),
     ],
 )

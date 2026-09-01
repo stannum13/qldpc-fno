@@ -87,6 +87,8 @@ def test_reduced_campaign_completes_refuses_overwrite_and_resumes_verified_stage
     assert mode["canonical_config_sha256"] == hashlib.sha256(canonical_before).hexdigest()
     assert mode["effective_config_sha256"] == _sha256(resolved_inputs / "config.json")
     assert mode["overrides"] == {
+        "calibration_decode_shots_cap": 8,
+        "calibration_shortlist_per_method": 1,
         "calibration_shots_cap": 8,
         "max_test_shots_per_point": 8,
         "pilot_shots_per_point": 8,

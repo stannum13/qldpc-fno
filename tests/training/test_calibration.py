@@ -8,6 +8,8 @@ from qldpc_fno.training.calibration import (
     CalibrationParameters,
     CalibrationScore,
     calibrated_probabilities,
+    calibration_shortlists,
+    deterministic_calibration_subset,
     select_calibration,
     validate_calibration_progress_rows,
 )
@@ -127,6 +129,62 @@ def test_selection_uses_parameters_as_deterministic_final_tiebreakers() -> None:
 def test_selection_rejects_an_empty_score_sequence() -> None:
     with pytest.raises(ValueError, match="at least one"):
         select_calibration([])
+
+
+def test_calibration_subset_is_deterministic_rate_stratified_and_bounded() -> None:
+    rates = {
+        0: np.arange(0, 20, dtype=np.int64),
+        1: np.arange(20, 40, dtype=np.int64),
+        2: np.arange(40, 60, dtype=np.int64),
+    }
+
+    first, metadata = deterministic_calibration_subset(rates, max_shots=14, seed=20260901)
+    second, repeated = deterministic_calibration_subset(rates, max_shots=14, seed=20260901)
+
+    assert first.tolist() == second.tolist()
+    assert metadata == repeated
+    assert first.size == 14
+    assert metadata["per_rate"] == [
+        {"rate_index": 0, "shots": 5},
+        {"rate_index": 1, "shots": 5},
+        {"rate_index": 2, "shots": 4},
+    ]
+    assert metadata["algorithm"] == "sha256_rank_within_rate_round_robin"
+    assert metadata["indices_sha256"]
+    assert len(set(first.tolist())) == 14
+
+
+def test_calibration_shortlists_are_independent_and_deterministic() -> None:
+    rows = [
+        {
+            "model_epoch": 1,
+            "parameters": {"alpha": 0.25, "beta": 0.0, "temperature": 0.5},
+            "nll": 0.1,
+            "proposal_invalid_count": 5,
+            "mean_residual_syndrome_weight": 3.0,
+            "work_index": 0,
+        },
+        {
+            "model_epoch": 2,
+            "parameters": {"alpha": 0.5, "beta": 0.0, "temperature": 1.0},
+            "nll": 0.2,
+            "proposal_invalid_count": 0,
+            "mean_residual_syndrome_weight": 0.0,
+            "work_index": 1,
+        },
+        {
+            "model_epoch": 3,
+            "parameters": {"alpha": 1.0, "beta": 0.5, "temperature": 2.0},
+            "nll": 0.3,
+            "proposal_invalid_count": 1,
+            "mean_residual_syndrome_weight": 1.0,
+            "work_index": 2,
+        },
+    ]
+
+    selected = calibration_shortlists(rows, per_method=1)
+
+    assert selected == {"residual": [1], "soft_prior": [0]}
 
 
 @pytest.mark.parametrize("nll", [np.nan, np.inf, -np.inf])

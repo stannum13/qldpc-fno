@@ -1,8 +1,9 @@
 """Deterministic calibration of FNO correction probabilities."""
 
+import hashlib
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -53,6 +54,106 @@ CALIBRATION_GRID = tuple(
     for beta in (0.0, 0.5, 1.0)
     for temperature in (0.5, 1.0, 2.0, 4.0)
 )
+
+
+def deterministic_calibration_subset(
+    rate_indices: Mapping[int, np.ndarray],
+    *,
+    max_shots: int,
+    seed: int,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Select a deterministic, near-balanced calibration-only decode subset."""
+    if type(max_shots) is not int or max_shots <= 0:
+        raise ValueError("max_shots must be a positive integer")
+    if type(seed) is not int or seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+    if not rate_indices:
+        raise ValueError("at least one calibration rate is required")
+    ranked: dict[int, list[int]] = {}
+    for rate_index, raw_indices in sorted(rate_indices.items()):
+        if type(rate_index) is not int or rate_index < 0:
+            raise ValueError("calibration rate indices must be non-negative integers")
+        indices = np.asarray(raw_indices, dtype=np.int64)
+        if indices.ndim != 1 or indices.size == 0 or len(set(indices.tolist())) != indices.size:
+            raise ValueError("calibration shot indices must be non-empty and unique per rate")
+        ranked[rate_index] = sorted(
+            indices.tolist(),
+            key=lambda index: hashlib.sha256(
+                f"{seed}:{rate_index}:{index}:calibration_decode".encode()
+            ).digest(),
+        )
+    target = min(max_shots, sum(len(indices) for indices in ranked.values()))
+    selected: dict[int, list[int]] = {rate_index: [] for rate_index in ranked}
+    while sum(len(indices) for indices in selected.values()) < target:
+        progressed = False
+        for rate_index, indices in ranked.items():
+            offset = len(selected[rate_index])
+            if offset < len(indices):
+                selected[rate_index].append(indices[offset])
+                progressed = True
+                if sum(len(values) for values in selected.values()) == target:
+                    break
+        if not progressed:
+            raise RuntimeError("calibration subset allocation made no progress")
+    subset = np.array(
+        [index for rate_index in sorted(selected) for index in sorted(selected[rate_index])],
+        dtype=np.int64,
+    )
+    digest = hashlib.sha256(subset.astype("<i8", copy=False).tobytes()).hexdigest()
+    metadata: dict[str, object] = {
+        "algorithm": "sha256_rank_within_rate_round_robin",
+        "indices_sha256": digest,
+        "max_shots": max_shots,
+        "per_rate": [
+            {"rate_index": rate_index, "shots": len(selected[rate_index])}
+            for rate_index in sorted(selected)
+        ],
+        "seed": seed,
+        "shots": int(subset.size),
+    }
+    return subset, metadata
+
+
+def calibration_shortlists(
+    screening_rows: Sequence[Mapping[str, object]],
+    *,
+    per_method: int,
+) -> dict[str, list[int]]:
+    """Build independent deterministic soft-prior and residual proxy shortlists."""
+    if type(per_method) is not int or per_method <= 0:
+        raise ValueError("per_method must be a positive integer")
+    if not screening_rows or per_method > len(screening_rows):
+        raise ValueError("per_method must not exceed the screening candidate count")
+
+    def common(row: Mapping[str, object]) -> tuple[object, ...]:
+        parameters = row.get("parameters")
+        if not isinstance(parameters, Mapping):
+            raise TypeError("calibration screening parameters are malformed")
+        return (
+            int(row["model_epoch"]),
+            float(parameters["alpha"]),
+            float(parameters["beta"]),
+            float(parameters["temperature"]),
+            int(row["work_index"]),
+        )
+
+    soft = sorted(
+        screening_rows,
+        key=lambda row: (float(row["nll"]), *common(row)),
+    )[:per_method]
+    residual = sorted(
+        screening_rows,
+        key=lambda row: (
+            int(row["proposal_invalid_count"]),
+            float(row["mean_residual_syndrome_weight"]),
+            float(row["nll"]),
+            *common(row),
+        ),
+    )[:per_method]
+    return {
+        "residual": [int(row["work_index"]) for row in residual],
+        "soft_prior": [int(row["work_index"]) for row in soft],
+    }
 
 
 def validate_calibration_progress_rows(
