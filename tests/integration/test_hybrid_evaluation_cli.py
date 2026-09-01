@@ -30,6 +30,8 @@ def _write_config(path: Path) -> None:
             "pilot_shots_per_point": 1,
             "train_shots_cap": 4,
             "calibration_shots_cap": 2,
+            "calibration_decode_shots_cap": 2,
+            "calibration_shortlist_per_method": 1,
             "test_batch_shots": 1,
             "max_test_shots_per_point": 2,
             "target_failures": 2,
@@ -40,8 +42,8 @@ def _write_config(path: Path) -> None:
             "checkpoint_every_epochs": 1,
             "cloud_cpu": 1,
             "cloud_memory": "1Gi",
-            "cloud_timeout_seconds": 60,
-            "checkpoint_grace_seconds": 1,
+            "cloud_timeout_seconds": 3600,
+            "checkpoint_grace_seconds": 2700,
         },
     )
 

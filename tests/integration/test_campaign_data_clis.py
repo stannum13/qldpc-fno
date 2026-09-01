@@ -39,6 +39,8 @@ def _write_reduced_config(path: Path, *, training_seed: int = 1701) -> None:
             "pilot_shots_per_point": 8,
             "train_shots_cap": 8,
             "calibration_shots_cap": 8,
+            "calibration_decode_shots_cap": 8,
+            "calibration_shortlist_per_method": 1,
             "test_batch_shots": 8,
             "max_test_shots_per_point": 8,
             "target_failures": 4,
@@ -49,8 +51,8 @@ def _write_reduced_config(path: Path, *, training_seed: int = 1701) -> None:
             "checkpoint_every_epochs": 1,
             "cloud_cpu": 1,
             "cloud_memory": "1Gi",
-            "cloud_timeout_seconds": 60,
-            "checkpoint_grace_seconds": 1,
+            "cloud_timeout_seconds": 3600,
+            "checkpoint_grace_seconds": 2700,
         },
     )
 
@@ -64,6 +66,8 @@ def _write_flow_config(path: Path) -> None:
             "pilot_shots_per_point": 1,
             "train_shots_cap": 16,
             "calibration_shots_cap": 16,
+            "calibration_decode_shots_cap": 16,
+            "calibration_shortlist_per_method": 1,
             "test_batch_shots": 1,
             "max_test_shots_per_point": 1,
             "target_failures": 1,
@@ -74,8 +78,8 @@ def _write_flow_config(path: Path) -> None:
             "checkpoint_every_epochs": 1,
             "cloud_cpu": 1,
             "cloud_memory": "1Gi",
-            "cloud_timeout_seconds": 60,
-            "checkpoint_grace_seconds": 1,
+            "cloud_timeout_seconds": 3600,
+            "checkpoint_grace_seconds": 2700,
         },
     )
 
