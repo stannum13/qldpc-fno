@@ -14,7 +14,6 @@ def main() -> None:
     parser.add_argument("--test", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--calibration", type=Path, required=True)
-    parser.add_argument("--bootstrap-samples", type=int, default=10_000)
     parser.add_argument(
         "--campaign-mode",
         choices=("canonical", "reduced_non_scientific"),

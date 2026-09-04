@@ -99,7 +99,6 @@ class EvaluationRequest:
     calibration: Path
     out: Path
     campaign_mode: str = "canonical"
-    bootstrap_samples: int = 10_000
     deadline_monotonic: float | None = None
     max_batches_this_run: int | None = None
     resume: bool = False
@@ -1334,14 +1333,10 @@ def _finalize(
 
 def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
     """Verify inputs, evaluate paired decoders, and publish outcomes."""
-    if args.bootstrap_samples <= 0:
-        raise ValueError("bootstrap-samples must be positive")
     if args.max_batches_this_run is not None and args.max_batches_this_run <= 0:
         raise ValueError("max-batches-this-run must be positive")
     if args.deadline_monotonic is not None and not math.isfinite(args.deadline_monotonic):
         raise ValueError("deadline-monotonic must be finite")
-    if args.campaign_mode == "canonical" and args.bootstrap_samples != 10_000:
-        raise ValueError("canonical evaluation requires 10000 bootstrap samples")
     if args.campaign_mode not in {"canonical", "reduced_non_scientific"}:
         raise ValueError("evaluation campaign mode is invalid")
     config = CampaignConfig.from_json(args.config)

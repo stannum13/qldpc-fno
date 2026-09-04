@@ -43,7 +43,6 @@ class CampaignInputRequest:
     git_commit: str
     campaign_mode: str
     calibration_grid_limit: int | None
-    bootstrap_samples: int
     execution_identity: Mapping[str, object]
 
 
@@ -61,11 +60,9 @@ def _validate_request(request: CampaignInputRequest) -> tuple[CampaignConfig, Ca
     effective = CampaignConfig.from_json(request.effective_config)
     if re.fullmatch(r"[0-9a-f]{40}", request.git_commit) is None:
         raise ValueError("campaign input Git commit must be a full lowercase SHA-1")
-    if type(request.bootstrap_samples) is not int or request.bootstrap_samples <= 0:
-        raise ValueError("campaign bootstrap samples must be a positive integer")
     if request.campaign_mode == "canonical":
-        if request.calibration_grid_limit is not None or request.bootstrap_samples != 10_000:
-            raise ValueError("canonical campaign controls cannot reduce calibration or bootstrap")
+        if request.calibration_grid_limit is not None:
+            raise ValueError("canonical campaign controls cannot reduce calibration")
         if request.canonical_config.read_bytes() != request.effective_config.read_bytes():
             raise ValueError("canonical campaign controls require the committed canonical config")
     elif request.campaign_mode == "reduced_non_scientific":
@@ -107,15 +104,12 @@ def _expected_mode(
         "canonical_config_sha256": sha256_file(request.canonical_config),
         "code_manifest_sha256": sha256_file(code_manifest),
         "effective_config_sha256": sha256_file(request.effective_config),
-        "execution_controls": {
-            "bootstrap_samples": request.bootstrap_samples,
-            "calibration_grid_limit": request.calibration_grid_limit,
-        },
+        "execution_controls": {"calibration_grid_limit": request.calibration_grid_limit},
         "execution_identity": dict(request.execution_identity),
         "git_commit": request.git_commit,
         "mode": request.campaign_mode,
         "overrides": _overrides(canonical, effective),
-        "schema_version": 2,
+        "schema_version": 3,
         "scientific_claims_permitted": request.campaign_mode == "canonical",
     }
 
@@ -200,7 +194,6 @@ def verify_downloaded_cloud_inputs(
     git_commit: str,
     campaign_mode: str,
     calibration_grid_limit: int | None,
-    bootstrap_samples: int,
     expected_execution_identity: Mapping[str, object],
 ) -> dict[str, object]:
     """Verify a recursively downloaded Cloud ``inputs/`` publication for resume."""
@@ -234,7 +227,6 @@ def verify_downloaded_cloud_inputs(
             git_commit=git_commit,
             campaign_mode=campaign_mode,
             calibration_grid_limit=calibration_grid_limit,
-            bootstrap_samples=bootstrap_samples,
             execution_identity=identity,
         )
         canonical, effective = _validate_request(request)

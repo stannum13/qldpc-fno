@@ -21,7 +21,6 @@ def _run_campaign(
     environment = os.environ.copy()
     environment.update(
         {
-            "CAMPAIGN_BOOTSTRAP_SAMPLES": "100",
             "CAMPAIGN_CALIBRATION_CANDIDATES": "1",
             "CAMPAIGN_CALIBRATION_SHOTS": "8",
             "CAMPAIGN_EPOCHS": "1",
@@ -83,6 +82,8 @@ def test_reduced_campaign_completes_refuses_overwrite_and_resumes_verified_stage
 
     mode = json.loads((resolved_inputs / "run-mode.json").read_text())
     assert mode["mode"] == "reduced_non_scientific"
+    assert mode["schema_version"] == 3
+    assert "bootstrap_samples" not in mode["execution_controls"]
     assert mode["scientific_claims_permitted"] is False
     assert mode["canonical_config_sha256"] == hashlib.sha256(canonical_before).hexdigest()
     assert mode["effective_config_sha256"] == _sha256(resolved_inputs / "config.json")

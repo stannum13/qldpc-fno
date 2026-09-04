@@ -118,8 +118,6 @@ def _evaluate(
         model,
         "--calibration",
         calibration,
-        "--bootstrap-samples",
-        200,
         "--campaign-mode",
         "reduced_non_scientific",
         "--out",
@@ -205,8 +203,6 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
         model,
         "--calibration",
         calibration,
-        "--bootstrap-samples",
-        10_000,
         "--out",
         evaluation,
     )

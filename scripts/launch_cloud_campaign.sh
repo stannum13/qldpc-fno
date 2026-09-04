@@ -279,12 +279,10 @@ create_job=()
 configure_job_contract() {
   pinned_image="${image%:*}@${image_digest}"
   calibration_grid_limit=""
-  bootstrap_samples="10000"
   if (( reduced )); then
     calibration_grid_limit="1"
-    bootstrap_samples="100"
   fi
-  environment_variables="CAMPAIGN_BOOTSTRAP_SAMPLES=${bootstrap_samples},CAMPAIGN_BUCKET=${bucket},CAMPAIGN_CALIBRATION_GRID_LIMIT=${calibration_grid_limit},CAMPAIGN_CANONICAL_CONFIG=/app/configs/accuracy_campaign.json,CAMPAIGN_CLOUD_JOB=${job},CAMPAIGN_CLOUD_PROJECT=${project},CAMPAIGN_CLOUD_REGION=${region},CAMPAIGN_CODE=/app/campaign-code,CAMPAIGN_CONFIG=${config_path},CAMPAIGN_FINALIZATION_RESERVE_SECONDS=2700,CAMPAIGN_GIT_COMMIT=${git_commit},CAMPAIGN_IMAGE=${pinned_image},CAMPAIGN_IMAGE_DIGEST=${image_digest},CAMPAIGN_MODE=${campaign_mode},CAMPAIGN_OUTER_TIMEOUT_SECONDS=28800,CAMPAIGN_PREFIX=${prefix},CAMPAIGN_SERVICE_ACCOUNT=${service_account},CAMPAIGN_STORE=${store},CAMPAIGN_WORKDIR=/tmp/qldpc-fno-work,CAMPAIGN_WORK_CUTOFF_SECONDS=26100"
+  environment_variables="CAMPAIGN_BUCKET=${bucket},CAMPAIGN_CALIBRATION_GRID_LIMIT=${calibration_grid_limit},CAMPAIGN_CANONICAL_CONFIG=/app/configs/accuracy_campaign.json,CAMPAIGN_CLOUD_JOB=${job},CAMPAIGN_CLOUD_PROJECT=${project},CAMPAIGN_CLOUD_REGION=${region},CAMPAIGN_CODE=/app/campaign-code,CAMPAIGN_CONFIG=${config_path},CAMPAIGN_FINALIZATION_RESERVE_SECONDS=2700,CAMPAIGN_GIT_COMMIT=${git_commit},CAMPAIGN_IMAGE=${pinned_image},CAMPAIGN_IMAGE_DIGEST=${image_digest},CAMPAIGN_MODE=${campaign_mode},CAMPAIGN_OUTER_TIMEOUT_SECONDS=28800,CAMPAIGN_PREFIX=${prefix},CAMPAIGN_SERVICE_ACCOUNT=${service_account},CAMPAIGN_STORE=${store},CAMPAIGN_WORKDIR=/tmp/qldpc-fno-work,CAMPAIGN_WORK_CUTOFF_SECONDS=26100"
   create_job=(
     gcloud run jobs create "$job" "--image=$pinned_image"
     --cpu=8 --memory=32Gi --task-timeout=8h --max-retries=0 --tasks=1 --parallelism=1
@@ -294,7 +292,7 @@ configure_job_contract() {
   )
   if (( reduced )); then
     create_job+=(
-      "--args=--campaign-mode=reduced_non_scientific,--calibration-grid-limit=1,--bootstrap-samples=100"
+      "--args=--campaign-mode=reduced_non_scientific,--calibration-grid-limit=1"
     )
   fi
   create_job+=("--region=$region" "--project=$project" --quiet)
@@ -422,7 +420,6 @@ identity = verify_downloaded_cloud_inputs(
     git_commit=sys.argv[3],
     campaign_mode="canonical",
     calibration_grid_limit=None,
-    bootstrap_samples=10000,
     expected_execution_identity=expected,
 )
 print(json.dumps(identity, sort_keys=True))

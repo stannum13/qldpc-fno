@@ -858,7 +858,6 @@ class _CampaignCommands:
         workspace: Path,
         command_runner: Callable[[list[str], float | None], None],
         calibration_grid_limit: int | None,
-        bootstrap_samples: int,
         campaign_mode: str = "canonical",
         monotonic_clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -867,7 +866,6 @@ class _CampaignCommands:
         self.workspace = workspace.resolve()
         self.command_runner = command_runner
         self.calibration_grid_limit = calibration_grid_limit
-        self.bootstrap_samples = bootstrap_samples
         self.campaign_mode = campaign_mode
         self.monotonic = monotonic_clock
         self.repo = Path(__file__).resolve().parents[3]
@@ -1023,8 +1021,6 @@ class _CampaignCommands:
             self.workspace / "model",
             "--calibration",
             self.workspace / "calibration",
-            "--bootstrap-samples",
-            self.bootstrap_samples,
             "--campaign-mode",
             self.campaign_mode,
             "--max-batches-this-run",
@@ -1064,8 +1060,6 @@ class _CampaignCommands:
             self.workspace / "model",
             "--calibration",
             self.workspace / "calibration",
-            "--bootstrap-samples",
-            self.bootstrap_samples,
             "--campaign-mode",
             self.campaign_mode,
             "--deadline-monotonic",
@@ -1102,7 +1096,6 @@ def build_campaign_runner(
     workspace: Path,
     store: ArtifactStore,
     calibration_grid_limit: int | None = None,
-    bootstrap_samples: int = 10_000,
     campaign_mode: str = "canonical",
     scientific_claims_permitted: bool = True,
     command_runner: Callable[[list[str], float | None], None] = _default_command_runner,
@@ -1116,7 +1109,6 @@ def build_campaign_runner(
         workspace=workspace,
         command_runner=command_runner,
         calibration_grid_limit=calibration_grid_limit,
-        bootstrap_samples=bootstrap_samples,
         campaign_mode=campaign_mode,
         monotonic_clock=monotonic_clock,
     )
@@ -1293,7 +1285,6 @@ def main() -> None:
     parser.add_argument("--store", "--output", dest="store")
     parser.add_argument("--deadline-monotonic", type=float)
     parser.add_argument("--calibration-grid-limit", type=int)
-    parser.add_argument("--bootstrap-samples", type=int, default=10_000)
     parser.add_argument(
         "--campaign-mode",
         choices=("canonical", "reduced_non_scientific"),
@@ -1325,7 +1316,6 @@ def main() -> None:
             git_commit=git_commit,
             campaign_mode=args.campaign_mode,
             calibration_grid_limit=args.calibration_grid_limit,
-            bootstrap_samples=args.bootstrap_samples,
             execution_identity=_input_execution_identity(store_location, source_config),
         ),
         deadline_monotonic=deadline,
@@ -1346,7 +1336,6 @@ def main() -> None:
         workspace=workspace,
         store=store,
         calibration_grid_limit=args.calibration_grid_limit,
-        bootstrap_samples=args.bootstrap_samples,
         campaign_mode=args.campaign_mode,
         scientific_claims_permitted=args.campaign_mode == "canonical",
         command_runner=command_runner,

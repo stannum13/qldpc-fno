@@ -9,7 +9,6 @@ from qldpc_fno.campaign.cloud_contract import verify_cloud_job_contract
 
 def _contract() -> tuple[dict[str, object], dict[str, object]]:
     env = {
-        "CAMPAIGN_BOOTSTRAP_SAMPLES": "10000",
         "CAMPAIGN_BUCKET": "science-project-accuracy-a1b2",
         "CAMPAIGN_CALIBRATION_GRID_LIMIT": "",
         "CAMPAIGN_CANONICAL_CONFIG": "/app/configs/accuracy_campaign.json",
@@ -87,6 +86,7 @@ def _contract() -> tuple[dict[str, object], dict[str, object]]:
 def test_cloud_job_contract_accepts_only_exact_runtime_identity() -> None:
     payload, expected = _contract()
 
+    assert "CAMPAIGN_BOOTSTRAP_SAMPLES" not in expected["env"]
     verify_cloud_job_contract(payload, expected)
 
 

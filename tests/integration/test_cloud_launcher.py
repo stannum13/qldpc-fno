@@ -151,15 +151,12 @@ if arguments[:3] == ["storage", "cp", "--recursive"]:
         "canonical_config_sha256": hashlib.sha256(canonical_config.read_bytes()).hexdigest(),
         "code_manifest_sha256": record(destination / "code/code.json")["sha256"],
         "effective_config_sha256": record(destination / "config.json")["sha256"],
-        "execution_controls": {
-            "bootstrap_samples": 10000,
-            "calibration_grid_limit": None,
-        },
+        "execution_controls": {"calibration_grid_limit": None},
         "execution_identity": identity,
         "git_commit": os.environ["FAKE_GIT_COMMIT"],
         "mode": "canonical",
         "overrides": {},
-        "schema_version": 2,
+        "schema_version": 3,
         "scientific_claims_permitted": True,
     }
     (destination / "run-mode.json").write_bytes(canonical_bytes(mode))
@@ -205,7 +202,6 @@ if arguments[:3] == ["run", "jobs", "describe"]:
         )
         store = os.environ.get("FAKE_JOB_STORE", f"gs://{bucket}/{prefix}")
         environment = {
-            "CAMPAIGN_BOOTSTRAP_SAMPLES": "10000",
             "CAMPAIGN_BUCKET": bucket,
             "CAMPAIGN_CALIBRATION_GRID_LIMIT": "",
             "CAMPAIGN_CANONICAL_CONFIG": "/app/configs/accuracy_campaign.json",
@@ -563,6 +559,7 @@ def test_reduced_execute_creates_one_bounded_cpu_job(tmp_path: Path) -> None:
     assert f"CAMPAIGN_BUCKET=science-project-{CAMPAIGN_ID}" in env_argument
     assert f"CAMPAIGN_PREFIX=campaigns/{CAMPAIGN_ID}/{COMMIT}" in env_argument
     assert f"CAMPAIGN_GIT_COMMIT={COMMIT}" in env_argument
+    assert "CAMPAIGN_BOOTSTRAP_SAMPLES" not in env_argument
     assert "CAMPAIGN_CONFIG=/app/configs/accuracy_campaign_cloud_reduced.json" in env_argument
     assert f"CAMPAIGN_IMAGE={expected_pinned_image}" in env_argument
     assert f"CAMPAIGN_IMAGE_DIGEST={DIGEST}" in env_argument
@@ -695,10 +692,8 @@ def test_reduced_execute_uses_non_scientific_config_and_waits(tmp_path: Path) ->
     create_job = next(call for call in calls if call[:3] == ["run", "jobs", "create"])
     env_argument = next(argument for argument in create_job if argument.startswith("--set-env-vars="))
     assert "CAMPAIGN_CONFIG=/app/configs/accuracy_campaign_cloud_reduced.json" in env_argument
-    assert (
-        "--args=--campaign-mode=reduced_non_scientific,--calibration-grid-limit=1,"
-        "--bootstrap-samples=100" in create_job
-    )
+    assert "--args=--campaign-mode=reduced_non_scientific,--calibration-grid-limit=1" in create_job
+    assert not any("bootstrap-samples" in argument for argument in create_job)
     execute_job = next(call for call in calls if call[:3] == ["run", "jobs", "execute"])
     assert "--wait" in execute_job
     assert "--async" not in execute_job

@@ -14,7 +14,6 @@ def _request(tmp_path: Path, **overrides: object) -> CampaignInputRequest:
     code.mkdir(exist_ok=True)
     (code / "code.json").write_text('{"name":"lp_3_7_16"}\n')
     values: dict[str, object] = {
-        "bootstrap_samples": 10_000,
         "calibration_grid_limit": None,
         "campaign_mode": "canonical",
         "canonical_config": Path("configs/accuracy_campaign.json"),
@@ -40,12 +39,11 @@ def test_shared_input_bootstrap_publishes_materializes_and_revalidates(tmp_path:
     assert prepared.config.read_bytes() == Path("configs/accuracy_campaign.json").read_bytes()
     mode = json.loads(prepared.run_mode.read_text())
     assert mode["code_manifest_sha256"]
-    assert mode["execution_controls"] == {
-        "bootstrap_samples": 10_000,
-        "calibration_grid_limit": None,
-    }
+    assert mode["execution_controls"] == {"calibration_grid_limit": None}
+    assert "bootstrap_samples" not in mode["execution_controls"]
     assert mode["execution_identity"] == request.execution_identity
     assert mode["mode"] == "canonical"
+    assert mode["schema_version"] == 3
 
     resumed = prepare_campaign_inputs(store, tmp_path / "resumed", request)
     assert resumed.run_mode.read_bytes() == prepared.run_mode.read_bytes()
@@ -122,14 +120,8 @@ def test_input_evidence_probes_receive_the_absolute_deadline(tmp_path: Path) -> 
     assert store.explicit_deadlines == [15.0] * 13
 
 
-@pytest.mark.parametrize(
-    ("grid_limit", "bootstrap_samples"),
-    [(1, 10_000), (None, 100), (1, 100)],
-)
-def test_canonical_input_policy_rejects_reduced_controls(
+def test_canonical_input_policy_rejects_non_null_calibration_grid_limit(
     tmp_path: Path,
-    grid_limit: int | None,
-    bootstrap_samples: int,
 ) -> None:
     with pytest.raises(ValueError, match="canonical campaign controls"):
         prepare_campaign_inputs(
@@ -137,7 +129,6 @@ def test_canonical_input_policy_rejects_reduced_controls(
             tmp_path / "work",
             _request(
                 tmp_path,
-                bootstrap_samples=bootstrap_samples,
-                calibration_grid_limit=grid_limit,
+                calibration_grid_limit=1,
             ),
         )

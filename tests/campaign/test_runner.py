@@ -542,7 +542,6 @@ def test_training_adapter_separates_teacher_chunk_from_epoch(tmp_path: Path) -> 
         workspace=workspace,
         command_runner=run,
         calibration_grid_limit=None,
-        bootstrap_samples=10,
     )
 
     assert commands.training(None) is StageResult.CHECKPOINTED
@@ -574,7 +573,6 @@ def test_calibration_adapter_runs_one_resumable_work_unit(tmp_path: Path) -> Non
         workspace=workspace,
         command_runner=run,
         calibration_grid_limit=None,
-        bootstrap_samples=10,
     )
 
     assert commands.calibration(None) is StageResult.CHECKPOINTED
@@ -601,12 +599,12 @@ def test_evaluation_deadline_finalizer_uses_evaluator_deadline_path(tmp_path: Pa
         workspace=workspace,
         command_runner=run,
         calibration_grid_limit=None,
-        bootstrap_samples=10,
     )
 
     assert commands.finalize_evaluation(7.5) is True
     command, timeout = commands_seen[0]
     assert command[command.index("--deadline-monotonic") + 1] == "0"
+    assert "--bootstrap-samples" not in command
     assert "--resume" in command
     assert timeout == 7.5
 
@@ -624,7 +622,6 @@ def test_pilot_adapter_does_not_trust_manifest_presence_alone(tmp_path: Path) ->
             AssertionError(f"unexpected command: {command}")
         ),
         calibration_grid_limit=None,
-        bootstrap_samples=10,
     )
 
     try:

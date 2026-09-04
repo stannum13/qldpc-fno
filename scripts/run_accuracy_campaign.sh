@@ -11,7 +11,7 @@ usage() {
   echo "CAMPAIGN_REDUCED=1 enables test-only, non-scientific size overrides:" >&2
   echo "  CAMPAIGN_PILOT_SHOTS, CAMPAIGN_TRAIN_SHOTS," >&2
   echo "  CAMPAIGN_CALIBRATION_SHOTS, CAMPAIGN_TEST_SHOTS, CAMPAIGN_EPOCHS," >&2
-  echo "  CAMPAIGN_CALIBRATION_CANDIDATES, and CAMPAIGN_BOOTSTRAP_SAMPLES." >&2
+  echo "  and CAMPAIGN_CALIBRATION_CANDIDATES." >&2
 }
 
 resume=0
@@ -62,7 +62,6 @@ calibration_shots="${CAMPAIGN_CALIBRATION_SHOTS:-8}"
 test_shots="${CAMPAIGN_TEST_SHOTS:-8}"
 epochs="${CAMPAIGN_EPOCHS:-1}"
 calibration_candidates="${CAMPAIGN_CALIBRATION_CANDIDATES:-1}"
-bootstrap_samples="${CAMPAIGN_BOOTSTRAP_SAMPLES:-100}"
 stage_execution_guard="${CAMPAIGN_FAIL_ON_STAGE_EXECUTION:-0}"
 stop_after_inputs="${CAMPAIGN_STOP_AFTER_INPUTS:-0}"
 
@@ -82,8 +81,7 @@ if [[ "$reduced" == "1" ]]; then
   require_positive_integer "CAMPAIGN_TEST_SHOTS" "$test_shots"
   require_positive_integer "CAMPAIGN_EPOCHS" "$epochs"
   require_positive_integer "CAMPAIGN_CALIBRATION_CANDIDATES" "$calibration_candidates"
-  require_positive_integer "CAMPAIGN_BOOTSTRAP_SAMPLES" "$bootstrap_samples"
-elif [[ -n "${CAMPAIGN_PILOT_SHOTS:-}${CAMPAIGN_TRAIN_SHOTS:-}${CAMPAIGN_CALIBRATION_SHOTS:-}${CAMPAIGN_TEST_SHOTS:-}${CAMPAIGN_EPOCHS:-}${CAMPAIGN_CALIBRATION_CANDIDATES:-}${CAMPAIGN_BOOTSTRAP_SAMPLES:-}" ]]; then
+elif [[ -n "${CAMPAIGN_PILOT_SHOTS:-}${CAMPAIGN_TRAIN_SHOTS:-}${CAMPAIGN_CALIBRATION_SHOTS:-}${CAMPAIGN_TEST_SHOTS:-}${CAMPAIGN_EPOCHS:-}${CAMPAIGN_CALIBRATION_CANDIDATES:-}" ]]; then
   echo "reduced campaign overrides require CAMPAIGN_REDUCED=1" >&2
   exit 2
 fi
@@ -177,7 +175,6 @@ runner=(
 if [[ "$reduced" == "1" ]]; then
   runner+=(
     --calibration-grid-limit "$calibration_candidates"
-    --bootstrap-samples "$bootstrap_samples"
   )
 fi
 if [[ "$stage_execution_guard" == "1" ]]; then
