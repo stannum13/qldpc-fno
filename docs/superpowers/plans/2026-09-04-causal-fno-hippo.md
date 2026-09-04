@@ -172,7 +172,7 @@ class HiPPOLegSMemory(nn.Module): ...
 ```python
 paired_sequence_inference(differences, *, mu0, seeds, draws) -> dict[str, object]
 cluster_percentile_interval(values, *, seed, draws) -> dict[str, object]
-audit_forecaster_causality(forecaster, sequence, forbidden_mutations) -> Audit
+audit_structural_prefix_causality(forecaster, sequence, forbidden_mutations) -> Audit
 ```
 
 - [ ] Test lower-tail paired t inference, the explicitly centered wild
@@ -183,6 +183,10 @@ audit_forecaster_causality(forecaster, sequence, forbidden_mutations) -> Audit
 - [ ] Test mutation of current/future syndromes, errors, logical outcomes, and
   diagnostics leaves `q_t` bit-identical for fixed past history.
 - [ ] Implement the minimum statistics and mutation-audit APIs.
+- [ ] Treat this utility as a structural prefix audit only: it cannot rule out
+  privileged state captured outside its input. Task 5 must recreate/reset each
+  concrete forecaster from identical weights and spy on the actual prediction
+  path to close that integration gap.
 - [ ] Commit as `feat: add causal and clustered audits`.
 - [ ] Independent statistical reviewer checks sampling units and tails.
 
