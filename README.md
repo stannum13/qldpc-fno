@@ -169,11 +169,32 @@ CAMPAIGN_CALIBRATION_SHOTS=8 \
 CAMPAIGN_TEST_SHOTS=8 \
 CAMPAIGN_EPOCHS=1 \
 CAMPAIGN_CALIBRATION_CANDIDATES=1 \
-CAMPAIGN_BOOTSTRAP_SAMPLES=100 \
 bash scripts/run_accuracy_campaign.sh
 ```
 
-### 4. Run the accuracy campaign on Google Cloud
+### 4. Run the fixed-shot disconfirming experiment
+
+The predeclared disconfirming profile evaluates its one selected rate, `p=0.0375`,
+with fixed selection and a fixed 2,048-shot test cap. Start it with:
+
+```bash
+CAMPAIGN_OUTPUT=artifacts/accuracy-disconfirm-p0375 \
+bash scripts/run_accuracy_campaign.sh --disconfirm
+```
+
+Resume the exact existing campaign with:
+
+```bash
+CAMPAIGN_OUTPUT=artifacts/accuracy-disconfirm-p0375 \
+bash scripts/run_accuracy_campaign.sh --disconfirm --resume
+```
+
+A detected harm result falsifies this candidate at `p=0.0375`. An inconclusive or
+benefit result only permits the next experiment; it is not a positive accuracy
+claim. Baseline tuning, at least three training seeds, and a larger confirmatory
+test remain required before any positive accuracy claim.
+
+### 5. Run the accuracy campaign on Google Cloud
 
 Cloud execution requires `gcloud`, an authenticated account, an active project
 with billing, and permission to use Cloud Build, Artifact Registry, Cloud Run,
@@ -341,9 +362,11 @@ held-out paired evaluation is:
    syndrome-invalid outputs among block failures; held-out evaluation applies
    that rule to every method.
 3. **Uncertainty:** report error counts and a 95% Wilson interval where implemented.
-4. **Diagnostics:** convergence, teacher-bit accuracy, negative log-likelihood,
+4. **Paired inference:** exact discordant-pair statistics for held-out comparisons;
+   adaptive or incomplete evaluations use them only as diagnostics.
+5. **Diagnostics:** convergence, teacher-bit accuracy, negative log-likelihood,
    correction weights, and related intermediate measures.
-5. **Timing:** report the measured batch and decoder components only after the
+6. **Timing:** report the measured batch and decoder components only after the
    accuracy comparison is valid; do not generalize one machine's timing.
 
 The pilot is a preselection stage, not the final comparison. It reports syndrome
@@ -365,7 +388,8 @@ The suffix `16` is the source paper's **distance upper bound**. The repository
 does not claim that the code's exact distance is 16. It also does not claim that
 matching a BP-LSD teacher is equivalent to decoding successfully, that the FNO
 generalizes outside the selected noise range, or that either hybrid wins before a
-canonical held-out campaign is run and its artifacts are reported.
+complete predeclared fixed-shot held-out campaign is run and its artifacts are
+reported. An inconclusive result is neither equivalence nor noninferiority.
 
 The Google Quantum AI Willow dataset is source-locked for future work but is not
 mixed into this qLDPC experiment. It is surface-code hardware data and belongs in
@@ -414,8 +438,10 @@ artifact contract.
 
 - Run and report the canonical held-out campaign for uniform BP-LSD, soft-prior
   BP-LSD, and proposal + residual BP-LSD on identical test shards.
-- Stress-test accuracy-compatible hybrids across additional noise ranges and code
-  sizes before treating transfer as established.
+- Tune the baseline, train at least three independent seeds, and run a larger
+  confirmatory test before any positive accuracy claim.
+- Stress-test any candidate that survives the disconfirming run across additional
+  noise ranges and code sizes before treating transfer as established.
 - Report comparable timing components only for accuracy-eligible methods.
 - Treat Willow/temporal work as a separate study: add a hardware-data adapter,
   temporal splits, drift tests, and independent provenance without combining it

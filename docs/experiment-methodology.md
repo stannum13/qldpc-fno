@@ -50,13 +50,15 @@ point has zero block failures, the
 pilot extends geometrically by a factor of 1.5, up to `p = 0.08`, until an
 block failure is measured or the cap is reached.
 
-Selection always retains the two lowest measured points. It extends one point
-beyond an initial zero-failure prefix, retains measured points through 50%
-baseline block-error rate, and inserts the midpoint before the first
-majority-failure point. `selection.json` records the measurements, selected points,
-and source hashes. These rows select the campaign's noise range; they are not a
-final decoder comparison. Held-out evaluation applies the same
-invalid-as-failure rule to all three methods.
+The `selection_mode` is either `pilot` or `fixed`. In `pilot` mode, selection
+retains the two lowest measured points, extends one point beyond an initial
+zero-failure prefix, retains measured points through 50% baseline block-error
+rate, and inserts the midpoint before the first majority-failure point.
+`selection.json` records the measurements, selected points, and source hashes.
+These rows select the campaign's noise range; they are not a final decoder
+comparison. In `fixed` mode, the selected points are exactly the predeclared
+`noise_grid`; its selection record is provenance, not evidence. Held-out
+evaluation applies the same invalid-as-failure rule to all three methods.
 
 Subsequent samples are immutable, role-separated shards:
 
@@ -178,8 +180,10 @@ Teacher-bit accuracy cannot establish decoding correctness because valid
 corrections are not unique and a small bitwise difference can violate a check.
 Calibration accuracy cannot establish generalization because it is used for
 selection. The evaluator scores all three frozen methods on the same untouched
-test shots, reports paired disagreement and confidence intervals, and stops a
-noise point only at the configured failure target or shot cap.
+test shots and reports paired disagreement. Its `test_stopping_mode` is either
+`adaptive` or `fixed`: adaptive mode stops a rate after every decoder reaches
+`target_failures`, or at the shot cap; fixed mode stops only at the shot cap.
+`target_failures` is inactive in fixed mode.
 
 ## Paired held-out evaluation
 
@@ -192,19 +196,33 @@ decoder fails on a particular error instance, not only whether two aggregate
 rates happen to be close.
 
 For each hybrid, the summary includes the full 2 × 2 disagreement table against
-uniform BP-LSD and the hybrid-minus-baseline block-error-rate delta. A
-deterministic shot-level bootstrap gives the delta's 95% interval; each decoder's
-individual block-error rate receives a Wilson interval. A hybrid is marked
-`accuracy_compatible` only when every correction is syndrome-valid and the
-paired delta interval is not strictly above zero. Latency does not participate in
-that gate.
+uniform BP-LSD and the hybrid-minus-baseline block-error-rate delta. Each
+decoder's individual block-error rate receives a Wilson interval where reported.
 
-Evaluation consumes the pre-generated test role in deterministic batches. A noise
-point stops when all three decoders have reached the configured failure target or
-when its shot cap is reached. A campaign deadline may publish a resumable
-`partial_deadline` result,
-but that status is not equivalent to scientific completion. Immutable batch
-outcomes allow later resumption without changing already decoded shots.
+The paired test conditions on discordant shots and uses an exact binomial
+(McNemar) test under equal paired failure probability. Its Clopper-Pearson interval
+describes the share of discordances in which only the hybrid fails; it is not a
+confidence interval for the marginal block-error-rate difference.
+
+An inconclusive paired test is not evidence of equivalence or noninferiority.
+Adaptive and deadline-truncated evaluations report paired quantities only as
+diagnostics. Directional comparison statuses are assigned only after a complete,
+predeclared fixed-shot evaluation. Latency does not participate in those statuses.
+
+Evaluation consumes the pre-generated test role in deterministic batches. In
+adaptive mode, a noise point stops when all three decoders have reached the
+configured failure target or when its shot cap is reached. In fixed mode, it runs
+to the shot cap regardless of failures. A campaign deadline may publish a
+resumable `partial_deadline` result, but that status is not equivalent to
+scientific completion. Immutable batch outcomes allow later resumption without
+changing already decoded shots.
+
+The `accuracy_disconfirm_p0375` profile is deliberately asymmetric: it has one
+predeclared rate, `p=0.0375`, and is intended to detect candidate harm. A detected
+harm result falsifies this candidate at that rate. An inconclusive or benefit
+result only permits the next experiment; baseline tuning, at least three training
+seeds, and a larger confirmatory test remain required before a positive accuracy
+claim.
 
 ## Threats to interpretation
 
@@ -216,8 +234,12 @@ outcomes allow later resumption without changing already decoded shots.
 - Calibration screens all checkpoints/parameters and decodes shortlisted
   candidates on calibration-only data; proxy quality can omit a genuinely better
   hybrid. Only the separate test role can support held-out comparison.
-- Wilson and bootstrap intervals are conventional fixed-sample intervals reported
-  after outcome-dependent stopping; they are not anytime-valid sequential bounds.
+- Adaptive and deadline-truncated paired quantities are diagnostic, not
+  anytime-valid or directional evidence.
+- The conditional Clopper-Pearson interval is not an interval for the marginal
+  block-error-rate difference.
+- A single-rate disconfirming run is asymmetric and cannot establish a positive
+  accuracy claim.
 - CPU timings include different components across stages and depend on machine
   load, batching, and software versions.
 - Willow surface-code hardware data is outside this methodology and must not be

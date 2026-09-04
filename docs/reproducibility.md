@@ -151,6 +151,29 @@ CAMPAIGN_OUTPUT=artifacts/accuracy-campaign \
 bash scripts/run_accuracy_campaign.sh --resume
 ```
 
+## Fixed-shot disconfirming run
+
+The predeclared one-rate disconfirming profile fixes selection at `p=0.0375` and
+uses fixed-shot evaluation. Start it with:
+
+```bash
+CAMPAIGN_OUTPUT=artifacts/accuracy-disconfirm-p0375 \
+bash scripts/run_accuracy_campaign.sh --disconfirm
+```
+
+Resume the same immutable store with:
+
+```bash
+CAMPAIGN_OUTPUT=artifacts/accuracy-disconfirm-p0375 \
+bash scripts/run_accuracy_campaign.sh --disconfirm --resume
+```
+
+A detected harm result falsifies this candidate at `p=0.0375`. An inconclusive or
+benefit result only permits the next experiment and is not evidence of
+equivalence, noninferiority, or a positive accuracy result. Baseline tuning, at
+least three training seeds, and a larger confirmatory test remain prerequisites
+for a positive accuracy claim.
+
 For Cloud Run, repeat the original clean commit, active project, region, and
 campaign ID. The launcher verifies the immutable input publication and the
 existing job's digest-pinned image, literal environment, command/arguments,
