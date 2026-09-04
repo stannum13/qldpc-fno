@@ -36,6 +36,7 @@ def _write_reduced_config(path: Path, *, training_seed: int = 1701) -> None:
         {
             "campaign_seed": 20260901,
             "noise_grid": [0.003, 0.005],
+            "selection_mode": "pilot",
             "pilot_shots_per_point": 8,
             "train_shots_cap": 8,
             "calibration_shots_cap": 8,
@@ -44,6 +45,7 @@ def _write_reduced_config(path: Path, *, training_seed: int = 1701) -> None:
             "test_batch_shots": 8,
             "max_test_shots_per_point": 8,
             "target_failures": 4,
+            "test_stopping_mode": "adaptive",
             "training_epochs": 1,
             "training_batch_size": 1,
             "training_learning_rate": 0.001,
@@ -63,6 +65,7 @@ def _write_flow_config(path: Path) -> None:
         {
             "campaign_seed": 20260901,
             "noise_grid": [0.003],
+            "selection_mode": "pilot",
             "pilot_shots_per_point": 1,
             "train_shots_cap": 16,
             "calibration_shots_cap": 16,
@@ -71,6 +74,7 @@ def _write_flow_config(path: Path) -> None:
             "test_batch_shots": 1,
             "max_test_shots_per_point": 1,
             "target_failures": 1,
+            "test_stopping_mode": "adaptive",
             "training_epochs": 1,
             "training_batch_size": 1,
             "training_learning_rate": 0.001,

@@ -1,6 +1,7 @@
 {
   "campaign_seed": 20260901,
   "noise_grid": [0.003, 0.005, 0.008, 0.012, 0.018, 0.025],
+  "selection_mode": "pilot",
   "pilot_shots_per_point": 8,
   "train_shots_cap": 24,
   "calibration_shots_cap": 8,
@@ -9,6 +10,7 @@
   "test_batch_shots": 8,
   "max_test_shots_per_point": 8,
   "target_failures": 8,
+  "test_stopping_mode": "adaptive",
   "training_epochs": 1,
   "training_batch_size": 128,
   "training_learning_rate": 0.001,

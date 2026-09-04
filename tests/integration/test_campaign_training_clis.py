@@ -26,6 +26,7 @@ def _write_config(path: Path) -> None:
         {
             "campaign_seed": 20260901,
             "noise_grid": [0.003, 0.005],
+            "selection_mode": "pilot",
             "pilot_shots_per_point": 1,
             "train_shots_cap": 16,
             "calibration_shots_cap": 8,
@@ -34,6 +35,7 @@ def _write_config(path: Path) -> None:
             "test_batch_shots": 1,
             "max_test_shots_per_point": 1,
             "target_failures": 1,
+            "test_stopping_mode": "adaptive",
             "training_epochs": 2,
             "training_batch_size": 4,
             "training_learning_rate": 0.001,

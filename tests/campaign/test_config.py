@@ -6,6 +6,13 @@ import pytest
 from qldpc_fno.campaign.config import CampaignConfig
 
 
+def _canonical_payload() -> dict[str, object]:
+    payload = json.loads(Path("configs/accuracy_campaign.json").read_text())
+    payload["selection_mode"] = "pilot"
+    payload["test_stopping_mode"] = "adaptive"
+    return payload
+
+
 def test_canonical_config_has_disjoint_roles_and_bounded_cloud_job() -> None:
     config = CampaignConfig.from_json(Path("configs/accuracy_campaign.json"))
     assert config.noise_grid == (0.003, 0.005, 0.008, 0.012, 0.018, 0.025)
@@ -76,3 +83,41 @@ def test_config_rejects_non_finite_training_learning_rate(
 
     with pytest.raises(ValueError, match="training_learning_rate must be finite"):
         CampaignConfig.from_json(path)
+
+
+def test_config_accepts_fixed_selection_and_stopping(tmp_path: Path) -> None:
+    payload = _canonical_payload()
+    payload["noise_grid"] = [0.0375]
+    payload["selection_mode"] = "fixed"
+    payload["test_stopping_mode"] = "fixed"
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(payload))
+    config = CampaignConfig.from_json(path)
+    assert config.selection_mode == "fixed"
+    assert config.test_stopping_mode == "fixed"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("selection_mode", "manual", "selection_mode"),
+        ("test_stopping_mode", "deadline", "test_stopping_mode"),
+    ],
+)
+def test_config_rejects_invalid_campaign_modes(
+    tmp_path: Path, field: str, value: str, message: str
+) -> None:
+    payload = _canonical_payload()
+    payload[field] = value
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match=message):
+        CampaignConfig.from_json(path)
+
+
+def test_disconfirming_config_is_strict_and_fixed() -> None:
+    config = CampaignConfig.from_json(Path("configs/accuracy_disconfirm_p0375.json"))
+    assert config.noise_grid == (0.0375,)
+    assert config.selection_mode == "fixed"
+    assert config.test_stopping_mode == "fixed"
+    assert config.max_test_shots_per_point == 2048

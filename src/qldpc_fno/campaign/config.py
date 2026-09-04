@@ -15,6 +15,7 @@ class CampaignConfig:
 
     campaign_seed: int
     noise_grid: tuple[float, ...]
+    selection_mode: str
     pilot_shots_per_point: int
     train_shots_cap: int
     calibration_shots_cap: int
@@ -23,6 +24,7 @@ class CampaignConfig:
     test_batch_shots: int
     max_test_shots_per_point: int
     target_failures: int
+    test_stopping_mode: str
     training_epochs: int
     training_batch_size: int
     training_learning_rate: float
@@ -100,6 +102,10 @@ class CampaignConfig:
         return config
 
     def _validate(self) -> None:
+        if self.selection_mode not in {"pilot", "fixed"}:
+            raise ValueError("selection_mode must be 'pilot' or 'fixed'")
+        if self.test_stopping_mode not in {"adaptive", "fixed"}:
+            raise ValueError("test_stopping_mode must be 'adaptive' or 'fixed'")
         if any(getattr(self, field) <= 0 for field in self._INTEGER_FIELDS):
             raise ValueError("integer campaign limits and seeds must be positive")
         if self.training_learning_rate <= 0:
