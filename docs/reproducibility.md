@@ -68,7 +68,11 @@ directory with a valid completion manifest is an immutable publication.
 Fixed selections are verified as empty, observation-free publications whose
 rates exactly equal the committed grid. Pilot selections additionally verify
 every pilot shard and configured shot/rate coordinate, replay baseline failures
-from those samples, and recompute the deterministic selected noise points.
+from those samples, and recompute the deterministic selected noise points. The
+evaluator records that semantic verification in a receipt whose hash is bound
+into progress and every immutable evaluation batch. Later batch processes still
+rehash the selection, pilot shard manifests, and payloads, but do not repeat the
+BP-LSD replay once a verified batch anchors the receipt.
 
 ## Smoke artifact tree
 
@@ -115,6 +119,7 @@ configured Cloud Storage prefix) publishes:
 | `calibration/selected.json` | Independently frozen soft-prior and residual selections |
 | `evaluation/rate-*/batch-*/outcomes.npz` | Immutable paired per-shot outcomes and latency diagnostics |
 | `evaluation/rate-*/batch-*/manifest.json` | Batch coordinates, counts, hashes, and provenance |
+| `evaluation/selection-verification.json` | Selection semantic-verification identity bound into evaluation provenance |
 | `evaluation/rate-*/summary.json` | Per-rate statistics, intervals, validity, and stopping reason |
 | `evaluation/progress.json` | Resumable batch-manifest index |
 | `evaluation/manifest.json` | Final complete or deadline-partial publication |
@@ -126,12 +131,18 @@ Evaluation verifies the selection, test, model, teacher, checkpoint, and
 calibration chain before decoding. Existing batches are semantically revalidated
 on `--resume` without loading all prior outcome arrays at once. A verified
 deadline-partial manifest and its derived rate summaries are retired before new
-shots are collected; immutable batches remain. Manifest-less summaries from an
+shots are collected: the manifest is removed first, progress is atomically reset
+to `in_progress`, and summaries are removed from the highest rate downward so
+every interruption state is resumable and checkpointable; immutable batches
+remain. Manifest-less summaries from an
 interrupted finalization are reconstructed and verified before that same
 retirement, and tampered summaries are preserved and rejected.
 
 Final summary generation derives campaign mode and claim permission from the
-verified `inputs/run-mode.json`. It rechecks every evaluation batch and outcome
+verified `inputs/run-mode.json`. Canonical permission is granted only after the
+manifest is reconstructed from an allowlisted committed canonical config, the
+effective config, code and Git hashes, exact overrides, controls, and execution
+identity; caller-supplied mode labels cannot grant it. It rechecks every evaluation batch and outcome
 hash, deterministic test-shot coordinate, stopping decision, marginal decoder
 metric, paired statistic, and comparison status. Rehashing an edited rate summary
 inside the mutable evaluation manifest therefore cannot make it reportable.
@@ -271,6 +282,9 @@ allocation, stop after a fixed number of new batches:
 
 `--run-mode` must name the immutable `inputs/run-mode.json` published for the
 exact config, code manifest, Git commit, campaign mode, and execution controls.
+Verification anchors its claimed canonical config to the committed allowlist and
+reconstructs the entire expected manifest rather than trusting its embedded
+hashes or claim flag.
 The manual preparation commands do not create this file; use one materialized
 from the matching campaign-runner input publication.
 
@@ -291,7 +305,9 @@ uv run python experiments/17_evaluate_hybrid_decoders.py \
 Continue the same publication by repeating the command with `--resume`. The
 evaluator verifies the frozen inputs, every existing batch manifest and outcome,
 and the source/rate/batch-hash coordinates in `progress.json` before decoding
-another batch. When a final or deadline-partial manifest exists, it also verifies
+another batch. The first invocation semantically verifies pilot selection; once
+an immutable batch binds the resulting receipt, later bounded invocations use
+hash/schema verification without replaying all pilot BP-LSD decodes. When a final or deadline-partial manifest exists, it also verifies
 the per-rate summaries. Omit `--max-batches-this-run` when the process should
 continue until scientific stopping or an externally supplied deadline.
 

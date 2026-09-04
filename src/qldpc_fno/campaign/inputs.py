@@ -31,6 +31,13 @@ _CLOUD_IDENTITY_FIELDS = {
     "store",
     "work_cutoff_seconds",
 }
+_LOCAL_IDENTITY_FIELDS = {"kind", "store"}
+_TRUSTED_CANONICAL_CONFIG_SHA256 = {
+    "accuracy_campaign.json": "334f8087ff86dd51fa34551e663ea65e7650819fca3552b704f3174d78d5ff78",
+    "accuracy_disconfirm_p0375.json": (
+        "8df94770eef8207431935d30c30b3ab8f8243ace47b1ae8401452f6803714717"
+    ),
+}
 _RUN_MODE_FIELDS = {
     "canonical_config",
     "canonical_config_sha256",
@@ -68,7 +75,59 @@ class PreparedCampaignInputs:
     run_mode: Path
 
 
+def _validate_trusted_canonical_config(path: Path) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("trusted committed canonical config is unavailable")
+    expected_sha256 = _TRUSTED_CANONICAL_CONFIG_SHA256.get(path.name)
+    if expected_sha256 is None or sha256_file(path) != expected_sha256:
+        raise ValueError("canonical config does not match trusted committed canonical config")
+
+
+def _validate_execution_identity(
+    identity: Mapping[str, object],
+    *,
+    config: CampaignConfig,
+) -> None:
+    if not isinstance(identity, Mapping) or identity.get("kind") not in {"local", "cloud"}:
+        raise ValueError("campaign execution identity is malformed")
+    if not isinstance(identity.get("store"), str) or not identity["store"]:
+        raise ValueError("campaign execution identity store is missing")
+    if identity["kind"] == "local":
+        if set(identity) != _LOCAL_IDENTITY_FIELDS:
+            raise ValueError("local campaign execution identity fields are incomplete")
+        return
+    if set(identity) != _CLOUD_IDENTITY_FIELDS:
+        raise ValueError("cloud campaign execution identity fields are incomplete")
+    string_fields = _CLOUD_IDENTITY_FIELDS - {
+        "finalization_reserve_seconds",
+        "outer_timeout_seconds",
+        "work_cutoff_seconds",
+    }
+    if any(not isinstance(identity.get(field), str) or not identity[field] for field in string_fields):
+        raise ValueError("cloud campaign execution identity string fields are malformed")
+    digest = identity["image_digest"]
+    image = identity["image"]
+    if (
+        re.fullmatch(r"sha256:[0-9a-f]{64}", str(digest)) is None
+        or not str(image).endswith(f"@{digest}")
+    ):
+        raise ValueError("cloud campaign execution identity image digest is malformed")
+    expected_numeric = {
+        "finalization_reserve_seconds": config.checkpoint_grace_seconds,
+        "outer_timeout_seconds": config.cloud_timeout_seconds,
+        "work_cutoff_seconds": config.cloud_timeout_seconds - config.checkpoint_grace_seconds,
+    }
+    if any(
+        type(identity.get(field)) is not int or identity[field] != value
+        for field, value in expected_numeric.items()
+    ):
+        raise ValueError("cloud campaign execution identity deadline controls are malformed")
+    if identity["store"] != f"gs://{identity['bucket']}/{identity['prefix']}":
+        raise ValueError("cloud campaign execution identity store is inconsistent")
+
+
 def _validate_request(request: CampaignInputRequest) -> tuple[CampaignConfig, CampaignConfig]:
+    _validate_trusted_canonical_config(request.canonical_config)
     canonical = CampaignConfig.from_json(request.canonical_config)
     effective = CampaignConfig.from_json(request.effective_config)
     if re.fullmatch(r"[0-9a-f]{40}", request.git_commit) is None:
@@ -86,22 +145,33 @@ def _validate_request(request: CampaignInputRequest) -> tuple[CampaignConfig, Ca
             raise ValueError("reduced campaign requires an explicit bounded calibration grid")
     else:
         raise ValueError("campaign input mode is invalid")
-    identity = request.execution_identity
-    if not isinstance(identity, Mapping) or identity.get("kind") not in {"local", "cloud"}:
-        raise ValueError("campaign execution identity is malformed")
-    if not isinstance(identity.get("store"), str) or not identity["store"]:
-        raise ValueError("campaign execution identity store is missing")
-    if identity["kind"] == "cloud" and set(identity) != _CLOUD_IDENTITY_FIELDS:
-        raise ValueError("cloud campaign execution identity fields are incomplete")
+    _validate_execution_identity(request.execution_identity, config=effective)
     return canonical, effective
 
 
 def _overrides(canonical: CampaignConfig, effective: CampaignConfig) -> dict[str, object]:
-    return {
-        field: getattr(effective, field)
-        for field in sorted(CampaignConfig._FIELD_NAMES)
-        if getattr(effective, field) != getattr(canonical, field)
-    }
+    overrides: dict[str, object] = {}
+    for field in sorted(CampaignConfig._FIELD_NAMES):
+        value = getattr(effective, field)
+        if value != getattr(canonical, field):
+            overrides[field] = list(value) if isinstance(value, tuple) else value
+    return overrides
+
+
+def _type_strict_equal(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(  # type: ignore[arg-type]
+            _type_strict_equal(actual[key], value)  # type: ignore[index]
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(  # type: ignore[arg-type]
+            _type_strict_equal(actual_value, expected_value)
+            for actual_value, expected_value in zip(actual, expected, strict=True)  # type: ignore[arg-type]
+        )
+    return bool(actual == expected)
 
 
 def _expected_mode(
@@ -130,6 +200,7 @@ def _expected_mode(
 def verify_campaign_run_mode(
     path: Path,
     *,
+    canonical_config_path: Path | None = None,
     config_path: Path,
     code_manifest_path: Path,
     git_commit: str,
@@ -177,17 +248,22 @@ def verify_campaign_run_mode(
         or not isinstance(identity, dict)
     ):
         raise ValueError("campaign run-mode policy fields are malformed")
-    grid_limit = controls["calibration_grid_limit"]
-    if mode == "canonical":
-        if (
-            canonical_digest != payload["effective_config_sha256"]
-            or overrides
-            or grid_limit is not None
-        ):
-            raise ValueError("canonical campaign run-mode policy is inconsistent")
-    elif type(grid_limit) is not int or not 0 < grid_limit <= len(CALIBRATION_GRID):
-        raise ValueError("reduced campaign run-mode policy is inconsistent")
-    return dict(payload)
+    if canonical_config_path is None:
+        canonical_config_path = Path(__file__).resolve().parents[3] / "configs" / canonical_name
+    request = CampaignInputRequest(
+        canonical_config=canonical_config_path,
+        effective_config=config_path,
+        code=code_manifest_path.parent,
+        git_commit=git_commit,
+        campaign_mode=str(mode),
+        calibration_grid_limit=controls["calibration_grid_limit"],
+        execution_identity=identity,
+    )
+    canonical, effective = _validate_request(request)
+    expected = _expected_mode(request, canonical, effective)
+    if not _type_strict_equal(payload, expected):
+        raise ValueError("campaign run-mode policy does not match trusted inputs")
+    return expected
 
 
 def _stage_evidence_exists(
@@ -250,7 +326,7 @@ def prepare_campaign_inputs(
     )
     run_mode_path = materialized / "run-mode.json"
     actual_mode = json.loads(run_mode_path.read_text())
-    if actual_mode != expected_mode:
+    if not _type_strict_equal(actual_mode, expected_mode):
         raise ValueError("campaign input identity does not match the immutable store")
     config_path = materialized / "config.json"
     code_path = materialized / "code"
@@ -306,6 +382,6 @@ def verify_downloaded_cloud_inputs(
             execution_identity=identity,
         )
         canonical, effective = _validate_request(request)
-        if mode != _expected_mode(request, canonical, effective):
+        if not _type_strict_equal(mode, _expected_mode(request, canonical, effective)):
             raise ValueError("downloaded cloud campaign run-mode manifest is inconsistent")
         return dict(identity)

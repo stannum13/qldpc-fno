@@ -287,6 +287,41 @@ def test_reduced_real_code_campaign_data_flow_with_dynamic_extension(tmp_path: P
     selection_path.write_bytes(selection_bytes)
     pilot_manifest_path.write_bytes(pilot_manifest_bytes)
 
+    pilot_row_tampering: tuple[
+        tuple[str, object, str],
+        ...,
+    ] = (
+        ("unexpected_field", True, "pilot row schema"),
+        (
+            "converged",
+            0 if selection["pilot_rows"][0]["converged"] else 1,
+            "deterministic fields",
+        ),
+        (
+            "latency_mean_seconds",
+            float(selection["pilot_rows"][0]["latency_seconds"]) + 1.0,
+            "timing fields",
+        ),
+    )
+    for field, value, message in pilot_row_tampering:
+        tampered_selection = json.loads(selection_bytes)
+        tampered_selection["pilot_rows"][0][field] = value
+        write_canonical_json(selection_path, tampered_selection)
+        tampered_manifest = json.loads(pilot_manifest_bytes)
+        tampered_manifest["selection_sha256"] = sha256_file(selection_path)
+        write_canonical_json(pilot_manifest_path, tampered_manifest)
+        rejected_row = _run_shard_cli(
+            config=config_path,
+            code=code_dir,
+            selection=selection_path,
+            output=campaign_dir / f"tampered-{field}/train",
+            shots=16,
+        )
+        assert rejected_row.returncode != 0
+        assert message in rejected_row.stderr
+        selection_path.write_bytes(selection_bytes)
+        pilot_manifest_path.write_bytes(pilot_manifest_bytes)
+
     for role, shots in (("train", 16), ("calibration", 16), ("test", 1)):
         result = _run_shard_cli(
             config=config_path,

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from qldpc_fno.artifacts import sha256_file, write_canonical_json
 from qldpc_fno.campaign.inputs import (
     CampaignInputRequest,
     prepare_campaign_inputs,
@@ -31,6 +32,25 @@ def _request(tmp_path: Path, **overrides: object) -> CampaignInputRequest:
     }
     values.update(overrides)
     return CampaignInputRequest(**values)  # type: ignore[arg-type]
+
+
+def _cloud_identity() -> dict[str, object]:
+    digest = f"sha256:{'b' * 64}"
+    return {
+        "bucket": "campaign-bucket",
+        "finalization_reserve_seconds": 2700,
+        "image": f"us-central1-docker.pkg.dev/project/repository/image@{digest}",
+        "image_digest": digest,
+        "job": "qldpc-fno-campaign",
+        "kind": "cloud",
+        "outer_timeout_seconds": 28800,
+        "prefix": "campaigns/campaign/commit",
+        "project": "project",
+        "region": "us-central1",
+        "service_account": "campaign@project.iam.gserviceaccount.com",
+        "store": "gs://campaign-bucket/campaigns/campaign/commit",
+        "work_cutoff_seconds": 26100,
+    }
 
 
 def test_shared_input_bootstrap_publishes_materializes_and_revalidates(tmp_path: Path) -> None:
@@ -138,6 +158,24 @@ def test_canonical_input_policy_rejects_non_null_calibration_grid_limit(
         )
 
 
+def test_canonical_input_policy_requires_allowlisted_committed_config_bytes(
+    tmp_path: Path,
+) -> None:
+    fake_canonical = tmp_path / "accuracy_campaign.json"
+    fake_canonical.write_bytes(Path("configs/accuracy_campaign_cloud_reduced.json").read_bytes())
+
+    with pytest.raises(ValueError, match="trusted committed canonical config"):
+        prepare_campaign_inputs(
+            LocalArtifactStore(tmp_path / "store"),
+            tmp_path / "work",
+            _request(
+                tmp_path,
+                canonical_config=fake_canonical,
+                effective_config=fake_canonical,
+            ),
+        )
+
+
 def test_verified_run_mode_binds_mode_claims_config_code_and_commit(tmp_path: Path) -> None:
     store = LocalArtifactStore(tmp_path / "store")
     request = _request(tmp_path)
@@ -145,6 +183,7 @@ def test_verified_run_mode_binds_mode_claims_config_code_and_commit(tmp_path: Pa
 
     verified = verify_campaign_run_mode(
         prepared.run_mode,
+        canonical_config_path=request.canonical_config,
         config_path=prepared.config,
         code_manifest_path=prepared.code / "code.json",
         git_commit=request.git_commit,
@@ -165,6 +204,7 @@ def test_verified_run_mode_rejects_float_schema_version(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="schema version is unsupported"):
         verify_campaign_run_mode(
             prepared.run_mode,
+            canonical_config_path=request.canonical_config,
             config_path=prepared.config,
             code_manifest_path=prepared.code / "code.json",
             git_commit=request.git_commit,
@@ -197,7 +237,115 @@ def test_verified_run_mode_rejects_provenance_or_claim_drift(
     with pytest.raises(ValueError, match=message):
         verify_campaign_run_mode(
             prepared.run_mode,
+            canonical_config_path=request.canonical_config,
             config_path=prepared.config,
             code_manifest_path=prepared.code / "code.json",
             git_commit=request.git_commit,
+        )
+
+
+def test_verified_run_mode_rejects_coordinated_reduced_to_canonical_rehash(
+    tmp_path: Path,
+) -> None:
+    code = tmp_path / "code"
+    code.mkdir()
+    code_manifest = code / "code.json"
+    code_manifest.write_text('{"name":"lp_3_7_16"}\n')
+    effective = Path("configs/accuracy_campaign_cloud_reduced.json")
+    path = tmp_path / "run-mode.json"
+    payload = {
+        "canonical_config": effective.name,
+        "canonical_config_sha256": sha256_file(effective),
+        "code_manifest_sha256": sha256_file(code_manifest),
+        "effective_config_sha256": sha256_file(effective),
+        "execution_controls": {"calibration_grid_limit": None},
+        "execution_identity": {
+            "kind": "local",
+            "store": str((tmp_path / "store").resolve()),
+        },
+        "git_commit": "a" * 40,
+        "mode": "canonical",
+        "overrides": {},
+        "schema_version": 3,
+        "scientific_claims_permitted": True,
+    }
+    write_canonical_json(path, payload)
+
+    with pytest.raises(ValueError, match="canonical config|canonical campaign controls"):
+        verify_campaign_run_mode(
+            path,
+            canonical_config_path=Path("configs/accuracy_campaign.json"),
+            config_path=effective,
+            code_manifest_path=code_manifest,
+            git_commit="a" * 40,
+        )
+
+
+def test_verified_run_mode_rejects_unvalidated_execution_identity(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path / "store")
+    request = _request(tmp_path)
+    prepared = prepare_campaign_inputs(store, tmp_path / "work", request)
+    payload = json.loads(prepared.run_mode.read_text())
+    payload["execution_identity"]["untrusted"] = True
+    write_canonical_json(prepared.run_mode, payload)
+
+    with pytest.raises(ValueError, match="execution identity"):
+        verify_campaign_run_mode(
+            prepared.run_mode,
+            canonical_config_path=request.canonical_config,
+            config_path=prepared.config,
+            code_manifest_path=prepared.code / "code.json",
+            git_commit=request.git_commit,
+        )
+
+
+def test_verified_run_mode_rejects_type_rehashed_reduced_override(tmp_path: Path) -> None:
+    request = _request(
+        tmp_path,
+        calibration_grid_limit=1,
+        campaign_mode="reduced_non_scientific",
+        effective_config=Path("configs/accuracy_campaign_cloud_reduced.json"),
+    )
+    prepared = prepare_campaign_inputs(
+        LocalArtifactStore(tmp_path / "store"),
+        tmp_path / "work",
+        request,
+    )
+    payload = json.loads(prepared.run_mode.read_text())
+    assert payload["overrides"]["training_epochs"] == 1
+    payload["overrides"]["training_epochs"] = True
+    write_canonical_json(prepared.run_mode, payload)
+
+    with pytest.raises(ValueError, match="policy does not match trusted inputs"):
+        verify_campaign_run_mode(
+            prepared.run_mode,
+            canonical_config_path=request.canonical_config,
+            config_path=prepared.config,
+            code_manifest_path=prepared.code / "code.json",
+            git_commit=request.git_commit,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("unexpected", True, "fields are incomplete"),
+        ("outer_timeout_seconds", 28800.0, "deadline controls"),
+        ("project", 7, "string fields"),
+    ],
+)
+def test_cloud_execution_identity_requires_exact_fields_and_types(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    identity = _cloud_identity()
+    identity[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        prepare_campaign_inputs(
+            LocalArtifactStore(tmp_path / "store"),
+            tmp_path / "work",
+            _request(tmp_path, execution_identity=identity),
         )

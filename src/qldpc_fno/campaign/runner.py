@@ -28,7 +28,9 @@ from qldpc_fno.campaign.inputs import (
 )
 from qldpc_fno.campaign.local import resolve_git_commit
 from qldpc_fno.campaign.selection import (
+    VerifiedSelectionPublication,
     verify_selection_publication,
+    verify_selection_verification_receipt,
     verify_shard_selection_provenance,
 )
 from qldpc_fno.campaign.shard_io import load_campaign_code, load_verified_shards
@@ -326,17 +328,20 @@ def _verified_pilot(
     *,
     config_path: Path,
     code_path: Path,
+    verified_selection: VerifiedSelectionPublication | None = None,
 ) -> dict[str, object] | None:
     pilot = campaign / "pilot"
     manifest_path = pilot / "manifest.json"
     selection_path = pilot / "selection.json"
     if not manifest_path.is_file() or not selection_path.is_file():
         return None
-    verified = verify_selection_publication(
-        selection_path,
-        config_path=config_path,
-        code_manifest_path=code_path / "code.json",
-    )
+    verified = verified_selection
+    if verified is None:
+        verified = verify_selection_publication(
+            selection_path,
+            config_path=config_path,
+            code_manifest_path=code_path / "code.json",
+        )
     return {
         "evidence_role": verified.evidence_role,
         "manifest_sha256": verified.manifest_sha256,
@@ -401,7 +406,12 @@ def _verify_scientific_chain(
     config_path: Path,
     code_path: Path,
     git_commit: str,
-) -> tuple[dict[str, object], str, list[dict[str, object]]]:
+) -> tuple[
+    dict[str, object],
+    VerifiedSelectionPublication,
+    str,
+    list[dict[str, object]],
+]:
     """Cross-check every scientific role against the actual campaign inputs."""
     config = CampaignConfig.from_json(config_path)
     load_campaign_code(code_path)
@@ -429,6 +439,16 @@ def _verify_scientific_chain(
         config_path=config_path,
         code_manifest_path=code_manifest_path,
     )
+    receipt_selection, selection_verification_sha256 = (
+        verify_selection_verification_receipt(
+            campaign / "evaluation/selection-verification.json",
+            selection_path=selection_path,
+            config_path=config_path,
+            code_manifest_path=code_manifest_path,
+        )
+    )
+    if receipt_selection != selection:
+        raise ValueError("evaluation selection receipt disagrees with semantic verification")
     rates = selection.rates
 
     shards = {
@@ -518,6 +538,7 @@ def _verify_scientific_chain(
         "model_manifest": sha256_file(model_path),
         "run_mode": sha256_file(run_mode_path),
         "selection": selection.selection_sha256,
+        "selection_verification": selection_verification_sha256,
         "test_manifest": shards["test"].manifest_sha256,
         "test_shard_manifests": shards["test"].shard_manifest_sha256,
     }
@@ -544,7 +565,12 @@ def _verify_scientific_chain(
         campaign_mode=str(run_mode["mode"]),
         scientific_claims_permitted=bool(run_mode["scientific_claims_permitted"]),
     )
-    return run_mode, verified_evaluation.status, list(verified_evaluation.summaries)
+    return (
+        run_mode,
+        selection,
+        verified_evaluation.status,
+        list(verified_evaluation.summaries),
+    )
 
 
 def _summary_markdown(results: dict[str, object]) -> str:
@@ -808,11 +834,17 @@ def write_campaign_summary(
         raise ValueError("summary provenance requires both config_path and code_path")
 
     verified_mode: dict[str, object] | None = None
+    verified_selection: VerifiedSelectionPublication | None = None
     evaluation_status: str | None = None
     held_out: list[dict[str, object]] = []
     if evaluation_exists:
         assert config_path is not None and code_path is not None
-        verified_mode, evaluation_status, held_out = _verify_scientific_chain(
+        (
+            verified_mode,
+            verified_selection,
+            evaluation_status,
+            held_out,
+        ) = _verify_scientific_chain(
             campaign,
             config_path=config_path,
             code_path=code_path,
@@ -840,11 +872,17 @@ def write_campaign_summary(
         scientific_claims_permitted = verified_claims
     else:
         campaign_mode = campaign_mode or "canonical"
-        if scientific_claims_permitted is None:
-            scientific_claims_permitted = campaign_mode == "canonical"
+        if scientific_claims_permitted is True:
+            raise ValueError("scientific claims require a verified campaign run mode")
+        scientific_claims_permitted = False
 
     pilot = (
-        _verified_pilot(campaign, config_path=config_path, code_path=code_path)
+        _verified_pilot(
+            campaign,
+            config_path=config_path,
+            code_path=code_path,
+            verified_selection=verified_selection,
+        )
         if config_path is not None and code_path is not None
         else None
     )
@@ -901,7 +939,7 @@ def _publish_partial_summary(
     config_path: Path | None = None,
     code_path: Path | None = None,
     campaign_mode: str = "canonical",
-    scientific_claims_permitted: bool = True,
+    scientific_claims_permitted: bool = False,
     deadline_monotonic: float | None = None,
 ) -> str:
     """Publish an immutable, versioned deadline report without completing summary."""

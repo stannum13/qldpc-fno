@@ -708,6 +708,46 @@ def test_fixed_pilot_adapter_resumes_committed_disconfirm_selection_without_shar
     assert verified["evidence_role"] == "predeclared_selection_not_evidence"
 
 
+def test_summary_pilot_projection_reuses_preverified_semantic_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = tmp_path / "campaign"
+    pilot = campaign / "pilot"
+    pilot.mkdir(parents=True)
+    (pilot / "manifest.json").write_text("{}\n")
+    (pilot / "selection.json").write_text("{}\n")
+    verified = runner_module.VerifiedSelectionPublication(
+        evidence_role="selection_only_not_held_out",
+        manifest_sha256="a" * 64,
+        rates=(0.01,),
+        selection_mode="pilot",
+        selection_sha256="b" * 64,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "verify_selection_publication",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("pilot semantic verification was replayed")
+        ),
+    )
+
+    projected = _verified_pilot(
+        campaign,
+        config_path=tmp_path / "config.json",
+        code_path=tmp_path / "code",
+        verified_selection=verified,
+    )
+
+    assert projected == {
+        "evidence_role": "selection_only_not_held_out",
+        "manifest_sha256": "a" * 64,
+        "selected_noise_points": [0.01],
+        "selection_mode": "pilot",
+        "selection_sha256": "b" * 64,
+    }
+
+
 @pytest.mark.parametrize(
     ("pilot_rows", "shards", "message"),
     [
@@ -855,6 +895,11 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
         "status": "complete",
         "stop_reason": "shot_cap",
     }
+    paired_metrics = rate_summary["paired"]
+    assert isinstance(paired_metrics, dict)
+    soft_prior_metrics = paired_metrics["soft_prior"]
+    assert isinstance(soft_prior_metrics, dict)
+    paired_metrics["residual"] = dict(soft_prior_metrics)
     write_canonical_json(evaluation / "rate-000/summary.json", rate_summary)
     write_canonical_json(
         evaluation / "manifest.json",
@@ -929,6 +974,46 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
         "0.9915962413403874",
     ):
         assert numeric_sentinel in markdown
+    paired_row = next(
+        line
+        for line in markdown.splitlines()
+        if line.startswith("| soft_prior | inconclusive |")
+    )
+    assert paired_row.strip("|").split(" | ") == [
+        " soft_prior",
+        "inconclusive",
+        "0.01",
+        "1",
+        "2",
+        "4",
+        "1",
+        "3",
+        "1.0",
+        "0.271828",
+        "0.314159",
+        "0.6666666666666666",
+        "[0.09429932405024608, 0.9915962413403874] ",
+    ]
+    residual_row = next(
+        line
+        for line in markdown.splitlines()
+        if line.startswith("| residual | harm_detected |")
+    )
+    assert residual_row.strip("|").split(" | ") == [
+        " residual",
+        "harm_detected",
+        "0.01",
+        "1",
+        "2",
+        "4",
+        "1",
+        "3",
+        "1.0",
+        "0.271828",
+        "0.314159",
+        "0.6666666666666666",
+        "[0.09429932405024608, 0.9915962413403874] ",
+    ]
     for forbidden in ("accuracy-compatible", "noninferior", "equivalent", "paired 95% interval"):
         assert forbidden not in markdown.lower()
     assert "Syndrome-valid rate" in markdown
@@ -1087,14 +1172,20 @@ def test_scientific_chain_requires_exact_selected_rate_coordinates(
             "scientific_claims_permitted": False,
         },
     )
+    verified_selection = SimpleNamespace(
+        manifest_sha256="pilot-manifest",
+        rates=(0.01,),
+        selection_sha256=sha256_file(campaign / "pilot/selection.json"),
+    )
     monkeypatch.setattr(
         runner_module,
         "verify_selection_publication",
-        lambda *args, **kwargs: SimpleNamespace(
-            manifest_sha256="pilot-manifest",
-            rates=(0.01,),
-            selection_sha256=sha256_file(campaign / "pilot/selection.json"),
-        ),
+        lambda *args, **kwargs: verified_selection,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "verify_selection_verification_receipt",
+        lambda *args, **kwargs: (verified_selection, "selection-verification"),
     )
 
     def verify_role_rates(shard_set: SimpleNamespace, **kwargs: object) -> None:
@@ -1149,9 +1240,10 @@ def test_scientific_chain_requires_exact_selected_rate_coordinates(
         "code_manifest": sha256_file(code / "code.json"),
         "config": sha256_file(config),
         "model_manifest": sha256_file(campaign / "model/model.json"),
-        "run_mode": sha256_file(campaign / "inputs/run-mode.json"),
-        "selection": sha256_file(campaign / "pilot/selection.json"),
-        "test_manifest": "test-manifest",
+            "run_mode": sha256_file(campaign / "inputs/run-mode.json"),
+            "selection": sha256_file(campaign / "pilot/selection.json"),
+            "selection_verification": "selection-verification",
+            "test_manifest": "test-manifest",
         "test_shard_manifests": ["test-shard"],
     }
     rates = {"0": {"error_rate": 0.01}}

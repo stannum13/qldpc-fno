@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
+import numpy as np
+
 from qldpc_fno.artifacts import sha256_file
 from qldpc_fno.campaign.config import CampaignConfig
 from qldpc_fno.campaign.shard_io import (
@@ -20,6 +22,36 @@ from qldpc_fno.campaign.shards import run_pilot_grid, select_noise_points
 from qldpc_fno.decoders.bplsd import decode_bplsd_batch
 from qldpc_fno.metrics.decoding import score_observable_predictions
 
+_PILOT_ROW_FIELDS = {
+    "block_error_rate",
+    "block_error_rate_95ci_high",
+    "block_error_rate_95ci_low",
+    "block_errors",
+    "converged",
+    "convergence_rate",
+    "error_rate",
+    "exact_observable_match_rate",
+    "latency_mean_seconds",
+    "latency_seconds",
+    "rate_index",
+    "seeds",
+    "shots",
+    "syndrome_valid",
+    "syndrome_valid_rate",
+}
+_SELECTION_VERIFICATION_FIELDS = {
+    "code_manifest_sha256",
+    "config_sha256",
+    "evidence_role",
+    "manifest_sha256",
+    "schema_version",
+    "selected_noise_points",
+    "selection_mode",
+    "selection_sha256",
+    "verification_algorithm",
+}
+_SELECTION_VERIFICATION_ALGORITHM = "selection-publication-semantic-v1"
+
 
 @dataclass(frozen=True, slots=True)
 class VerifiedSelectionPublication:
@@ -30,6 +62,61 @@ class VerifiedSelectionPublication:
     rates: tuple[float, ...]
     selection_mode: str
     selection_sha256: str
+
+
+def _type_strict_equal(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(  # type: ignore[arg-type]
+            _type_strict_equal(actual[key], value)  # type: ignore[index]
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(  # type: ignore[arg-type]
+            _type_strict_equal(item, expected_item)
+            for item, expected_item in zip(actual, expected, strict=True)  # type: ignore[arg-type]
+        )
+    return actual == expected
+
+
+def _validate_pilot_row_structure(row: dict[str, object]) -> None:
+    if set(row) != _PILOT_ROW_FIELDS:
+        raise ValueError("pilot row schema does not match the generated publication")
+    integer_fields = ("block_errors", "converged", "rate_index", "shots", "syndrome_valid")
+    if any(type(row[field]) is not int for field in integer_fields):
+        raise ValueError("pilot row deterministic fields have invalid types")
+    shots = int(row["shots"])
+    if shots <= 0 or any(not 0 <= int(row[field]) <= shots for field in ("block_errors", "converged", "syndrome_valid")):
+        raise ValueError("pilot row deterministic counts are invalid")
+    float_fields = (
+        "block_error_rate",
+        "block_error_rate_95ci_high",
+        "block_error_rate_95ci_low",
+        "convergence_rate",
+        "error_rate",
+        "exact_observable_match_rate",
+        "latency_mean_seconds",
+        "latency_seconds",
+        "syndrome_valid_rate",
+    )
+    if any(type(row[field]) is not float or not math.isfinite(row[field]) for field in float_fields):
+        raise ValueError("pilot row deterministic fields have invalid numeric values")
+    if not isinstance(row["seeds"], list) or any(type(seed) is not int for seed in row["seeds"]):
+        raise ValueError("pilot row seeds are malformed")
+    latency = float(row["latency_seconds"])
+    latency_mean = float(row["latency_mean_seconds"])
+    if (
+        latency < 0.0
+        or latency_mean < 0.0
+        or not math.isclose(
+            latency_mean,
+            latency / shots,
+            rel_tol=1e-12,
+            abs_tol=1e-15,
+        )
+    ):
+        raise ValueError("pilot row timing fields are invalid or internally inconsistent")
 
 
 def verify_shard_selection_provenance(
@@ -67,11 +154,14 @@ def verify_shard_selection_provenance(
         raise ValueError(f"{shards.role} shard rates do not match the noise-point selection")
 
 
-def verify_selection_publication(
+def _verify_selection_publication(
     selection_path: Path,
     *,
     config_path: Path,
     code_manifest_path: Path,
+    replay_pilot: bool,
+    expected_manifest_sha256: str | None = None,
+    receipt_selection_sha256: str | None = None,
 ) -> VerifiedSelectionPublication:
     """Verify a mode-aware stage-13 selection publication and its provenance."""
     config = CampaignConfig.from_json(config_path)
@@ -81,6 +171,8 @@ def verify_selection_publication(
         raise ValueError("selection publication must not traverse symlinks")
     manifest_payload = manifest_path.read_bytes()
     manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+    if expected_manifest_sha256 is not None and manifest_sha256 != expected_manifest_sha256:
+        raise ValueError("selection manifest SHA-256 disagrees with verification receipt")
     manifest = json.loads(manifest_payload)
     expected_manifest_fields = {
         "complete",
@@ -98,15 +190,17 @@ def verify_selection_publication(
         for relative, digest in declared_shards.items()
     ):
         raise ValueError("selection publication shard table is malformed")
-    expected_selection_sha256 = manifest.get("selection_sha256")
-    if not isinstance(expected_selection_sha256, str):
+    manifest_selection_sha256 = manifest.get("selection_sha256")
+    if not isinstance(manifest_selection_sha256, str):
         raise TypeError("selection publication SHA-256 must be a string")
     selection_payload = selection_path.read_bytes()
     selection_sha256 = hashlib.sha256(selection_payload).hexdigest()
-    if selection_sha256 != expected_selection_sha256:
+    if receipt_selection_sha256 is not None and selection_sha256 != receipt_selection_sha256:
+        raise ValueError("selection SHA-256 disagrees with verification receipt")
+    if selection_sha256 != manifest_selection_sha256:
         raise ValueError(
             "selection SHA-256 mismatch: "
-            f"expected {expected_selection_sha256}, found {selection_sha256}"
+            f"expected {manifest_selection_sha256}, found {selection_sha256}"
         )
     selection = json.loads(selection_payload)
     expected_selection_fields = {
@@ -144,6 +238,11 @@ def verify_selection_publication(
         raise ValueError("fixed selection publication requires an empty shard table")
     if config.selection_mode == "fixed" and any(root.glob("rate-*")):
         raise ValueError("fixed selection publication must not contain rate artifacts")
+    if config.selection_mode == "pilot":
+        if not pilot_rows or any(not isinstance(row, dict) for row in pilot_rows):
+            raise ValueError("pilot selection requires non-empty object-valued pilot_rows")
+        for row in pilot_rows:
+            _validate_pilot_row_structure(row)
 
     raw_rates = selection.get("selected_noise_points")
     if not isinstance(raw_rates, list) or not raw_rates:
@@ -170,8 +269,6 @@ def verify_selection_publication(
         )
         if pilot_shards.manifest_sha256 != manifest_sha256:
             raise ValueError("pilot completion manifest changed during verification")
-        if not pilot_rows or any(not isinstance(row, dict) for row in pilot_rows):
-            raise ValueError("pilot selection requires non-empty object-valued pilot_rows")
         shards_by_rate = {
             rate_index: tuple(
                 sorted(
@@ -187,8 +284,9 @@ def verify_selection_publication(
         }
         if set(shards_by_rate) != set(range(len(pilot_rows))):
             raise ValueError("pilot rows do not match verified pilot shard rate coordinates")
-        _, hx, _, logical_x = load_campaign_code(code_manifest_path.parent)
-        verified_block_errors: list[int] = []
+        if replay_pilot:
+            _, hx, _, logical_x = load_campaign_code(code_manifest_path.parent)
+        structural_block_errors: list[int] = []
         for rate_index, row in enumerate(pilot_rows):
             rate_shards = shards_by_rate[rate_index]
             expected_shots = sum(shard.stop - shard.start for shard in rate_shards)
@@ -214,6 +312,9 @@ def verify_selection_publication(
                 or block_errors > expected_shots
             ):
                 raise ValueError("pilot row block_errors must be between zero and shots")
+            structural_block_errors.append(block_errors)
+            if not replay_pilot:
+                continue
             indices = pilot_shards.indices_for_rate(rate_index)
             result = decode_bplsd_batch(
                 hx,
@@ -226,15 +327,30 @@ def verify_selection_publication(
                 result.predicted_observables,
                 syndrome_valid=result.syndrome_valid,
             )
+            expected_deterministic = {
+                **score,
+                "converged": int(np.count_nonzero(result.converged)),
+                "convergence_rate": float(np.mean(result.converged)),
+                "error_rate": rate_shards[0].error_rate,
+                "rate_index": rate_index,
+                "seeds": expected_seeds,
+                "syndrome_valid": int(np.count_nonzero(result.syndrome_valid)),
+                "syndrome_valid_rate": float(np.mean(result.syndrome_valid)),
+            }
             verified_block_error_count = int(score["block_errors"])
             if block_errors != verified_block_error_count:
                 raise ValueError("pilot row block_errors disagree with verified pilot outcomes")
-            verified_block_errors.append(verified_block_error_count)
+            if any(
+                type(row[field]) is not type(expected)
+                or row[field] != expected
+                for field, expected in expected_deterministic.items()
+            ):
+                raise ValueError("pilot row deterministic fields disagree with verified outcomes")
 
         def verify_grid_rate(rate: float, rate_index: int) -> dict[str, object]:
             if rate_index >= len(pilot_rows) or pilot_rows[rate_index]["error_rate"] != rate:
                 raise ValueError("pilot rows do not follow the configured pilot rate trajectory")
-            return {"block_errors": verified_block_errors[rate_index]}
+            return {"block_errors": structural_block_errors[rate_index]}
 
         expected_pilot_rows = run_pilot_grid(config.noise_grid, verify_grid_rate)
         if len(expected_pilot_rows) != len(pilot_rows):
@@ -249,3 +365,77 @@ def verify_selection_publication(
         selection_mode=config.selection_mode,
         selection_sha256=selection_sha256,
     )
+
+
+def verify_selection_publication(
+    selection_path: Path,
+    *,
+    config_path: Path,
+    code_manifest_path: Path,
+) -> VerifiedSelectionPublication:
+    """Fully verify a selection publication, including pilot outcome replay."""
+    return _verify_selection_publication(
+        selection_path,
+        config_path=config_path,
+        code_manifest_path=code_manifest_path,
+        replay_pilot=True,
+    )
+
+
+def selection_verification_receipt(
+    selection: VerifiedSelectionPublication,
+    *,
+    config_path: Path,
+    code_manifest_path: Path,
+) -> dict[str, object]:
+    """Build the durable identity receipt for a semantically verified selection."""
+    return {
+        "code_manifest_sha256": sha256_file(code_manifest_path),
+        "config_sha256": sha256_file(config_path),
+        "evidence_role": selection.evidence_role,
+        "manifest_sha256": selection.manifest_sha256,
+        "schema_version": 1,
+        "selected_noise_points": list(selection.rates),
+        "selection_mode": selection.selection_mode,
+        "selection_sha256": selection.selection_sha256,
+        "verification_algorithm": _SELECTION_VERIFICATION_ALGORITHM,
+    }
+
+
+def verify_selection_verification_receipt(
+    receipt_path: Path,
+    *,
+    selection_path: Path,
+    config_path: Path,
+    code_manifest_path: Path,
+) -> tuple[VerifiedSelectionPublication, str]:
+    """Hash-verify a selection already replayed at this durable trust boundary."""
+    if receipt_path.is_symlink() or not receipt_path.is_file():
+        raise ValueError("selection verification receipt must be a regular file")
+    payload_bytes = receipt_path.read_bytes()
+    receipt_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+    receipt = json.loads(payload_bytes)
+    if not isinstance(receipt, dict) or set(receipt) != _SELECTION_VERIFICATION_FIELDS:
+        raise ValueError("selection verification receipt schema is malformed")
+    if type(receipt.get("schema_version")) is not int or receipt["schema_version"] != 1:
+        raise ValueError("selection verification receipt schema version is unsupported")
+    manifest_sha256 = receipt.get("manifest_sha256")
+    selection_sha256 = receipt.get("selection_sha256")
+    if not isinstance(manifest_sha256, str) or not isinstance(selection_sha256, str):
+        raise TypeError("selection verification receipt digests must be strings")
+    verified = _verify_selection_publication(
+        selection_path,
+        config_path=config_path,
+        code_manifest_path=code_manifest_path,
+        replay_pilot=False,
+        expected_manifest_sha256=manifest_sha256,
+        receipt_selection_sha256=selection_sha256,
+    )
+    expected = selection_verification_receipt(
+        verified,
+        config_path=config_path,
+        code_manifest_path=code_manifest_path,
+    )
+    if not _type_strict_equal(receipt, expected):
+        raise ValueError("selection verification receipt disagrees with verified provenance")
+    return verified, receipt_sha256

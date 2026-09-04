@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.campaign.config import CampaignConfig
 from qldpc_fno.campaign.runner import CampaignStatus, write_campaign_summary
 
 
@@ -94,18 +95,26 @@ def _write_run_mode(
     mode: str = "reduced_non_scientific",
 ) -> None:
     canonical = mode == "canonical"
+    canonical_config_path = Path("configs/accuracy_campaign.json")
+    canonical_config = CampaignConfig.from_json(canonical_config_path)
+    effective_config = CampaignConfig.from_json(config)
+    overrides = {
+        field: getattr(effective_config, field)
+        for field in sorted(CampaignConfig._FIELD_NAMES)
+        if getattr(effective_config, field) != getattr(canonical_config, field)
+    }
     write_canonical_json(
         path,
         {
-            "canonical_config": "campaign.json",
-            "canonical_config_sha256": sha256_file(config),
+            "canonical_config": canonical_config_path.name,
+            "canonical_config_sha256": sha256_file(canonical_config_path),
             "code_manifest_sha256": sha256_file(code_manifest),
             "effective_config_sha256": sha256_file(config),
             "execution_controls": {"calibration_grid_limit": None if canonical else 1},
             "execution_identity": {"kind": "local", "store": "integration-test"},
             "git_commit": _git_commit(),
             "mode": mode,
-            "overrides": {} if canonical else {"integration_fixture": True},
+            "overrides": {} if canonical else overrides,
             "schema_version": 3,
             "scientific_claims_permitted": canonical,
         },
@@ -385,6 +394,23 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     assert first_batch["outcomes_sha256"] == sha256_file(first_outcomes)
     assert not list(evaluation.rglob("*.tmp"))
 
+    receipt_tampered = campaign / "evaluation-receipt-tampered"
+    shutil.copytree(evaluation, receipt_tampered)
+    receipt_path = receipt_tampered / "selection-verification.json"
+    receipt_path.write_bytes(receipt_path.read_bytes() + b"\n")
+    rejected_receipt = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=receipt_tampered,
+        extra=("--resume", "--max-batches-this-run", 1),
+    )
+    assert rejected_receipt.returncode != 0
+    assert "source provenance mismatch" in rejected_receipt.stderr
+
     laundered_deadline = campaign / "evaluation-laundered-deadline"
     shutil.copytree(evaluation, laundered_deadline)
     finalized_under_cap = _evaluate(
@@ -618,6 +644,7 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
         "model_manifest",
         "run_mode",
         "selection",
+        "selection_verification",
         "test_manifest",
         "test_shard_manifests",
     }

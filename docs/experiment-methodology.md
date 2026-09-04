@@ -59,6 +59,11 @@ These rows select the campaign's noise range; they are not a final decoder
 comparison. In `fixed` mode, the selected points are exactly the predeclared
 `noise_grid`; its selection record is provenance, not evidence. Held-out
 evaluation applies the same invalid-as-failure rule to all three methods.
+Pilot publications are checked with an exact row schema, deterministic shard
+coordinates and seeds, finite internally consistent timing, and a BP-LSD replay.
+Evaluation persists a versioned verification receipt; its digest is part of each
+batch's immutable provenance so bounded resumes can rehash the publication
+without repeating the decoder replay.
 
 Subsequent samples are immutable, role-separated shards:
 
@@ -194,6 +199,10 @@ and decoder latency. Hybrid records additionally separate FNO, preprocessing,
 BP-LSD, and end-to-end time. This pairing matters: the comparison asks which
 decoder fails on a particular error instance, not only whether two aggregate
 rates happen to be close.
+Persisted FNO latency totals are derived from the same per-shot arrays written to
+the batch archive. Verification uses a scale-aware floating-point tolerance when
+reading batches produced around an atomic rename boundary; timing remains
+diagnostic and cannot affect an accuracy status.
 
 For each hybrid, the summary includes the full 2 × 2 disagreement table against
 uniform BP-LSD and the hybrid-minus-baseline block-error-rate delta. Each

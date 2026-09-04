@@ -18,7 +18,10 @@ from qldpc_fno.campaign.config import CampaignConfig
 from qldpc_fno.campaign.inputs import verify_campaign_run_mode
 from qldpc_fno.campaign.local import resolve_git_commit
 from qldpc_fno.campaign.selection import (
+    VerifiedSelectionPublication,
+    selection_verification_receipt,
     verify_selection_publication,
+    verify_selection_verification_receipt,
     verify_shard_selection_provenance,
 )
 from qldpc_fno.campaign.shard_io import (
@@ -150,6 +153,64 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     write_canonical_json(temporary, payload)
     os.replace(temporary, path)
+
+
+def _selection_for_evaluation(
+    *,
+    selection_path: Path,
+    config_path: Path,
+    code_manifest_path: Path,
+    output: Path,
+    resume: bool,
+) -> tuple[VerifiedSelectionPublication, dict[str, object] | None, str | None]:
+    """Verify selection semantics once, then validate its durable receipt cheaply."""
+    if resume:
+        receipt_path = output / "selection-verification.json"
+        committed_batches = tuple(output.glob("rate-*/batch-*"))
+        if not receipt_path.exists() and not committed_batches:
+            verified = verify_selection_publication(
+                selection_path,
+                config_path=config_path,
+                code_manifest_path=code_manifest_path,
+            )
+            return (
+                verified,
+                selection_verification_receipt(
+                    verified,
+                    config_path=config_path,
+                    code_manifest_path=code_manifest_path,
+                ),
+                None,
+            )
+        verified, receipt_sha256 = verify_selection_verification_receipt(
+            receipt_path,
+            selection_path=selection_path,
+            config_path=config_path,
+            code_manifest_path=code_manifest_path,
+        )
+        if not committed_batches:
+            replayed = verify_selection_publication(
+                selection_path,
+                config_path=config_path,
+                code_manifest_path=code_manifest_path,
+            )
+            if replayed != verified:
+                raise ValueError("selection receipt disagrees with semantic replay")
+        return verified, None, receipt_sha256
+    verified = verify_selection_publication(
+        selection_path,
+        config_path=config_path,
+        code_manifest_path=code_manifest_path,
+    )
+    return (
+        verified,
+        selection_verification_receipt(
+            verified,
+            config_path=config_path,
+            code_manifest_path=code_manifest_path,
+        ),
+        None,
+    )
 
 
 def _model_sources(
@@ -526,11 +587,7 @@ def _decode_batch(
     hx: object,
     logical_x: object,
     selected_models: dict[str, _SelectedModel],
-) -> tuple[
-    dict[str, np.ndarray],
-    dict[str, float],
-    dict[str, list[dict[str, object]]],
-]:
+) -> tuple[dict[str, np.ndarray], dict[str, list[dict[str, object]]]]:
     syndromes = shards.read("dets.b8", indices)
     actual_observables = shards.read("obs_actual.b8", indices)
     actual_errors = shards.read("errors.b8", indices)
@@ -592,7 +649,7 @@ def _decode_batch(
         method: _probability_reliability(probabilities[method], actual_errors)
         for method in _HYBRIDS
     }
-    return arrays, inference_latency, reliability
+    return arrays, reliability
 
 
 def _batch_manifest(
@@ -602,7 +659,6 @@ def _batch_manifest(
     batch_index: int,
     start: int,
     arrays: dict[str, np.ndarray],
-    inference_latency: dict[str, float],
     probability_reliability: dict[str, list[dict[str, object]]],
     outcomes_path: Path,
     source_sha256: dict[str, object],
@@ -614,7 +670,12 @@ def _batch_manifest(
         "complete": True,
         "error_rate": rate,
         "failures": failures,
-        "fno_inference_latency_seconds": inference_latency,
+        "fno_inference_latency_seconds": {
+            method: float(
+                np.sum(arrays[f"{method}_fno_latency_seconds"], dtype=np.float64)
+            )
+            for method in _HYBRIDS
+        },
         "invalid": {
             name: int(np.count_nonzero(~arrays[f"{name}_syndrome_valid"])) for name in _DECODERS
         },
@@ -810,7 +871,7 @@ def _verify_batch_manifest(
         if not math.isclose(
             float(inference_latency[method]),
             float(np.sum(outcomes[f"{method}_fno_latency_seconds"])),
-            rel_tol=0.0,
+            rel_tol=1e-12,
             abs_tol=1e-15,
         ):
             raise ValueError(f"evaluation batch {path} FNO inference latency disagrees with outcomes")
@@ -886,7 +947,7 @@ def _verify_outcome_archive(
             if not np.allclose(
                 arrays[f"{method}_end_to_end_latency_seconds"],
                 expected_end_to_end,
-                rtol=0.0,
+                rtol=1e-12,
                 atol=1e-15,
             ):
                 raise ValueError(f"{method} end-to-end latency disagrees with batch outcomes")
@@ -1630,17 +1691,34 @@ def _verify_orphan_rate_summaries(
             raise ValueError("orphan rate summary disagrees with verified outcomes")
 
 
-def _retire_partial_finalization(output: Path, *, rate_count: int) -> None:
-    """Remove verified derived finalization artifacts before collecting more shots."""
-    paths = [output / "manifest.json"]
-    for rate_index in range(rate_count):
-        paths.append(output / f"rate-{rate_index:03d}" / "summary.json")
+def _retire_partial_finalization(
+    output: Path,
+    *,
+    source_sha256: dict[str, object],
+    rates: tuple[float, ...],
+    rate_records: dict[int, list[_VerifiedBatch]],
+) -> None:
+    """Crash-safely retire verified derived artifacts before collecting more shots."""
+    manifest_path = output / "manifest.json"
+    summary_paths = [
+        output / f"rate-{rate_index:03d}" / "summary.json"
+        for rate_index in range(len(rates))
+    ]
+    paths = [manifest_path, *summary_paths]
     for path in paths:
         if path.is_symlink():
             raise ValueError("evaluation finalization artifacts must not be symlinks")
         if path.exists() and not path.is_file():
             raise ValueError("evaluation finalization artifacts must be regular files")
-    for path in paths:
+    manifest_path.unlink(missing_ok=True)
+    _write_progress(
+        output,
+        source_sha256=source_sha256,
+        rates=rates,
+        rate_records=rate_records,
+        status="in_progress",
+    )
+    for path in reversed(summary_paths):
         path.unlink(missing_ok=True)
 
 
@@ -1727,10 +1805,17 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
     if args.campaign_mode != run_mode["mode"]:
         raise ValueError("evaluation campaign mode does not match verified run mode")
     _, hx, _, logical_x = load_campaign_code(args.code)
-    selection = verify_selection_publication(
-        args.selection,
+    if args.out.exists() and not args.resume:
+        raise FileExistsError(f"refusing to overwrite existing evaluation output: {args.out}")
+    if not args.out.exists() and args.resume:
+        raise FileNotFoundError("evaluation resume output does not exist")
+    new_output = not args.out.exists()
+    selection, selection_receipt, selection_receipt_sha256 = _selection_for_evaluation(
+        selection_path=args.selection,
         config_path=args.config,
         code_manifest_path=code_manifest_path,
+        output=args.out,
+        resume=args.resume,
     )
     rates = selection.rates
     test_shards = load_verified_shards(
@@ -1778,10 +1863,19 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         }
         for method in _HYBRIDS
     }
+    if new_output:
+        args.out.mkdir(parents=True)
+    if selection_receipt is not None:
+        receipt_path = args.out / "selection-verification.json"
+        _write_json_atomic(receipt_path, selection_receipt)
+        selection_receipt_sha256 = sha256_file(receipt_path)
+    if selection_receipt_sha256 is None:
+        raise AssertionError("evaluation selection verification receipt was not resolved")
     source_sha256.update(
         {
             "run_mode": sha256_file(args.run_mode),
             "selection": selection.selection_sha256,
+            "selection_verification": selection_receipt_sha256,
             "test_manifest": test_shards.manifest_sha256,
             "test_shard_manifests": test_shards.shard_manifest_sha256,
         }
@@ -1794,12 +1888,7 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
                 f"the configured cap requires {config.max_test_shots_per_point}"
             )
 
-    if args.out.exists() and not args.resume:
-        raise FileExistsError(f"refusing to overwrite existing evaluation output: {args.out}")
-    if not args.out.exists():
-        if args.resume:
-            raise FileNotFoundError("evaluation resume output does not exist")
-        args.out.mkdir(parents=True)
+    if new_output:
         records = {index: [] for index in range(len(rates))}
         _write_progress(
             args.out,
@@ -1822,6 +1911,15 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
     for rate_records in records.values():
         _verify_batch_trajectory(rate_records, config=config)
     if args.resume:
+        progress_path = args.out / "progress.json"
+        if not progress_path.exists() and not any(records.values()):
+            _write_progress(
+                args.out,
+                source_sha256=source_sha256,
+                rates=rates,
+                rate_records=records,
+                status="in_progress",
+            )
         final_manifest_path = args.out / "manifest.json"
         if final_manifest_path.is_symlink():
             raise ValueError("completed evaluation manifest must not be a symlink")
@@ -1863,13 +1961,11 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         _discard_batch_staging(args.out, rate_count=len(rates))
         if final_publication is not None and final_publication.status == "complete":
             return
-        _retire_partial_finalization(args.out, rate_count=len(rates))
-        _write_progress(
+        _retire_partial_finalization(
             args.out,
             source_sha256=source_sha256,
             rates=rates,
             rate_records=records,
-            status="in_progress",
         )
 
     batches_this_run = 0
@@ -1905,7 +2001,7 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
                 config.max_test_shots_per_point,
             )
             indices = rate_indices[rate_index][start:stop]
-            arrays, inference_latency, probability_reliability = _decode_batch(
+            arrays, probability_reliability = _decode_batch(
                 indices=indices,
                 rate=rate,
                 shards=test_shards,
@@ -1932,7 +2028,6 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
                     batch_index=batch_index,
                     start=start,
                     arrays=arrays,
-                    inference_latency=inference_latency,
                     probability_reliability=probability_reliability,
                     outcomes_path=outcomes_path,
                     source_sha256=source_sha256,
