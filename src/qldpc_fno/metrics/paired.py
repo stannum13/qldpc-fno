@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping
 
 import numpy as np
+from scipy.stats import binomtest
 
 
 def _failure_outcomes(values: np.ndarray, *, name: str) -> np.ndarray:
@@ -39,78 +40,125 @@ def paired_decoder_summary(
     baseline_failures: np.ndarray,
     hybrid_failures: np.ndarray,
     *,
-    bootstrap_seed: int,
-    samples: int = 10_000,
+    alpha: float = 0.05,
 ) -> dict[str, object]:
-    """Summarize paired block failures and bootstrap the hybrid-minus-baseline delta.
-
-    Multinomial sampling of the three possible paired deltas (-1, 0, +1) is the
-    exact distribution obtained by drawing shot indices with replacement. It keeps
-    the canonical 10,000-by-200,000-shot bootstrap memory bounded.
-    """
+    """Summarize paired block failures with exact discordant-pair inference."""
     baseline = _failure_outcomes(baseline_failures, name="baseline")
     hybrid = _failure_outcomes(hybrid_failures, name="hybrid")
     if baseline.shape != hybrid.shape:
         raise ValueError("baseline and hybrid outcomes must have equal shape")
     if baseline.size == 0:
         raise ValueError("paired outcomes must contain at least one shot")
-    if type(bootstrap_seed) is not int or bootstrap_seed < 0:
-        raise ValueError("bootstrap_seed must be a non-negative integer")
-    if type(samples) is not int or samples <= 0:
-        raise ValueError("samples must be a positive integer")
+    if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between zero and one")
 
     both_succeed = int(np.count_nonzero(~baseline & ~hybrid))
     baseline_only = int(np.count_nonzero(baseline & ~hybrid))
     hybrid_only = int(np.count_nonzero(~baseline & hybrid))
     both_fail = int(np.count_nonzero(baseline & hybrid))
     shots = int(baseline.size)
+    discordant = baseline_only + hybrid_only
 
-    probabilities = (
-        np.array([baseline_only, both_succeed + both_fail, hybrid_only], dtype=np.float64) / shots
-    )
-    bootstrap_counts = np.random.default_rng(bootstrap_seed).multinomial(
-        shots,
-        probabilities,
-        size=samples,
-    )
-    bootstrap_delta = (
-        bootstrap_counts[:, 2].astype(np.float64) - bootstrap_counts[:, 0].astype(np.float64)
-    ) / shots
-    low, high = np.percentile(bootstrap_delta, (2.5, 97.5))
+    if discordant:
+        two_sided = float(binomtest(hybrid_only, discordant, 0.5).pvalue)
+        harm = float(binomtest(hybrid_only, discordant, 0.5, alternative="greater").pvalue)
+        benefit = float(binomtest(hybrid_only, discordant, 0.5, alternative="less").pvalue)
+        interval = binomtest(hybrid_only, discordant).proportion_ci(
+            confidence_level=1.0 - alpha,
+            method="exact",
+        )
+        harm_share: float | None = hybrid_only / discordant
+        low: float | None = float(interval.low)
+        high: float | None = float(interval.high)
+    else:
+        two_sided = harm = benefit = 1.0
+        harm_share = low = high = None
 
-    delta = (hybrid_only - baseline_only) / shots
     return {
         "baseline": _wilson_summary(baseline),
         "baseline_only_failure": baseline_only,
-        "block_error_delta": float(delta),
-        "block_error_delta_95ci_high": float(high + 0.0),
-        "block_error_delta_95ci_low": float(low + 0.0),
+        "block_error_delta": (hybrid_only - baseline_only) / shots,
         "both_fail": both_fail,
         "both_succeed": both_succeed,
-        "bootstrap_samples": samples,
-        "bootstrap_seed": bootstrap_seed,
+        "discordant_pairs": discordant,
         "hybrid": _wilson_summary(hybrid),
+        "hybrid_harm_share_given_discordance": harm_share,
+        "hybrid_harm_share_given_discordance_95ci_high": high,
+        "hybrid_harm_share_given_discordance_95ci_low": low,
         "hybrid_only_failure": hybrid_only,
+        "mcnemar_exact_pvalue_benefit": benefit,
+        "mcnemar_exact_pvalue_harm": harm,
+        "mcnemar_exact_pvalue_two_sided": two_sided,
         "shots": shots,
     }
 
 
-def accuracy_compatible(
+def paired_comparison_status(
     paired_summary: Mapping[str, object],
     *,
-    syndrome_valid: bool,
-) -> bool:
-    """Apply the accuracy-only compatibility gate declared by the campaign."""
-    if not isinstance(syndrome_valid, (bool, np.bool_)):
-        raise TypeError("syndrome_valid must be boolean")
+    fixed_sample: bool,
+    alpha: float = 0.05,
+) -> str:
+    """Classify exact paired comparison evidence for a fixed sample."""
+    if not isinstance(fixed_sample, (bool, np.bool_)):
+        raise TypeError("fixed_sample must be boolean")
+    if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be strictly between zero and one")
+    if not isinstance(paired_summary, Mapping):
+        raise TypeError("paired_summary must be a mapping")
+
     try:
-        low = float(paired_summary["block_error_delta_95ci_low"])
-        high = float(paired_summary["block_error_delta_95ci_high"])
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError("paired summary is missing a valid delta interval") from error
-    if not math.isfinite(low) or not math.isfinite(high) or low > high:
-        raise ValueError("paired block-error delta interval is invalid")
-    return bool(syndrome_valid and low <= 0.0)
+        shots = paired_summary["shots"]
+        both_succeed = paired_summary["both_succeed"]
+        baseline_only = paired_summary["baseline_only_failure"]
+        hybrid_only = paired_summary["hybrid_only_failure"]
+        both_fail = paired_summary["both_fail"]
+        discordant = paired_summary["discordant_pairs"]
+        pvalue = paired_summary["mcnemar_exact_pvalue_two_sided"]
+    except KeyError as error:
+        raise ValueError("paired summary is missing required counts or p-value") from error
+
+    counts = {
+        "shots": shots,
+        "both_succeed": both_succeed,
+        "baseline_only_failure": baseline_only,
+        "hybrid_only_failure": hybrid_only,
+        "both_fail": both_fail,
+        "discordant_pairs": discordant,
+    }
+    if any(
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, (int, np.integer))
+        or int(value) < 0
+        for value in counts.values()
+    ):
+        raise ValueError("paired summary counts must be non-negative integers")
+    shots = int(shots)
+    both_succeed = int(both_succeed)
+    baseline_only = int(baseline_only)
+    hybrid_only = int(hybrid_only)
+    both_fail = int(both_fail)
+    discordant = int(discordant)
+    if shots == 0 or both_succeed + baseline_only + hybrid_only + both_fail != shots:
+        raise ValueError("paired summary counts must add up to shots")
+    if discordant != baseline_only + hybrid_only:
+        raise ValueError("discordant_pairs must equal the discordant counts")
+    try:
+        pvalue = float(pvalue)
+    except (TypeError, ValueError) as error:
+        raise ValueError("McNemar exact p-value must be finite and in [0, 1]") from error
+    if not math.isfinite(pvalue) or not 0.0 <= pvalue <= 1.0:
+        raise ValueError("McNemar exact p-value must be finite and in [0, 1]")
+
+    if not fixed_sample:
+        return "not_fixed_sample"
+    if discordant == 0:
+        return "no_discordances"
+    if pvalue <= alpha and hybrid_only > baseline_only:
+        return "harm_detected"
+    if pvalue <= alpha and baseline_only > hybrid_only:
+        return "benefit_detected"
+    return "inconclusive"
 
 
 def adaptive_stop_reason(

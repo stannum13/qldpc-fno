@@ -4,39 +4,77 @@ import numpy as np
 import pytest
 
 from qldpc_fno.metrics.paired import (
-    accuracy_compatible,
     adaptive_stop_reason,
+    paired_comparison_status,
     paired_decoder_summary,
 )
 
 
-def test_paired_summary_counts_disagreements_and_is_reproducible() -> None:
-    baseline = np.array([0, 0, 1, 1], dtype=bool)
-    hybrid = np.array([0, 1, 0, 1], dtype=bool)
+def test_all_hybrid_only_discordances_have_nonzero_exact_uncertainty() -> None:
+    summary = paired_decoder_summary(
+        np.zeros(8, dtype=np.bool_),
+        np.ones(8, dtype=np.bool_),
+    )
 
-    first = paired_decoder_summary(baseline, hybrid, bootstrap_seed=9, samples=1_000)
-    second = paired_decoder_summary(baseline, hybrid, bootstrap_seed=9, samples=1_000)
+    assert set(summary) == {
+        "baseline",
+        "baseline_only_failure",
+        "block_error_delta",
+        "both_fail",
+        "both_succeed",
+        "discordant_pairs",
+        "hybrid",
+        "hybrid_harm_share_given_discordance",
+        "hybrid_harm_share_given_discordance_95ci_high",
+        "hybrid_harm_share_given_discordance_95ci_low",
+        "hybrid_only_failure",
+        "mcnemar_exact_pvalue_benefit",
+        "mcnemar_exact_pvalue_harm",
+        "mcnemar_exact_pvalue_two_sided",
+        "shots",
+    }
+    assert summary["hybrid_only_failure"] == 8
+    assert summary["baseline_only_failure"] == 0
+    assert summary["discordant_pairs"] == 8
+    assert summary["mcnemar_exact_pvalue_two_sided"] == pytest.approx(0.0078125)
+    assert summary["mcnemar_exact_pvalue_harm"] == pytest.approx(0.00390625)
+    assert summary["mcnemar_exact_pvalue_benefit"] == 1.0
+    assert 0.0 < summary["hybrid_harm_share_given_discordance_95ci_low"] < 1.0
+    assert summary["hybrid_harm_share_given_discordance_95ci_high"] == 1.0
+    assert paired_comparison_status(summary, fixed_sample=True) == "harm_detected"
 
-    assert first == second
-    assert first["both_succeed"] == 1
-    assert first["baseline_only_failure"] == 1
-    assert first["hybrid_only_failure"] == 1
-    assert first["both_fail"] == 1
-    assert first["block_error_delta"] == 0.0
-    assert first["baseline"]["block_errors"] == 2
-    assert first["hybrid"]["block_errors"] == 2
+
+def test_all_baseline_only_discordances_detect_benefit() -> None:
+    summary = paired_decoder_summary(
+        np.ones(8, dtype=np.bool_),
+        np.zeros(8, dtype=np.bool_),
+    )
+    assert paired_comparison_status(summary, fixed_sample=True) == "benefit_detected"
 
 
-def test_bootstrap_resamples_paired_shots_and_preserves_direction() -> None:
-    baseline = np.array([1, 1, 1, 0], dtype=bool)
-    hybrid = np.array([0, 0, 0, 0], dtype=bool)
+def test_balanced_discordances_are_inconclusive() -> None:
+    baseline = np.array([1, 1, 0, 0, 0, 0, 0, 0], dtype=np.bool_)
+    hybrid = np.array([0, 0, 1, 1, 0, 0, 0, 0], dtype=np.bool_)
+    summary = paired_decoder_summary(baseline, hybrid)
+    assert paired_comparison_status(summary, fixed_sample=True) == "inconclusive"
 
-    summary = paired_decoder_summary(baseline, hybrid, bootstrap_seed=19, samples=2_000)
 
-    assert summary["block_error_delta"] == -0.75
-    assert summary["block_error_delta_95ci_high"] <= 0.0
-    assert summary["baseline"]["block_error_rate_95ci_low"] > 0.0
-    assert summary["hybrid"]["block_error_rate_95ci_low"] == 0.0
+def test_no_discordances_have_null_conditional_interval() -> None:
+    outcomes = np.array([0, 1, 0, 1], dtype=np.bool_)
+    summary = paired_decoder_summary(outcomes, outcomes)
+    assert summary["discordant_pairs"] == 0
+    assert summary["hybrid_harm_share_given_discordance"] is None
+    assert summary["hybrid_harm_share_given_discordance_95ci_low"] is None
+    assert summary["hybrid_harm_share_given_discordance_95ci_high"] is None
+    assert paired_comparison_status(summary, fixed_sample=True) == "no_discordances"
+
+
+def test_adaptive_or_partial_comparison_has_no_fixed_sample_status() -> None:
+    summary = paired_decoder_summary(
+        np.zeros(8, dtype=np.bool_),
+        np.ones(8, dtype=np.bool_),
+    )
+    assert paired_comparison_status(summary, fixed_sample=False) == "not_fixed_sample"
 
 
 @pytest.mark.parametrize(
@@ -54,39 +92,13 @@ def test_paired_summary_rejects_non_shot_outcomes(
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        paired_decoder_summary(baseline, hybrid, bootstrap_seed=1, samples=10)
+        paired_decoder_summary(baseline, hybrid)
 
 
-def test_accuracy_compatibility_requires_validity_and_nonpositive_ci_low() -> None:
-    compatible = {
-        "block_error_delta_95ci_low": -0.1,
-        "block_error_delta_95ci_high": 0.2,
-    }
-    better = {
-        "block_error_delta_95ci_low": -0.3,
-        "block_error_delta_95ci_high": -0.1,
-    }
-    worse = {
-        "block_error_delta_95ci_low": 0.01,
-        "block_error_delta_95ci_high": 0.2,
-    }
-
-    assert accuracy_compatible(compatible, syndrome_valid=True)
-    assert accuracy_compatible(better, syndrome_valid=True)
-    assert not accuracy_compatible(worse, syndrome_valid=True)
-    assert not accuracy_compatible(compatible, syndrome_valid=False)
-
-
-def test_accuracy_compatibility_ignores_latency_fields() -> None:
-    first = {
-        "block_error_delta_95ci_low": 0.0,
-        "block_error_delta_95ci_high": 0.2,
-        "latency_seconds": 1_000.0,
-    }
-    second = {**first, "latency_seconds": 0.000_001}
-
-    assert accuracy_compatible(first, syndrome_valid=True)
-    assert accuracy_compatible(second, syndrome_valid=True)
+@pytest.mark.parametrize("alpha", [float("nan"), 0.0, 1.0, -0.1, 1.1])
+def test_paired_summary_rejects_invalid_alpha(alpha: float) -> None:
+    with pytest.raises(ValueError, match="alpha must be strictly between zero and one"):
+        paired_decoder_summary(np.zeros(2, dtype=bool), np.zeros(2, dtype=bool), alpha=alpha)
 
 
 def test_adaptive_stop_requires_every_decoder_to_reach_failure_target() -> None:
