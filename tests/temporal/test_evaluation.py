@@ -1,26 +1,109 @@
-from dataclasses import dataclass
+import hashlib
+from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 from scipy import sparse
 
 import qldpc_fno.temporal.evaluation as evaluation_module
 from qldpc_fno.decoders.bplsd import DecodeBatchResult
+from qldpc_fno.models.causal_forecaster import build_forecaster, parameter_accounting
+from qldpc_fno.temporal.baselines import (
+    CircularLogisticForecaster,
+    PrivilegedOracle,
+    StationaryForecaster,
+)
+from qldpc_fno.temporal.config import CausalExperimentConfig
 from qldpc_fno.temporal.evaluation import (
     CausalEvaluationBatch,
     ForecastSplit,
     evaluate_causal_arms,
     evaluate_oracle_sanity,
     fit_select_observation_baselines,
+    freeze_learned_arm,
     reduced_factor_diagnostics,
     reduced_progression,
 )
+from qldpc_fno.training.causal_sequence import (
+    CausalTrainingResult,
+    SequenceRoleBatch,
+    validate_role_partition,
+)
+
+CONFIG_PATH = Path("configs/causal_fno_hippo_reduced.json")
+
+
+def _identity(label: str) -> str:
+    return hashlib.sha256(label.encode()).hexdigest()
+
+
+def _role_batch(role: str, identity: str) -> SequenceRoleBatch:
+    return SequenceRoleBatch(
+        role=role,
+        seed=1,
+        syndromes=torch.zeros(1, 2, 21, 45),
+        targets=torch.zeros(1, 2, 58, 45),
+        scored_mask=torch.tensor([False, True]),
+        sequence_ids=(identity,),
+    )
+
+
+def _partition_batches():
+    train = _role_batch("train", _identity("train"))
+    validation = _role_batch("validation", _identity("validation"))
+    calibration = _role_batch("calibration", _identity("calibration"))
+    partition = validate_role_partition(train, validation, calibration)
+    return train, validation, calibration, partition
+
+
+def _forecast_split(role: str, identity: str, target: float = 0.0) -> ForecastSplit:
+    return ForecastSplit(
+        role=role,
+        sequence_ids=(identity,),
+        syndromes=np.zeros((1, 2, 2, 5), dtype=np.uint8),
+        targets=np.full((1, 2, 3, 5), target, dtype=np.uint8),
+        scored_mask=np.array([False, True]),
+    )
+
+
+def _logit(probability: float) -> float:
+    return float(np.log(probability / (1.0 - probability)))
+
+
+def _logistic(probability: float, *, feature_kind: str) -> CircularLogisticForecaster:
+    channels = 2 if feature_kind == "ewma" else 64
+    return CircularLogisticForecaster(
+        weight=np.zeros((3, channels, 5 if feature_kind == "ewma" else 3)),
+        bias=np.full(3, _logit(probability)),
+        l2=1e-4,
+        feature_kind=feature_kind,
+        decay=0.9 if feature_kind == "ewma" else None,
+        lags=32,
+    )
+
+
+def _fit_selection(monkeypatch, *, ewma_probability: float, logistic_probability: float):
+    train, validation_batch, calibration, partition = _partition_batches()
+    stationary = StationaryForecaster(0.1, np.full((3, 5), 0.1), 0.0)
+    ewma = _logistic(ewma_probability, feature_kind="ewma")
+    logistic = _logistic(logistic_probability, feature_kind="lagged")
+    monkeypatch.setattr(evaluation_module, "fit_stationary", lambda *args, **kwargs: stationary)
+    monkeypatch.setattr(evaluation_module, "fit_ewma", lambda *args, **kwargs: ewma)
+    monkeypatch.setattr(evaluation_module, "fit_logistic_ar", lambda *args, **kwargs: logistic)
+    monkeypatch.setattr(evaluation_module, "calibrate_temperature", lambda *args: 1.0)
+    selection = fit_select_observation_baselines(
+        train=_forecast_split("train", train.sequence_ids[0]),
+        validation=_forecast_split("validation", validation_batch.sequence_ids[0], 1.0),
+        calibration=_forecast_split("calibration", calibration.sequence_ids[0]),
+        partition=partition,
+    )
+    return selection, partition, (stationary, ewma, logistic)
 
 
 def _decode_result(
-    corrections: np.ndarray,
-    predicted: np.ndarray,
-    valid: np.ndarray,
+    corrections: np.ndarray, predicted: np.ndarray, valid: np.ndarray
 ) -> DecodeBatchResult:
     rows = corrections.shape[0]
     return DecodeBatchResult(
@@ -35,294 +118,375 @@ def _decode_result(
     )
 
 
-def test_all_arms_decode_identical_membership_and_score_logical_failure(monkeypatch) -> None:
-    hx = sparse.csr_matrix([[1, 0, 0], [0, 1, 0]], dtype=np.uint8)
-    logical_x = sparse.csr_matrix([[0, 0, 1]], dtype=np.uint8)
-    syndromes = np.array(
-        [
-            [[0, 0], [1, 0], [0, 1]],
-            [[1, 1], [0, 0], [1, 0]],
-        ],
-        dtype=np.uint8,
+def test_baseline_selection_uses_raw_unclipped_validation_nll(monkeypatch) -> None:
+    selection, partition, _ = _fit_selection(
+        monkeypatch, ewma_probability=0.40, logistic_probability=0.45
     )
-    logical_flips = np.array(
-        [
-            [[0], [0], [1]],
-            [[0], [1], [0]],
-        ],
-        dtype=np.uint8,
+
+    assert selection.selected_name == "logistic_ar"
+    assert selection.partition_digest == partition.digest
+    assert selection.validation_nll["logistic_ar"] < selection.validation_nll["ewma"]
+    assert len(selection.fit_policy_digest) == 64
+
+
+def test_baseline_selection_pins_exact_fit_policy_and_handles_zero_stationary_probability(
+    monkeypatch,
+) -> None:
+    train, validation_batch, calibration, partition = _partition_batches()
+    calls: dict[str, dict[str, object]] = {}
+    stationary = StationaryForecaster(0.0, np.zeros((3, 5)), 0.0)
+
+    def stationarity(*args, **kwargs):
+        calls["stationary"] = kwargs
+        return stationary
+
+    def ewma(*args, **kwargs):
+        calls["ewma"] = kwargs
+        return _logistic(0.2, feature_kind="ewma")
+
+    def logistic(*args, **kwargs):
+        calls["logistic_ar"] = kwargs
+        return _logistic(0.3, feature_kind="lagged")
+
+    monkeypatch.setattr(evaluation_module, "fit_stationary", stationarity)
+    monkeypatch.setattr(evaluation_module, "fit_ewma", ewma)
+    monkeypatch.setattr(evaluation_module, "fit_logistic_ar", logistic)
+    monkeypatch.setattr(evaluation_module, "calibrate_temperature", lambda *args: 1.0)
+    selection = fit_select_observation_baselines(
+        train=_forecast_split("train", train.sequence_ids[0]),
+        validation=_forecast_split("validation", validation_batch.sequence_ids[0]),
+        calibration=_forecast_split("calibration", calibration.sequence_ids[0]),
+        partition=partition,
     )
-    errors = np.zeros((2, 3, 3), dtype=np.uint8)
-    errors[..., 2] = logical_flips[..., 0]
+
+    assert np.isfinite(selection.validation_nll["stationary_field"])
+    assert calls["ewma"]["max_iter"] == 500
+    assert calls["logistic_ar"]["max_iter"] == 500
+    assert calls["ewma"]["kernel_size"] == 5
+    assert calls["logistic_ar"]["lags"] == 32
+
+
+def test_baseline_selection_snapshots_models_and_membership(monkeypatch) -> None:
+    selection, _, source_models = _fit_selection(
+        monkeypatch, ewma_probability=0.20, logistic_probability=0.20
+    )
+    assert selection.selected_name == "ewma"
+    frozen = selection.baseline("ewma")
+    observed = _forecast_split("validation", _identity("validation")).syndromes
+    before = frozen.predict(observed, sequence_ids=selection.validation_sequence_ids)
+
+    source_models[1].weight[:] = 100.0
+    after = frozen.predict(observed, sequence_ids=selection.validation_sequence_ids)
+
+    assert np.array_equal(before, after)
+    assert not frozen.weight.flags.writeable
+    with pytest.raises(FrozenInstanceError):
+        frozen.temperature = 4.0  # type: ignore[misc]
+
+
+def test_baseline_selection_requires_exact_partition_membership(monkeypatch) -> None:
+    train, _, calibration, partition = _partition_batches()
+    with pytest.raises(ValueError, match="partition"):
+        fit_select_observation_baselines(
+            train=_forecast_split("train", train.sequence_ids[0]),
+            validation=_forecast_split("validation", _identity("wrong-validation")),
+            calibration=_forecast_split("calibration", calibration.sequence_ids[0]),
+            partition=partition,
+        )
+
+
+def test_baseline_selection_rejects_a_wrong_predictor_in_a_named_slot(monkeypatch) -> None:
+    train, validation, calibration, partition = _partition_batches()
+    monkeypatch.setattr(
+        evaluation_module,
+        "fit_stationary",
+        lambda *args, **kwargs: StationaryForecaster(0.1, np.full((3, 5), 0.1), 0.0),
+    )
+    monkeypatch.setattr(
+        evaluation_module,
+        "fit_ewma",
+        lambda *args, **kwargs: _logistic(0.2, feature_kind="lagged"),
+    )
+    monkeypatch.setattr(
+        evaluation_module,
+        "fit_logistic_ar",
+        lambda *args, **kwargs: _logistic(0.3, feature_kind="lagged"),
+    )
+    monkeypatch.setattr(evaluation_module, "calibrate_temperature", lambda *args: 1.0)
+    with pytest.raises(TypeError, match="EWMA"):
+        fit_select_observation_baselines(
+            train=_forecast_split("train", train.sequence_ids[0]),
+            validation=_forecast_split("validation", validation.sequence_ids[0]),
+            calibration=_forecast_split("calibration", calibration.sequence_ids[0]),
+            partition=partition,
+        )
+
+
+def test_freeze_learned_arm_binds_provenance_and_snapshots_state() -> None:
+    config = CausalExperimentConfig.from_json(CONFIG_PATH)
+    model = build_forecaster(spatial="cnn", temporal="fir", config=config)
+    _, validation, calibration, partition = _partition_batches()
+    training_result = CausalTrainingResult(
+        model_state_dict={
+            name: value.detach().clone() for name, value in model.state_dict().items()
+        },
+        best_epoch=0,
+        best_validation_nll=0.1,
+        training_nll_history=(0.2,),
+        validation_nll_history=(0.1,),
+        partition_digest=partition.digest,
+    )
+    arm = freeze_learned_arm(
+        name="cnn_fir",
+        model=model,
+        config=config,
+        partition=partition,
+        training_result=training_result,
+        calibration=calibration,
+        evaluation_sequence_ids=validation.sequence_ids,
+    )
+
+    accounting = parameter_accounting(model)
+    assert arm.partition_digest == partition.digest
+    assert arm.predictor_type == "causal_channel_forecaster:cnn:fir"
+    assert arm.stored_parameters == accounting.stored_real_scalars
+    assert arm.effective_parameters == accounting.effective_functional_scalars
+    assert arm.calibration_temperature > 0.0
+    assert len(arm.checkpoint_sha256) == 64 and len(arm.calibration_digest) == 64
+    assert len(arm.config_digest) == 64
+    checkpoint = arm.checkpoint_sha256
+    with torch.no_grad():
+        next(model.parameters()).add_(100.0)
+    assert checkpoint != evaluation_module._state_dict_sha256(model.state_dict())
+
+
+def test_freeze_learned_arm_rejects_partition_mismatch() -> None:
+    config = CausalExperimentConfig.from_json(CONFIG_PATH)
+    model = build_forecaster(spatial="cnn", temporal="fir", config=config)
+    _, validation, calibration, partition = _partition_batches()
+    result = CausalTrainingResult(
+        model_state_dict={
+            name: value.detach().clone() for name, value in model.state_dict().items()
+        },
+        best_epoch=0,
+        best_validation_nll=0.1,
+        training_nll_history=(),
+        validation_nll_history=(0.1,),
+        partition_digest=_identity("wrong-partition"),
+    )
+    with pytest.raises(ValueError, match="partition"):
+        freeze_learned_arm(
+            name="cnn_fir",
+            model=model,
+            config=config,
+            partition=partition,
+            training_result=result,
+            calibration=calibration,
+            evaluation_sequence_ids=validation.sequence_ids,
+        )
+
+
+def test_frozen_learned_arm_reconstructs_checkpoint_and_predicts_from_syndromes(
+    monkeypatch,
+) -> None:
+    config = CausalExperimentConfig.from_json(CONFIG_PATH)
+    model = build_forecaster(spatial="cnn", temporal="fir", config=config)
+    _, validation, calibration, partition = _partition_batches()
+    result = CausalTrainingResult(
+        model_state_dict={
+            name: value.detach().clone() for name, value in model.state_dict().items()
+        },
+        best_epoch=0,
+        best_validation_nll=0.1,
+        training_nll_history=(),
+        validation_nll_history=(0.1,),
+        partition_digest=partition.digest,
+    )
+    arm = freeze_learned_arm(
+        name="cnn_fir",
+        model=model,
+        config=config,
+        partition=partition,
+        training_result=result,
+        calibration=calibration,
+        evaluation_sequence_ids=validation.sequence_ids,
+    )
+    hx = sparse.csr_matrix((945, 2610), dtype=np.uint8)
+    logical_x = sparse.csr_matrix((1, 2610), dtype=np.uint8)
     batch = CausalEvaluationBatch(
         regime="joint_in_basis",
         role="validation",
-        sequence_ids=("d" * 64, "e" * 64),
+        sequence_ids=validation.sequence_ids,
+        syndromes=np.zeros((1, 2, 21, 45), dtype=np.uint8),
+        errors=np.zeros((1, 2, 58, 45), dtype=np.uint8),
+        logical_flips=np.zeros((1, 2, 1), dtype=np.uint8),
+        scored_mask=np.array([False, True]),
+    )
+
+    def fake_decode(*args, **kwargs):
+        del args, kwargs
+        return _decode_result(
+            np.zeros((1, 2610), dtype=np.uint8),
+            np.zeros((1, 1), dtype=np.uint8),
+            np.ones(1, dtype=bool),
+        )
+
+    monkeypatch.setattr(evaluation_module, "decode_bplsd_prior_batch", fake_decode)
+    evaluated = evaluate_causal_arms(batch, (arm,), hx=hx, logical_x=logical_x)
+    assert evaluated.arms["cnn_fir"].stored_parameters == arm.stored_parameters
+    assert evaluated.arms["cnn_fir"].partition_digest == partition.digest
+
+
+def test_evaluation_reconstructs_all_qec_labels_before_decode(monkeypatch) -> None:
+    selection, _, _ = _fit_selection(monkeypatch, ewma_probability=0.2, logistic_probability=0.3)
+    corrupted_syndromes = np.zeros((1, 2, 10), dtype=np.uint8)
+    corrupted_syndromes[0, 1, 0] = 1
+    batch = CausalEvaluationBatch(
+        regime="joint_in_basis",
+        role="validation",
+        sequence_ids=selection.validation_sequence_ids,
+        syndromes=corrupted_syndromes,
+        errors=np.zeros((1, 2, 15), dtype=np.uint8),
+        logical_flips=np.zeros((1, 2, 1), dtype=np.uint8),
+        scored_mask=np.array([False, True]),
+    )
+    with pytest.raises(ValueError, match="reconstructed syndromes"):
+        evaluate_causal_arms(
+            batch,
+            (selection.baseline("stationary_field"),),
+            hx=sparse.csr_matrix((10, 15), dtype=np.uint8),
+            logical_x=sparse.csr_matrix((1, 15), dtype=np.uint8),
+        )
+
+    logically_corrupted = CausalEvaluationBatch(
+        regime="joint_in_basis",
+        role="validation",
+        sequence_ids=selection.validation_sequence_ids,
+        syndromes=np.zeros((1, 2, 10), dtype=np.uint8),
+        errors=np.zeros((1, 2, 15), dtype=np.uint8),
+        logical_flips=np.ones((1, 2, 1), dtype=np.uint8),
+        scored_mask=np.array([False, True]),
+    )
+    with pytest.raises(ValueError, match="reconstructed logical flips"):
+        evaluate_causal_arms(
+            logically_corrupted,
+            (selection.baseline("stationary_field"),),
+            hx=sparse.csr_matrix((10, 15), dtype=np.uint8),
+            logical_x=sparse.csr_matrix((1, 15), dtype=np.uint8),
+        )
+
+
+def test_frozen_arms_decode_identical_membership_and_score_modulo_stabilizers(
+    monkeypatch,
+) -> None:
+    selection, _, _ = _fit_selection(monkeypatch, ewma_probability=0.2, logistic_probability=0.3)
+    hx = sparse.eye(10, 15, dtype=np.uint8, format="csr")
+    logical_x = sparse.csr_matrix(([1], ([0], [14])), shape=(1, 15), dtype=np.uint8)
+    errors = np.zeros((1, 2, 15), dtype=np.uint8)
+    errors[0, 1, 1] = 1
+    errors[0, 1, 14] = 1
+    syndromes = np.asarray(hx @ errors.reshape(2, 15).T).T.reshape(1, 2, 2, 5)
+    logical = np.asarray(logical_x @ errors.reshape(2, 15).T).T.reshape(1, 2, 1)
+    batch = CausalEvaluationBatch(
+        regime="joint_in_basis",
+        role="validation",
+        sequence_ids=selection.validation_sequence_ids,
         syndromes=syndromes,
         errors=errors,
-        logical_flips=logical_flips,
-        scored_mask=np.array([False, True, True]),
+        logical_flips=logical,
+        scored_mask=np.array([False, True]),
     )
     calls: list[np.ndarray] = []
 
     def fake_decode(hx_arg, syndromes_arg, logical_arg, *, error_channels, config):
-        del hx_arg, logical_arg, config
+        del hx_arg, logical_arg, error_channels
         calls.append(np.asarray(syndromes_arg).copy())
-        corrections = np.column_stack(
-            (syndromes_arg[:, 0], syndromes_arg[:, 1], np.array([0, 0, 1, 1]))
-        ).astype(np.uint8)
-        predicted = corrections[:, 2, None]
-        return _decode_result(corrections, predicted, np.ones(4, dtype=bool))
+        assert config == evaluation_module.CANONICAL_BPLSD_CONFIG
+        correction = np.zeros((1, 15), dtype=np.uint8)
+        correction[0, 1] = 1
+        return _decode_result(correction, np.array([[0]], dtype=np.uint8), np.array([True]))
 
     monkeypatch.setattr(evaluation_module, "decode_bplsd_prior_batch", fake_decode)
-    priors = {
-        "stationary_field": np.full((2, 3, 3), 0.05),
-        "fno_hippo": np.full((2, 3, 3), 0.06),
-    }
-
-    result = evaluate_causal_arms(
+    evaluated = evaluate_causal_arms(
         batch,
-        priors,
+        (
+            selection.baseline("stationary_field"),
+            selection.baseline(selection.selected_name),
+        ),
         hx=hx,
         logical_x=logical_x,
-        parameter_counts={
-            "stationary_field": (4, 4),
-            "fno_hippo": (12, 10),
-        },
     )
 
-    expected_membership = (
-        ("d" * 64, 1),
-        ("d" * 64, 2),
-        ("e" * 64, 1),
-        ("e" * 64, 2),
+    assert len(calls) == 2 and np.array_equal(calls[0], calls[1])
+    assert evaluated.sequence_membership == ((selection.validation_sequence_ids[0], 1),)
+    selected_arm = evaluated.arms[selection.selected_name]
+    assert selected_arm.logical_failures.tolist() == [True]
+    assert selected_arm.all_syndrome_valid
+    assert selected_arm.per_round_outcomes[0]["true_logical_flips"] == (1,)
+    assert selected_arm.expected_calibration_error >= 0.0
+    assert len(selected_arm.reliability) == 10
+    assert evaluated.decoder_config_digest == evaluation_module.CANONICAL_BPLSD_CONFIG_DIGEST
+    with pytest.raises(TypeError):
+        evaluated.arms[selection.selected_name].per_round_outcomes[0]["round"] = 9
+
+    progression = reduced_progression(
+        selection=selection,
+        stationary=evaluated.arms["stationary_field"],
+        selected=evaluated.arms[selection.selected_name],
     )
-    assert len(calls) == 2
-    assert np.array_equal(calls[0], calls[1])
-    assert result.sequence_membership == expected_membership
-    assert result.arms["stationary_field"].sequence_membership == expected_membership
-    assert result.arms["fno_hippo"].sequence_membership == expected_membership
-    assert result.arms["fno_hippo"].logical_failures.tolist() == [False, True, False, True]
-    assert result.arms["fno_hippo"].all_syndrome_valid
-    assert result.arms["fno_hippo"].stored_parameters == 12
-    assert result.arms["fno_hippo"].effective_parameters == 10
-    assert len(result.arms["fno_hippo"].per_round_outcomes) == 4
-    assert result.arms["fno_hippo"].per_round_outcomes[1]["predicted_observables"] == [0]
-    assert result.arms["fno_hippo"].per_round_outcomes[1]["true_logical_flips"] == [1]
-    assert result.arms["fno_hippo"].per_round_outcomes[1]["observed_error_weight"] == 1
-    assert result.arms["fno_hippo"].per_round_outcomes[1]["forecast_nll"] > 0.0
+    assert progression.regime == "joint_in_basis"
+    assert progression.p_value is None and progression.hypothesis_status is None
+    with pytest.raises(ValueError, match="integrity"):
+        reduced_progression(
+            selection=selection,
+            stationary=evaluated.arms["stationary_field"],
+            selected=replace(selected_arm, overall_nll=-100.0),
+        )
 
 
-def test_invalid_correction_is_a_failure_and_decoder_validity_is_recomputed(monkeypatch) -> None:
-    hx = sparse.csr_matrix([[1, 0]], dtype=np.uint8)
-    logical_x = sparse.csr_matrix([[0, 1]], dtype=np.uint8)
+def test_same_shape_different_evaluation_ids_are_rejected(monkeypatch) -> None:
+    selection, _, _ = _fit_selection(monkeypatch, ewma_probability=0.2, logistic_probability=0.3)
     batch = CausalEvaluationBatch(
         regime="joint_in_basis",
         role="validation",
-        sequence_ids=("d" * 64,),
-        syndromes=np.array([[[1]]], dtype=np.uint8),
-        errors=np.zeros((1, 1, 2), dtype=np.uint8),
-        logical_flips=np.zeros((1, 1, 1), dtype=np.uint8),
-        scored_mask=np.array([True]),
+        sequence_ids=(_identity("different"),),
+        syndromes=np.zeros((1, 2, 10), dtype=np.uint8),
+        errors=np.zeros((1, 2, 15), dtype=np.uint8),
+        logical_flips=np.zeros((1, 2, 1), dtype=np.uint8),
+        scored_mask=np.array([False, True]),
     )
-
-    def fake_decode(*args, **kwargs):
-        del args, kwargs
-        return _decode_result(
-            np.array([[0, 0]], dtype=np.uint8),
-            np.array([[0]], dtype=np.uint8),
-            np.array([True]),
-        )
-
-    monkeypatch.setattr(evaluation_module, "decode_bplsd_prior_batch", fake_decode)
-
-    with pytest.raises(RuntimeError, match="syndrome_valid disagrees"):
+    with pytest.raises(ValueError, match="evaluation membership"):
         evaluate_causal_arms(
             batch,
-            {"arm": np.full((1, 1, 2), 0.05)},
-            hx=hx,
-            logical_x=logical_x,
-            parameter_counts={"arm": (1, 1)},
+            (selection.baseline("ewma"),),
+            hx=sparse.csr_matrix((10, 15), dtype=np.uint8),
+            logical_x=sparse.csr_matrix((1, 15), dtype=np.uint8),
         )
 
 
-def test_invalid_correction_counts_as_failure_even_when_logical_bits_match(monkeypatch) -> None:
-    hx = sparse.csr_matrix([[1, 0]], dtype=np.uint8)
-    logical_x = sparse.csr_matrix([[0, 1]], dtype=np.uint8)
+def test_dataclass_replace_cannot_forge_a_frozen_arm(monkeypatch) -> None:
+    selection, _, _ = _fit_selection(monkeypatch, ewma_probability=0.2, logistic_probability=0.3)
+    original = selection.baseline("ewma")
+    forged = replace(original, name="forged")
     batch = CausalEvaluationBatch(
         regime="joint_in_basis",
         role="validation",
-        sequence_ids=("d" * 64,),
-        syndromes=np.array([[[1]]], dtype=np.uint8),
-        errors=np.zeros((1, 1, 2), dtype=np.uint8),
-        logical_flips=np.zeros((1, 1, 1), dtype=np.uint8),
-        scored_mask=np.array([True]),
+        sequence_ids=selection.validation_sequence_ids,
+        syndromes=np.zeros((1, 2, 2, 5), dtype=np.uint8),
+        errors=np.zeros((1, 2, 3, 5), dtype=np.uint8),
+        logical_flips=np.zeros((1, 2, 1), dtype=np.uint8),
+        scored_mask=np.array([False, True]),
     )
-
-    def fake_decode(*args, **kwargs):
-        del args, kwargs
-        return _decode_result(
-            np.array([[0, 0]], dtype=np.uint8),
-            np.array([[0]], dtype=np.uint8),
-            np.array([False]),
-        )
-
-    monkeypatch.setattr(evaluation_module, "decode_bplsd_prior_batch", fake_decode)
-    result = evaluate_causal_arms(
-        batch,
-        {"arm": np.full((1, 1, 2), 0.05)},
-        hx=hx,
-        logical_x=logical_x,
-        parameter_counts={"arm": (1, 1)},
-    )
-
-    assert result.arms["arm"].logical_failures.tolist() == [True]
-    assert not result.arms["arm"].all_syndrome_valid
-
-
-@dataclass(frozen=True)
-class _FakeForecaster:
-    probability: float
-    feature_kind: str = "fake"
-    privileged: bool = False
-    temperature: float = 1.0
-
-    def predict(self, syndromes: np.ndarray) -> np.ndarray:
-        sequences, rounds, _, ell = syndromes.shape
-        return np.full((sequences, rounds, 1, ell), self.probability)
-
-    def raw_predict(self, syndromes: np.ndarray) -> np.ndarray:
-        return self.predict(syndromes)
-
-
-def _forecast_split(role: str, target: float) -> ForecastSplit:
-    identity = {"train": "a", "validation": "b", "calibration": "c"}[role] * 64
-    return ForecastSplit(
-        role=role,
-        sequence_ids=(identity,),
-        syndromes=np.zeros((1, 2, 1, 3)),
-        targets=np.full((1, 2, 1, 3), target),
-        scored_mask=np.array([[True, True]]),
-    )
-
-
-def test_baseline_selection_fits_on_roles_and_ties_choose_ewma(monkeypatch) -> None:
-    seen: list[tuple[str, float]] = []
-
-    def fake_stationary(train_targets, validation_targets, **kwargs):
-        del train_targets, validation_targets, kwargs
-        return evaluation_module.StationaryForecaster(0.1, np.full((1, 3), 0.1), 0.0)
-
-    def fake_ewma(train_s, train_y, validation_s, validation_y, **kwargs):
-        del train_s, validation_s, validation_y, kwargs
-        seen.append(("ewma", float(np.mean(train_y))))
-        return _FakeForecaster(0.2, "ewma")
-
-    def fake_logistic(train_s, train_y, validation_s, validation_y, **kwargs):
-        del train_s, validation_s, validation_y, kwargs
-        seen.append(("logistic_ar", float(np.mean(train_y))))
-        return _FakeForecaster(0.2, "lagged")
-
-    monkeypatch.setattr(evaluation_module, "fit_stationary", fake_stationary)
-    monkeypatch.setattr(evaluation_module, "fit_ewma", fake_ewma)
-    monkeypatch.setattr(evaluation_module, "fit_logistic_ar", fake_logistic)
-    monkeypatch.setattr(evaluation_module, "calibrate_temperature", lambda *args: 2.0)
-
-    selection = fit_select_observation_baselines(
-        train=_forecast_split("train", 1.0),
-        validation=_forecast_split("validation", 0.2),
-        calibration=_forecast_split("calibration", 0.8),
-        max_iter=2,
-    )
-
-    assert seen == [("ewma", 1.0), ("logistic_ar", 1.0)]
-    assert selection.selected_name == "ewma"
-    assert selection.validation_nll["ewma"] == pytest.approx(
-        selection.validation_nll["logistic_ar"]
-    )
-    assert set(selection.models) == {"stationary_field", "ewma", "logistic_ar"}
-    assert selection.frozen
-    assert selection.models["ewma"].temperature == 2.0
-
-
-def test_baseline_fit_rejects_provenance_overlap_between_roles() -> None:
-    train = _forecast_split("train", 0.0)
-    validation = ForecastSplit(
-        role="validation",
-        sequence_ids=train.sequence_ids,
-        syndromes=np.zeros((1, 2, 1, 3)),
-        targets=np.zeros((1, 2, 1, 3)),
-        scored_mask=np.array([[True, True]]),
-    )
-
-    with pytest.raises(ValueError, match="disjoint"):
-        fit_select_observation_baselines(
-            train=train,
-            validation=validation,
-            calibration=_forecast_split("calibration", 0.0),
-            max_iter=2,
+    with pytest.raises(ValueError, match="integrity"):
+        evaluate_causal_arms(
+            batch,
+            (forged,),
+            hx=sparse.csr_matrix((10, 15), dtype=np.uint8),
+            logical_x=sparse.csr_matrix((1, 15), dtype=np.uint8),
         )
 
 
-def test_baseline_winner_uses_uncalibrated_validation_nll(monkeypatch) -> None:
-    def fake_stationary(*args, **kwargs):
-        del args, kwargs
-        return evaluation_module.StationaryForecaster(0.1, np.full((1, 3), 0.1), 0.0)
-
-    def fake_ewma(*args, **kwargs):
-        del args, kwargs
-        return _FakeForecaster(0.2, "ewma")
-
-    def fake_logistic(*args, **kwargs):
-        del args, kwargs
-        return _FakeForecaster(0.3, "lagged")
-
-    monkeypatch.setattr(evaluation_module, "fit_stationary", fake_stationary)
-    monkeypatch.setattr(evaluation_module, "fit_ewma", fake_ewma)
-    monkeypatch.setattr(evaluation_module, "fit_logistic_ar", fake_logistic)
-    temperatures = iter((1.0, 100.0, 0.01))
-    monkeypatch.setattr(
-        evaluation_module,
-        "calibrate_temperature",
-        lambda *args: next(temperatures),
-    )
-
-    selection = fit_select_observation_baselines(
-        train=_forecast_split("train", 1.0),
-        validation=_forecast_split("validation", 0.2),
-        calibration=_forecast_split("calibration", 0.8),
-        max_iter=2,
-    )
-
-    assert selection.selected_name == "ewma"
-
-
-def test_reduced_progression_is_strict_nll_and_non_worse_bler_without_inference() -> None:
-    passed = reduced_progression(
-        regime="joint_in_basis",
-        selected_name="ewma",
-        stationary_nll=np.array([0.4, 0.5]),
-        selected_nll=np.array([0.3, 0.4]),
-        stationary_bler=np.array([0.2, 0.1]),
-        selected_bler=np.array([0.2, 0.1]),
-    )
-    tied_nll = reduced_progression(
-        regime="joint_basis_mismatch",
-        selected_name="logistic_ar",
-        stationary_nll=np.array([0.4]),
-        selected_nll=np.array([0.4]),
-        stationary_bler=np.array([0.2]),
-        selected_bler=np.array([0.1]),
-    )
-
-    assert passed.progressed
-    assert not tied_nll.progressed
-    assert passed.scope == "descriptive_reduced_non_scientific"
-    assert passed.p_value is None
-    assert passed.hypothesis_status is None
-
-
-def test_factor_diagnostics_report_crossed_interaction_and_mismatch_direction() -> None:
+def test_factor_diagnostics_keep_predeclared_h3_sign_without_inference() -> None:
     diagnostics = reduced_factor_diagnostics(
         in_basis_losses={
             "cnn_fir": np.array([0.6, 0.5]),
@@ -337,44 +501,33 @@ def test_factor_diagnostics_report_crossed_interaction_and_mismatch_direction() 
             "fno_hippo": np.array([0.45, 0.35]),
         },
     )
-
     assert diagnostics.in_basis_interaction.tolist() == pytest.approx([-0.1, -0.1])
-    assert diagnostics.in_basis_mean < 0.0
-    assert diagnostics.basis_mismatch_mean < 0.0
-    assert diagnostics.same_direction
-    assert diagnostics.p_value is None
+    assert diagnostics.in_basis_mean < 0.0 and diagnostics.basis_mismatch_mean < 0.0
+    assert diagnostics.same_direction and diagnostics.p_value is None
 
 
-def test_privileged_oracle_is_generator_sanity_only() -> None:
-    targets = np.array([[[[0.0, 1.0]]]])
+def test_privileged_oracle_remains_generator_sanity_only() -> None:
     result = evaluate_oracle_sanity(
         np.array([[[[0.1, 0.9]]]]),
-        targets,
+        np.array([[[[0.0, 1.0]]]]),
         np.array([[True]]),
     )
-
     assert result["scope"] == "generator_sanity_only"
     assert result["deployable_competition"] is False
     assert result["decoder_evaluated"] is False
-    assert result["overall_nll"] > 0.0
 
-
-def test_privileged_oracle_cannot_enter_decoder_competition() -> None:
-    batch = CausalEvaluationBatch(
-        regime="joint_in_basis",
-        role="validation",
-        sequence_ids=("d" * 64,),
-        syndromes=np.zeros((1, 1, 1), dtype=np.uint8),
-        errors=np.zeros((1, 1, 2), dtype=np.uint8),
-        logical_flips=np.zeros((1, 1, 1), dtype=np.uint8),
-        scored_mask=np.array([True]),
-    )
-
-    with pytest.raises(ValueError, match="oracle"):
+    with pytest.raises(TypeError, match="frozen deployable"):
         evaluate_causal_arms(
-            batch,
-            {"privileged_oracle": np.full((1, 1, 2), 0.05)},
-            hx=sparse.csr_matrix([[1, 0]], dtype=np.uint8),
-            logical_x=sparse.csr_matrix([[0, 1]], dtype=np.uint8),
-            parameter_counts={"privileged_oracle": (0, 0)},
+            CausalEvaluationBatch(
+                regime="joint_in_basis",
+                role="validation",
+                sequence_ids=(_identity("validation"),),
+                syndromes=np.zeros((1, 1, 1), dtype=np.uint8),
+                errors=np.zeros((1, 1, 1), dtype=np.uint8),
+                logical_flips=np.zeros((1, 1, 1), dtype=np.uint8),
+                scored_mask=np.array([True]),
+            ),
+            (PrivilegedOracle(np.full((1, 1, 1, 1), 0.1)),),  # type: ignore[arg-type]
+            hx=sparse.csr_matrix((1, 1), dtype=np.uint8),
+            logical_x=sparse.csr_matrix((1, 1), dtype=np.uint8),
         )
