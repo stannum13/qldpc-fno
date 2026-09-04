@@ -1,0 +1,75 @@
+{
+  "campaign_seed": 20260904,
+  "artifact_mode": "reduced_non_scientific",
+  "regimes": [
+    "stationary_iid",
+    "static_spatial_latent",
+    "temporal_uniform",
+    "joint_in_basis",
+    "joint_basis_mismatch"
+  ],
+  "code": {
+    "name": "lp_3_7_16",
+    "ell": 45,
+    "n": 2610,
+    "k": 744,
+    "distance_upper_bound": 16
+  },
+  "splits": {
+    "train": 2,
+    "validation": 2,
+    "calibration": 2,
+    "test": 0
+  },
+  "rounds": {
+    "burn_in": 8,
+    "scored": 16
+  },
+  "generator": {
+    "base_probability": 0.0375,
+    "min_probability": 0.00001,
+    "max_probability": 0.25,
+    "channel_offset_std": 0.10,
+    "static_spatial_amplitude": 0.80,
+    "spatial_frequency_min": 1,
+    "spatial_frequency_max": 3,
+    "global_ar_coefficient": 0.97,
+    "global_innovation_std": 0.08,
+    "global_clip": 1.20,
+    "joint_base_amplitude": 0.45,
+    "burst_start_probability": 0.02,
+    "burst_amplitude": 1.20,
+    "burst_profile_concentration": 4.0,
+    "burst_decay_rounds": 32.0,
+    "burst_max_age": 127,
+    "burst_min_amplitude": 0.02,
+    "mismatch_duration_min": 8,
+    "mismatch_duration_max": 96,
+    "mismatch_width_min": 3,
+    "mismatch_width_max": 9,
+    "mismatch_step_min": -1,
+    "mismatch_step_max": 1
+  },
+  "model": {
+    "hidden_width": 32,
+    "fno_modes": 12,
+    "fir_history": 32,
+    "hippo_order": 16,
+    "gru_state_width": 16
+  },
+  "decoder": {
+    "max_iter": 100,
+    "bp_method": "minimum_sum",
+    "ms_scaling_factor": 0.0,
+    "lsd_method": "LSD_E",
+    "lsd_order": 5
+  },
+  "optimizer": {
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "batch_size": 4,
+    "max_epochs": 60,
+    "gradient_norm_cap": 1.0,
+    "training_seed": 1701
+  }
+}
