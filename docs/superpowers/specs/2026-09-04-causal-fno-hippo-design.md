@@ -372,9 +372,12 @@ coefficient equality. The implementation cannot be called faithful LegS until
 both tests pass and states and gradients remain finite for orders `8`, `16`, and
 `32` over 4,096 steps.
 
-HiPPO-LegT with bilinear discretization and `theta in {8,32,128}` is a secondary
-measure ablation. A constant learned HiPPO-initialized LTI state matrix is not
-reported as LegS. EWMA supplies the exponential-memory control.
+HiPPO-LegT with bilinear discretization and `theta in {8,32,128}` is a possible
+Gate-3 secondary ablation, deferred until its equations, sampling convention,
+and independent golden fixtures receive a separate design review. It is not a
+Gate-1 or Gate-2 implementation requirement. A constant learned
+HiPPO-initialized LTI state matrix is not reported as LegS. EWMA supplies the
+exponential-memory control.
 
 ## Optimization
 
@@ -495,7 +498,7 @@ calculation.
 ### Gate 1: primitives
 
 Implement strict generator configs, all five regimes, role-separated sequence
-sampling, direct-regeneration verification, HiPPO-LegS/LegT primitives, and
+sampling, direct-regeneration verification, HiPPO-LegS primitives, and
 cluster-aware metrics. An adversarial reviewer must clear causality, recurrence,
 and statistical-unit tests.
 
