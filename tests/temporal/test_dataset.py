@@ -1,3 +1,4 @@
+import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +19,27 @@ from qldpc_fno.temporal.dataset import (
 from qldpc_fno.temporal.generator import generate_latent_sequence, sample_sequence
 
 CONFIG_PATH = Path("configs/causal_fno_hippo_reduced.json")
+
+
+def _rewrite_payload_with_current_hash(
+    artifact: Path, payload_name: str, mutate
+) -> None:
+    payload_path = artifact / payload_name
+    with np.load(payload_path, allow_pickle=False) as archive:
+        arrays = {name: np.array(archive[name], copy=True) for name in archive.files}
+    mutate(arrays)
+    with payload_path.open("wb") as handle:
+        np.savez(handle, **arrays)
+    manifest_path = artifact / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["payloads"][payload_name]["sha256"] = hashlib.sha256(
+        payload_path.read_bytes()
+    ).hexdigest()
+    manifest["payloads"][payload_name]["arrays"] = {
+        name: {"shape": list(array.shape), "dtype": array.dtype.str}
+        for name, array in arrays.items()
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
 @pytest.fixture
@@ -161,6 +183,136 @@ def test_writer_rejects_cross_payload_round_mismatch_before_publication(
     with pytest.raises(ValueError, match="round dimensions must agree"):
         write_sequence(artifact, observed, bad_supervision, diagnostics, manifest)
     assert not artifact.exists()
+
+
+def test_writer_rejects_payload_geometry_inconsistent_with_manifest_code(
+    tmp_path: Path, config: CausalExperimentConfig, code: CSSCode
+) -> None:
+    _, observed, supervision, diagnostics, manifest = _materialize(config, code)
+    malformed_supervision = replace(
+        supervision,
+        errors=supervision.errors[:, :1, :],
+        logical_flips=supervision.logical_flips[:, :1],
+    )
+    malformed_diagnostics = replace(
+        diagnostics,
+        probabilities=diagnostics.probabilities[:, :1, :],
+        channel_offsets=diagnostics.channel_offsets[:1],
+    )
+    artifact = tmp_path / "sequence"
+
+    with pytest.raises(ValueError, match="canonical physical-error geometry"):
+        write_sequence(
+            artifact,
+            observed,
+            malformed_supervision,
+            malformed_diagnostics,
+            manifest,
+        )
+    assert not artifact.exists()
+
+
+@pytest.mark.parametrize("field,value", [("ell", 45.0), ("n", True), ("k", 743)])
+def test_writer_strictly_validates_manifest_code_types_and_geometry(
+    tmp_path: Path,
+    config: CausalExperimentConfig,
+    code: CSSCode,
+    field: str,
+    value: object,
+) -> None:
+    _, observed, supervision, diagnostics, manifest = _materialize(config, code)
+    manifest["code"][field] = value
+    artifact = tmp_path / "sequence"
+
+    with pytest.raises(ValueError, match="canonical code identity"):
+        write_sequence(artifact, observed, supervision, diagnostics, manifest)
+    assert not artifact.exists()
+
+
+@pytest.mark.parametrize(
+    ("payload_name", "mutate", "match"),
+    [
+        (
+            "observed.npz",
+            lambda arrays: arrays["syndromes"].__setitem__((0, 0, 0), 2),
+            "syndromes must be binary",
+        ),
+        (
+            "supervision.npz",
+            lambda arrays: arrays["logical_flips"].__setitem__(
+                (0, 0), 1 - arrays["logical_flips"][0, 0]
+            ),
+            "logical flips do not match",
+        ),
+        (
+            "diagnostics.npz",
+            lambda arrays: arrays["probabilities"].__setitem__((0, 0, 0), np.nan),
+            "probabilities must be finite",
+        ),
+        (
+            "diagnostics.npz",
+            lambda arrays: arrays["event_onset"].__setitem__(0, True),
+            "event onset must imply an active age-zero event",
+        ),
+    ],
+)
+def test_reader_rejects_semantic_tampering_even_when_hash_and_metadata_are_updated(
+    tmp_path: Path,
+    config: CausalExperimentConfig,
+    code: CSSCode,
+    payload_name: str,
+    mutate,
+    match: str,
+) -> None:
+    _, observed, supervision, diagnostics, manifest = _materialize(config, code)
+    artifact = tmp_path / "sequence"
+    write_sequence(artifact, observed, supervision, diagnostics, manifest)
+    _rewrite_payload_with_current_hash(artifact, payload_name, mutate)
+
+    with pytest.raises(ValueError, match=match):
+        read_verified_sequence(artifact)
+
+
+def test_reader_rejects_self_consistent_small_payloads_against_canonical_manifest(
+    tmp_path: Path, config: CausalExperimentConfig, code: CSSCode
+) -> None:
+    _, observed, supervision, diagnostics, manifest = _materialize(config, code)
+    artifact = tmp_path / "sequence"
+    write_sequence(artifact, observed, supervision, diagnostics, manifest)
+    _rewrite_payload_with_current_hash(
+        artifact,
+        "supervision.npz",
+        lambda arrays: arrays.update(
+            errors=arrays["errors"][:, :1, :],
+            logical_flips=arrays["logical_flips"][:, :1],
+        ),
+    )
+    _rewrite_payload_with_current_hash(
+        artifact,
+        "diagnostics.npz",
+        lambda arrays: arrays.update(
+            probabilities=arrays["probabilities"][:, :1, :],
+            channel_offsets=arrays["channel_offsets"][:1],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="canonical physical-error geometry"):
+        read_verified_sequence(artifact)
+
+
+def test_reader_rejects_tampered_manifest_code_type_before_payload_acceptance(
+    tmp_path: Path, config: CausalExperimentConfig, code: CSSCode
+) -> None:
+    _, observed, supervision, diagnostics, manifest = _materialize(config, code)
+    artifact = tmp_path / "sequence"
+    write_sequence(artifact, observed, supervision, diagnostics, manifest)
+    manifest_path = artifact / "manifest.json"
+    contents = json.loads(manifest_path.read_text())
+    contents["code"]["ell"] = 45.0
+    manifest_path.write_text(json.dumps(contents, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(ValueError, match="canonical code identity"):
+        read_verified_sequence(artifact)
 
 
 def test_reader_rejects_unexpected_files_in_completed_artifact(

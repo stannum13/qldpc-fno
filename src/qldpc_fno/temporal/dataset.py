@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Mapping
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,9 @@ from qldpc_fno.campaign.code_identity import (
     sparse_binary_sha256,
     validate_campaign_code_identity,
 )
+from qldpc_fno.codes.gf2 import logical_x_basis
+from qldpc_fno.codes.lifted_product import CSSCode, build_self_lifted_product
+from qldpc_fno.codes.seeds import PAPER_LP_3_7_16
 from qldpc_fno.temporal.config import CausalExperimentConfig
 from qldpc_fno.temporal.generator import (
     CausalObservedSequence,
@@ -47,6 +51,8 @@ IDENTITY_FIELDS = frozenset(
         "seeds",
     }
 )
+CANONICAL_CODE_FIELDS = frozenset({"name", "ell", "n", "k", "hx_sha256", "hz_sha256"})
+CANONICAL_CODE_IDENTITY = {"name": "lp_3_7_16", "ell": 45, "n": 2610, "k": 744}
 
 
 def _canonical_json_bytes(value: Mapping[str, object]) -> bytes:
@@ -66,6 +72,66 @@ def _source_commit() -> str:
         capture_output=True,
         text=True,
     ).stdout.strip()
+
+
+@lru_cache(maxsize=1)
+def _canonical_validation_material() -> tuple[CSSCode, object]:
+    code = build_self_lifted_product(PAPER_LP_3_7_16)
+    return code, logical_x_basis(code.hx, code.hz)
+
+
+def _validate_manifest_identity(manifest: Mapping[str, object], *, completed: bool) -> None:
+    expected_fields = IDENTITY_FIELDS | ({"payloads"} if completed else set())
+    if set(manifest) != expected_fields:
+        label = "completed" if completed else "uncompleted"
+        raise ValueError(f"{label} sequence manifest has missing or unknown fields")
+    if type(manifest.get("artifact_version")) is not int or manifest["artifact_version"] != 1:
+        raise ValueError("unsupported or missing sequence artifact version")
+    if manifest.get("generator_version") != GENERATOR_VERSION:
+        raise ValueError("sequence manifest generator version is invalid")
+
+    code_identity = manifest.get("code")
+    if not isinstance(code_identity, Mapping) or set(code_identity) != CANONICAL_CODE_FIELDS:
+        raise ValueError("manifest must contain the canonical code identity")
+    if any(
+        type(code_identity.get(key)) is not type(value) or code_identity.get(key) != value
+        for key, value in CANONICAL_CODE_IDENTITY.items()
+    ):
+        raise ValueError("manifest must contain the canonical code identity")
+    canonical_code, _ = _canonical_validation_material()
+    expected_hashes = {
+        "hx_sha256": sparse_binary_sha256(canonical_code.hx),
+        "hz_sha256": sparse_binary_sha256(canonical_code.hz),
+    }
+    if any(
+        type(code_identity.get(key)) is not str or code_identity.get(key) != value
+        for key, value in expected_hashes.items()
+    ):
+        raise ValueError("manifest canonical code identity has invalid matrix hashes")
+
+    identity = manifest.get("identity")
+    if not isinstance(identity, Mapping) or set(identity) != {"regime", "role", "sequence_index"}:
+        raise ValueError("sequence identity is invalid")
+    if (
+        identity.get("regime") not in {
+            "stationary_iid",
+            "static_spatial_latent",
+            "temporal_uniform",
+            "joint_in_basis",
+            "joint_basis_mismatch",
+        }
+        or identity.get("role") not in {"train", "validation", "calibration", "test"}
+        or type(identity.get("sequence_index")) is not int
+        or identity["sequence_index"] < 0
+    ):
+        raise ValueError("sequence identity is invalid")
+    seeds = manifest.get("seeds")
+    if (
+        not isinstance(seeds, Mapping)
+        or set(seeds) != {"latent", "bernoulli"}
+        or any(type(seeds.get(name)) is not int or seeds[name] < 0 for name in seeds)
+    ):
+        raise ValueError("sequence seed tuple is invalid")
 
 
 def build_sequence_manifest(
@@ -180,7 +246,11 @@ def _validate_sequence_contract(
     observed: CausalObservedSequence,
     supervision: CausalSupervision,
     diagnostics: SimulatorDiagnostics,
+    manifest: Mapping[str, object],
 ) -> None:
+    _validate_manifest_identity(manifest, completed="payloads" in manifest)
+    identity = manifest["identity"]
+    regime = identity["regime"]
     rounds = observed.syndromes.shape[0]
     round_dimensions = [
         observed.scored_mask.shape[0],
@@ -199,10 +269,16 @@ def _validate_sequence_contract(
     ]
     if rounds <= 0 or any(value != rounds for value in round_dimensions):
         raise ValueError("sequence payload round dimensions must agree")
-    if observed.syndromes.shape != (rounds, observed.syndrome_channels, observed.ell):
-        raise ValueError("observed syndrome geometry is inconsistent")
-    if supervision.errors.ndim != 3 or supervision.errors.shape[2] != observed.ell:
-        raise ValueError("supervision error geometry is inconsistent")
+    if (observed.ell, observed.syndrome_channels) != (45, 21) or observed.syndromes.shape != (
+        rounds,
+        21,
+        45,
+    ):
+        raise ValueError("observed syndromes must have canonical geometry (rounds,21,45)")
+    if supervision.errors.shape != (rounds, 58, 45):
+        raise ValueError("errors must have canonical physical-error geometry (rounds,58,45)")
+    if supervision.logical_flips.shape != (rounds, 744):
+        raise ValueError("logical flips must have canonical width k=744")
     if diagnostics.probabilities.shape != supervision.errors.shape:
         raise ValueError("probability and physical-error geometries must agree")
     if diagnostics.spatial_log_odds.shape != (rounds, observed.ell):
@@ -218,10 +294,73 @@ def _validate_sequence_contract(
         "event_active": (diagnostics.event_active, np.dtype(np.bool_)),
         "event_onset": (diagnostics.event_onset, np.dtype(np.bool_)),
         "event_termination": (diagnostics.event_termination, np.dtype(np.bool_)),
+        "global_log_odds": (diagnostics.global_log_odds, np.dtype(np.float64)),
+        "spatial_log_odds": (diagnostics.spatial_log_odds, np.dtype(np.float64)),
+        "channel_offsets": (diagnostics.channel_offsets, np.dtype(np.float64)),
+        "event_center": (diagnostics.event_center, np.dtype(np.int16)),
+        "event_age": (diagnostics.event_age, np.dtype(np.int16)),
+        "event_width": (diagnostics.event_width, np.dtype(np.int16)),
+        "event_step": (diagnostics.event_step, np.dtype(np.int8)),
     }
     for name, (array, expected) in expected_dtypes.items():
         if array.dtype != expected:
             raise ValueError(f"{name} dtype must be {expected}")
+
+    for name, array in {
+        "syndromes": observed.syndromes,
+        "errors": supervision.errors,
+        "logical flips": supervision.logical_flips,
+    }.items():
+        if not np.all((array == 0) | (array == 1)):
+            raise ValueError(f"{name} must be binary")
+    if not np.all(np.isfinite(diagnostics.probabilities)):
+        raise ValueError("probabilities must be finite")
+    if not np.all((diagnostics.probabilities >= 1e-5) & (diagnostics.probabilities <= 0.25)):
+        raise ValueError("probabilities must lie within [1e-5,0.25]")
+    for name, array in {
+        "global log odds": diagnostics.global_log_odds,
+        "spatial log odds": diagnostics.spatial_log_odds,
+        "channel offsets": diagnostics.channel_offsets,
+    }.items():
+        if not np.all(np.isfinite(array)):
+            raise ValueError(f"{name} must be finite")
+
+    mask = observed.scored_mask
+    if not np.any(mask) or np.any(mask[:-1] & ~mask[1:]):
+        raise ValueError("scored mask must be a nonempty suffix of complete rounds")
+
+    active = diagnostics.event_active
+    onset = diagnostics.event_onset
+    termination = diagnostics.event_termination
+    center = diagnostics.event_center
+    age = diagnostics.event_age
+    width = diagnostics.event_width
+    step = diagnostics.event_step
+    if np.any(onset & (~active | (age != 0))):
+        raise ValueError("event onset must imply an active age-zero event")
+    if np.any(termination & ~active):
+        raise ValueError("event termination must occur on an active event")
+    if np.any(active & ((center < 0) | (center >= 45) | (age < 0))):
+        raise ValueError("active event labels have invalid center or age")
+    if np.any(~active & ((center != -1) | (age != -1) | (width != 0) | (step != 0))):
+        raise ValueError("inactive event labels must use canonical sentinels")
+    if regime not in {"joint_in_basis", "joint_basis_mismatch"} and np.any(active):
+        raise ValueError("event labels are forbidden outside joint regimes")
+    if regime == "joint_in_basis" and np.any(active & ((width != 0) | (step != 0))):
+        raise ValueError("smooth bursts cannot carry interval width or movement")
+    if regime == "joint_basis_mismatch" and np.any(
+        active & (((width < 3) | (width > 9)) | ((step < -1) | (step > 1)))
+    ):
+        raise ValueError("mismatch event width or movement is invalid")
+
+    canonical_code, logical_x = _canonical_validation_material()
+    errors_flat = supervision.errors.reshape(rounds, 2610)
+    expected_syndromes = np.asarray(canonical_code.hx @ errors_flat.T, dtype=np.uint8).T % 2
+    if not np.array_equal(observed.syndromes.reshape(rounds, 945), expected_syndromes):
+        raise ValueError("syndromes do not match canonical errors and parity checks")
+    expected_logicals = np.asarray(logical_x @ errors_flat.T, dtype=np.uint8).T % 2
+    if not np.array_equal(supervision.logical_flips, expected_logicals):
+        raise ValueError("logical flips do not match canonical errors and logical operators")
 
 
 def write_sequence(
@@ -233,9 +372,7 @@ def write_sequence(
 ) -> None:
     """Publish payloads atomically and publish the completion manifest last."""
     target = Path(path)
-    _validate_sequence_contract(observed, supervision, diagnostics)
-    if set(manifest) != IDENTITY_FIELDS:
-        raise ValueError("uncompleted sequence manifest has missing or unknown fields")
+    _validate_sequence_contract(observed, supervision, diagnostics, manifest)
     try:
         target.mkdir(parents=True, exist_ok=False)
     except FileExistsError as error:
@@ -274,11 +411,9 @@ def _load_manifest(path: Path) -> dict[str, Any]:
         manifest = json.loads(manifest_path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid sequence manifest: {manifest_path}") from error
-    if not isinstance(manifest, dict) or manifest.get("artifact_version") != ARTIFACT_VERSION:
-        raise ValueError("unsupported or missing sequence artifact version")
-    required = IDENTITY_FIELDS | {"payloads"}
-    if set(manifest) != required:
-        raise ValueError("sequence manifest has missing or unknown fields")
+    if not isinstance(manifest, dict):
+        raise ValueError("sequence manifest must be an object")  # noqa: TRY004
+    _validate_manifest_identity(manifest, completed=True)
     payloads = manifest.get("payloads")
     if not isinstance(payloads, dict) or set(payloads) != set(PAYLOAD_NAMES):
         raise ValueError("sequence manifest has an invalid payload set")
@@ -338,7 +473,7 @@ def read_verified_sequence(
         logical_flips=supervision_arrays["logical_flips"],
     )
     diagnostics = SimulatorDiagnostics(**diagnostic_arrays)
-    _validate_sequence_contract(observed, supervision, diagnostics)
+    _validate_sequence_contract(observed, supervision, diagnostics, manifest)
     return observed, supervision, diagnostics, manifest
 
 
