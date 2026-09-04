@@ -151,8 +151,12 @@ class GeneratorConfig:
             raise ValueError("mismatch duration range is reversed")
         if width_min > width_max:
             raise ValueError("mismatch width range is reversed")
-        step_min = _integer(self.mismatch_step_min, "mismatch_step_min", minimum=-1)
-        step_max = _integer(self.mismatch_step_max, "mismatch_step_max", minimum=-1)
+        if type(self.mismatch_step_min) is not int or type(self.mismatch_step_max) is not int:
+            raise ValueError("mismatch steps must be integers")
+        step_min = self.mismatch_step_min
+        step_max = self.mismatch_step_max
+        if step_min < -1 or step_max > 1:
+            raise ValueError("mismatch steps must be within [-1, 1]")
         if step_min > step_max:
             raise ValueError("mismatch step range is reversed")
 
@@ -179,6 +183,7 @@ class ModelConfig:
 class DecoderConfig:
     max_iter: int
     bp_method: str
+    schedule: str
     ms_scaling_factor: float
     lsd_method: str
     lsd_order: int
@@ -187,6 +192,8 @@ class DecoderConfig:
         _integer(self.max_iter, "max_iter")
         if self.bp_method != "minimum_sum":
             raise ValueError("bp_method must be 'minimum_sum'")
+        if self.schedule != "serial":
+            raise ValueError("schedule must be 'serial'")
         scaling = _number(self.ms_scaling_factor, "ms_scaling_factor")
         if scaling < 0.0:
             raise ValueError("ms_scaling_factor must be non-negative")

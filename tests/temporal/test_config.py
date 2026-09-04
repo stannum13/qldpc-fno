@@ -44,6 +44,7 @@ def test_reduced_config_matches_the_causal_experiment_contract() -> None:
     assert config.model.fno_modes == 12
     assert config.model.fir_history == 32
     assert config.model.hippo_order == 16
+    assert config.decoder.schedule == "serial"
     assert config.decoder.lsd_method == "LSD_E"
     assert config.decoder.lsd_order == 5
     assert config.optimizer.training_seed == 1701
@@ -103,6 +104,44 @@ def test_reduced_config_requires_non_scientific_artifact_label(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="reduced_non_scientific"):
         CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
+
+
+def test_config_rejects_missing_decoder_schedule(tmp_path: Path) -> None:
+    payload = _payload()
+    del payload["decoder"]["schedule"]
+
+    with pytest.raises(ValueError, match="missing fields.*schedule"):
+        CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
+
+
+def test_config_rejects_invalid_decoder_schedule(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["decoder"]["schedule"] = "parallel"
+
+    with pytest.raises(ValueError, match="schedule must be 'serial'"):
+        CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
+
+
+@pytest.mark.parametrize("field,value", [("mismatch_step_min", -2), ("mismatch_step_max", 2)])
+def test_config_rejects_mismatch_steps_outside_supported_range(
+    tmp_path: Path, field: str, value: int
+) -> None:
+    payload = _payload()
+    payload["generator"][field] = value
+
+    with pytest.raises(ValueError, match=r"mismatch steps must be within \[-1, 1\]"):
+        CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
+
+
+@pytest.mark.parametrize("field,value", [("mismatch_step_min", -1), ("mismatch_step_max", 1)])
+def test_config_accepts_mismatch_step_boundaries(
+    tmp_path: Path, field: str, value: int
+) -> None:
+    payload = _payload()
+    payload["generator"][field] = value
+
+    config = CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
+    assert getattr(config.generator, field) == value
 
 
 @pytest.mark.parametrize("artifact_mode", [[], {}])

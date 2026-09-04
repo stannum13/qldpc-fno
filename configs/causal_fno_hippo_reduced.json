@@ -60,6 +60,7 @@
   "decoder": {
     "max_iter": 100,
     "bp_method": "minimum_sum",
+    "schedule": "serial",
     "ms_scaling_factor": 0.0,
     "lsd_method": "LSD_E",
     "lsd_order": 5
