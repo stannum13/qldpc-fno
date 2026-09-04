@@ -94,10 +94,19 @@ class HiPPOLegSMemory(nn.Module):
         values: torch.Tensor,
         *,
         initial_state: torch.Tensor | None = None,
+        start_completed_sample_index: int = 0,
         return_sequence: bool = True,
     ) -> torch.Tensor:
-        """Encode a sequence whose time axis is dimension one."""
+        """Encode a sequence whose time axis is dimension one.
 
+        ``start_completed_sample_index`` preserves the time-varying measure when
+        continuing from ``initial_state`` across streaming chunks.
+        """
+
+        if type(start_completed_sample_index) is not int:
+            raise TypeError("start_completed_sample_index must be an exact integer")
+        if start_completed_sample_index < 0:
+            raise ValueError("start_completed_sample_index must be a nonnegative integer")
         if values.ndim < 2:
             raise ValueError("values must have shape (batch, time, ...)")
         expected_state_shape = (*values.shape[:1], *values.shape[2:], self.order)
@@ -113,7 +122,10 @@ class HiPPOLegSMemory(nn.Module):
         generator = self.generator.to(dtype=values.dtype, device=values.device)
         input_vector = self.input_vector.to(dtype=values.dtype, device=values.device)
         indices = torch.arange(
-            1, values.shape[1] + 1, dtype=values.dtype, device=values.device
+            start_completed_sample_index + 1,
+            start_completed_sample_index + values.shape[1] + 1,
+            dtype=values.dtype,
+            device=values.device,
         )
         transitions, injections = _discretize(generator, input_vector, indices)
 

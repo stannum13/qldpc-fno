@@ -116,6 +116,35 @@ def test_long_recurrence_has_finite_states_and_gradients(order: int) -> None:
     assert torch.isfinite(values.grad).all()
 
 
+def test_chunked_forward_matches_one_pass_with_completed_sample_offset() -> None:
+    torch.manual_seed(20260904)
+    values = torch.randn(2, 37, 3, 4, dtype=torch.float64)
+    memory = HiPPOLegSMemory(order=8, dtype=torch.float64)
+
+    full = memory(values)
+    prefix = memory(values[:, :13])
+    suffix = memory(
+        values[:, 13:],
+        initial_state=prefix[:, -1],
+        start_completed_sample_index=13,
+    )
+
+    torch.testing.assert_close(torch.cat((prefix, suffix), dim=1), full, rtol=0, atol=1e-13)
+
+
+def test_forward_rejects_negative_completed_sample_offset() -> None:
+    memory = HiPPOLegSMemory(order=4)
+    with pytest.raises(ValueError, match="start_completed_sample_index"):
+        memory(torch.zeros(1, 2), start_completed_sample_index=-1)
+
+
+@pytest.mark.parametrize("offset", [1.5, True])
+def test_forward_rejects_non_exact_integer_completed_sample_offset(offset: object) -> None:
+    memory = HiPPOLegSMemory(order=4)
+    with pytest.raises(TypeError, match="start_completed_sample_index"):
+        memory(torch.zeros(1, 2), start_completed_sample_index=offset)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("order,step", [(0, 1), (4, 0)])
 def test_transition_rejects_nonpositive_order_or_step(order: int, step: int) -> None:
     with pytest.raises(ValueError):
