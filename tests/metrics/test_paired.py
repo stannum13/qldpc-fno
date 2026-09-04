@@ -101,6 +101,82 @@ def test_paired_summary_rejects_invalid_alpha(alpha: float) -> None:
         paired_decoder_summary(np.zeros(2, dtype=bool), np.zeros(2, dtype=bool), alpha=alpha)
 
 
+def _valid_status_summary() -> dict[str, object]:
+    return paired_decoder_summary(
+        np.zeros(8, dtype=np.bool_),
+        np.ones(8, dtype=np.bool_),
+    )
+
+
+@pytest.mark.parametrize(
+    ("summary", "error_type", "message"),
+    [
+        (None, TypeError, "paired_summary must be a mapping"),
+        ({}, ValueError, "missing required counts or p-value"),
+        ({"shots": 8}, ValueError, "missing required counts or p-value"),
+    ],
+)
+def test_paired_status_rejects_non_mapping_or_incomplete_summary(
+    summary: object,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error_type, match=message):
+        paired_comparison_status(summary, fixed_sample=True)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("shots", -1),
+        ("both_succeed", 1.5),
+        ("baseline_only_failure", -1),
+        ("hybrid_only_failure", "8"),
+        ("both_fail", np.bool_(True)),
+        ("discordant_pairs", -1),
+    ],
+)
+def test_paired_status_rejects_non_integer_or_negative_counts(field: str, value: object) -> None:
+    summary = _valid_status_summary()
+    summary[field] = value
+    with pytest.raises(ValueError, match="non-negative integers"):
+        paired_comparison_status(summary, fixed_sample=True)
+
+
+def test_paired_status_rejects_counts_that_do_not_sum_to_shots() -> None:
+    summary = _valid_status_summary()
+    summary["both_fail"] = 1
+    with pytest.raises(ValueError, match="add up to shots"):
+        paired_comparison_status(summary, fixed_sample=True)
+
+
+def test_paired_status_rejects_inconsistent_discordant_count() -> None:
+    summary = _valid_status_summary()
+    summary["discordant_pairs"] = 7
+    with pytest.raises(ValueError, match="discordant_pairs must equal"):
+        paired_comparison_status(summary, fixed_sample=True)
+
+
+@pytest.mark.parametrize("pvalue", [float("nan"), float("inf"), -0.1, 1.1])
+def test_paired_status_rejects_invalid_exact_pvalue(pvalue: float) -> None:
+    summary = _valid_status_summary()
+    summary["mcnemar_exact_pvalue_two_sided"] = pvalue
+    with pytest.raises(ValueError, match=r"finite and in \[0, 1\]"):
+        paired_comparison_status(summary, fixed_sample=True)
+
+
+@pytest.mark.parametrize("fixed_sample", [None, 1, "true"])
+def test_paired_status_rejects_non_boolean_fixed_sample(fixed_sample: object) -> None:
+    with pytest.raises(TypeError, match="fixed_sample must be boolean"):
+        paired_comparison_status(_valid_status_summary(), fixed_sample=fixed_sample)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("alpha", [float("nan"), 0.0, 1.0, -0.1, 1.1])
+def test_paired_status_rejects_invalid_alpha(alpha: float) -> None:
+    with pytest.raises(ValueError, match="alpha must be strictly between zero and one"):
+        paired_comparison_status(_valid_status_summary(), fixed_sample=True, alpha=alpha)
+
+
 def test_adaptive_stop_requires_every_decoder_to_reach_failure_target() -> None:
     assert (
         adaptive_stop_reason(
