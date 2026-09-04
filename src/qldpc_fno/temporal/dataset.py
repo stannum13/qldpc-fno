@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import uuid
@@ -449,12 +450,96 @@ def _load_verified_npz(
     return arrays
 
 
+def _validate_expected_provenance(
+    manifest: Mapping[str, object],
+    *,
+    config: CausalExperimentConfig,
+    code: SamplingCode,
+    expected_source_commit: str | None,
+) -> tuple[str, str, int, int]:
+    config.validate()
+    if manifest.get("artifact_mode") != config.artifact_mode:
+        raise ValueError("artifact mode does not match expected configuration")
+    if manifest.get("config_sha256") != _mapping_sha256(config.to_dict()):
+        raise ValueError("configuration hash does not match expected configuration")
+
+    expected_commit = _source_commit() if expected_source_commit is None else expected_source_commit
+    manifest_commit = manifest.get("source_commit")
+    if type(manifest_commit) is not str or re.fullmatch(r"[0-9a-f]{40}", manifest_commit) is None:
+        raise ValueError("source commit must be exactly 40 lowercase hex characters")
+    if type(expected_commit) is not str or re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
+        raise ValueError("expected source commit must be exactly 40 lowercase hex characters")
+    if manifest_commit != expected_commit:
+        raise ValueError("source commit does not match expected commit")
+
+    validate_campaign_code_identity(
+        {"name": code.name, "ell": code.ell, "n": code.n, "k": code.k},
+        code.hx,
+        code.hz,
+    )
+    if (code.name, code.ell, code.n, code.k) != (
+        config.code.name,
+        config.code.ell,
+        config.code.n,
+        config.code.k,
+    ):
+        raise ValueError("expected code does not match expected configuration")
+    code_manifest = manifest["code"]
+    expected_code_manifest = {
+        "name": code.name,
+        "ell": code.ell,
+        "n": code.n,
+        "k": code.k,
+        "hx_sha256": sparse_binary_sha256(code.hx),
+        "hz_sha256": sparse_binary_sha256(code.hz),
+    }
+    if code_manifest != expected_code_manifest:
+        raise ValueError("manifest code identity does not match expected canonical code")
+
+    identity = manifest["identity"]
+    regime = identity["regime"]
+    role = identity["role"]
+    sequence_index = identity["sequence_index"]
+    if regime not in config.regimes:
+        raise ValueError("sequence regime is not enabled by expected configuration")
+    role_sizes = {
+        "train": config.splits.train,
+        "validation": config.splits.validation,
+        "calibration": config.splits.calibration,
+        "test": config.splits.test,
+    }
+    if sequence_index >= role_sizes[role]:
+        raise ValueError("sequence index is outside expected role membership")
+    expected_seeds = sequence_seed_tuple(
+        config.campaign_seed,
+        regime=regime,
+        role=role,
+        sequence_index=sequence_index,
+    )
+    if manifest["seeds"] != {
+        "latent": expected_seeds.latent,
+        "bernoulli": expected_seeds.bernoulli,
+    }:
+        raise ValueError("sequence seed tuple does not match expected configuration")
+    return regime, role, sequence_index, expected_seeds.bernoulli
+
+
 def read_verified_sequence(
     path: Path,
+    *,
+    config: CausalExperimentConfig,
+    code: SamplingCode,
+    expected_source_commit: str | None = None,
 ) -> tuple[CausalObservedSequence, CausalSupervision, SimulatorDiagnostics, dict[str, object]]:
-    """Verify all hashes and array contracts before constructing immutable sequence types."""
+    """Verify content and provenance against explicit expected experiment inputs."""
     target = Path(path)
     manifest = _load_manifest(target)
+    _validate_expected_provenance(
+        manifest,
+        config=config,
+        code=code,
+        expected_source_commit=expected_source_commit,
+    )
     loaded = {
         name: _load_verified_npz(target / name, manifest["payloads"][name])
         for name in PAYLOAD_NAMES
@@ -477,48 +562,17 @@ def read_verified_sequence(
     return observed, supervision, diagnostics, manifest
 
 
-def _verify_regeneration_identity(
-    manifest: Mapping[str, object], config: CausalExperimentConfig, code: SamplingCode
-) -> tuple[str, str, int, int]:
-    expected_config_hash = _mapping_sha256(config.to_dict())
-    if manifest.get("config_sha256") != expected_config_hash:
-        raise ValueError("configuration hash does not match sequence artifact")
-    code_manifest = manifest.get("code")
-    if not isinstance(code_manifest, Mapping):
-        raise ValueError("code identity is missing from sequence manifest")  # noqa: TRY004
-    if (
-        code_manifest.get("hx_sha256") != sparse_binary_sha256(code.hx)
-        or code_manifest.get("hz_sha256") != sparse_binary_sha256(code.hz)
-    ):
-        raise ValueError("code matrix hash does not match sequence artifact")
-    identity = manifest.get("identity")
-    seeds = manifest.get("seeds")
-    if not isinstance(identity, Mapping) or not isinstance(seeds, Mapping):
-        raise ValueError("sequence identity or seeds are missing")  # noqa: TRY004
-    regime = identity.get("regime")
-    role = identity.get("role")
-    sequence_index = identity.get("sequence_index")
-    if not isinstance(regime, str) or not isinstance(role, str) or type(sequence_index) is not int:
-        raise ValueError("sequence identity is invalid")
-    expected_seeds = sequence_seed_tuple(
-        config.campaign_seed,
-        regime=regime,
-        role=role,
-        sequence_index=sequence_index,
-    )
-    if seeds != {"latent": expected_seeds.latent, "bernoulli": expected_seeds.bernoulli}:
-        raise ValueError("sequence seed tuple does not match identity")
-    return regime, role, sequence_index, expected_seeds.bernoulli
-
-
 def regenerate_and_verify(
     path: Path, config: CausalExperimentConfig, code: SamplingCode
 ) -> None:
     """Regenerate a sequence and require byte-identical payloads and manifest."""
     target = Path(path)
-    _, _, _, manifest = read_verified_sequence(target)
-    regime, role, sequence_index, bernoulli_seed = _verify_regeneration_identity(
-        manifest, config, code
+    _, _, _, manifest = read_verified_sequence(target, config=config, code=code)
+    regime, role, sequence_index, bernoulli_seed = _validate_expected_provenance(
+        manifest,
+        config=config,
+        code=code,
+        expected_source_commit=None,
     )
     latent = generate_latent_sequence(
         config,

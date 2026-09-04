@@ -42,6 +42,13 @@ def _rewrite_payload_with_current_hash(
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
+def _rewrite_manifest(artifact: Path, mutate) -> None:
+    manifest_path = artifact / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    mutate(manifest)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+
+
 @pytest.fixture
 def config() -> CausalExperimentConfig:
     return CausalExperimentConfig.from_json(CONFIG_PATH)
@@ -71,7 +78,7 @@ def test_round_trip_binds_payload_shapes_dtypes_hashes_and_identity(
     write_sequence(artifact, observed, supervision, diagnostics, manifest)
 
     loaded_observed, loaded_supervision, loaded_diagnostics, loaded_manifest = (
-        read_verified_sequence(artifact)
+        read_verified_sequence(artifact, config=config, code=code)
     )
 
     assert np.array_equal(loaded_observed.syndromes, observed.syndromes)
@@ -134,13 +141,15 @@ def test_writer_rejects_malformed_identity_manifest_before_publication(
     assert not artifact.exists()
 
 
-def test_reader_rejects_incomplete_payload_only_directory(tmp_path: Path) -> None:
+def test_reader_rejects_incomplete_payload_only_directory(
+    tmp_path: Path, config: CausalExperimentConfig, code: CSSCode
+) -> None:
     artifact = tmp_path / "interrupted"
     artifact.mkdir()
     np.savez(artifact / "observed.npz", syndromes=np.zeros((1, 1, 1)))
 
     with pytest.raises(ValueError, match="incomplete sequence artifact"):
-        read_verified_sequence(artifact)
+        read_verified_sequence(artifact, config=config, code=code)
 
 
 def test_reader_rejects_one_byte_payload_corruption(
@@ -155,7 +164,7 @@ def test_reader_rejects_one_byte_payload_corruption(
     payload.write_bytes(content)
 
     with pytest.raises(ValueError, match="SHA-256 mismatch"):
-        read_verified_sequence(artifact)
+        read_verified_sequence(artifact, config=config, code=code)
 
 
 def test_reader_rejects_manifest_shape_mismatch(
@@ -170,7 +179,7 @@ def test_reader_rejects_manifest_shape_mismatch(
     manifest_path.write_text(json.dumps(contents))
 
     with pytest.raises(ValueError, match="shape mismatch"):
-        read_verified_sequence(artifact)
+        read_verified_sequence(artifact, config=config, code=code)
 
 
 def test_writer_rejects_cross_payload_round_mismatch_before_publication(
@@ -270,7 +279,7 @@ def test_reader_rejects_semantic_tampering_even_when_hash_and_metadata_are_updat
     _rewrite_payload_with_current_hash(artifact, payload_name, mutate)
 
     with pytest.raises(ValueError, match=match):
-        read_verified_sequence(artifact)
+        read_verified_sequence(artifact, config=config, code=code)
 
 
 def test_reader_rejects_self_consistent_small_payloads_against_canonical_manifest(
@@ -297,7 +306,7 @@ def test_reader_rejects_self_consistent_small_payloads_against_canonical_manifes
     )
 
     with pytest.raises(ValueError, match="canonical physical-error geometry"):
-        read_verified_sequence(artifact)
+        read_verified_sequence(artifact, config=config, code=code)
 
 
 def test_reader_rejects_tampered_manifest_code_type_before_payload_acceptance(
@@ -312,7 +321,67 @@ def test_reader_rejects_tampered_manifest_code_type_before_payload_acceptance(
     manifest_path.write_text(json.dumps(contents, indent=2, sort_keys=True) + "\n")
 
     with pytest.raises(ValueError, match="canonical code identity"):
-        read_verified_sequence(artifact)
+        read_verified_sequence(artifact, config=config, code=code)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "match"),
+    [
+        (
+            lambda manifest: manifest.update(artifact_mode="confirmation"),
+            "artifact mode does not match expected configuration",
+        ),
+        (
+            lambda manifest: manifest.update(config_sha256="0" * 64),
+            "configuration hash does not match expected configuration",
+        ),
+        (
+            lambda manifest: manifest.update(source_commit="not-a-commit"),
+            "source commit must be exactly 40 lowercase hex characters",
+        ),
+        (
+            lambda manifest: manifest["seeds"].update(
+                bernoulli=manifest["seeds"]["bernoulli"] + 1
+            ),
+            "sequence seed tuple does not match expected configuration",
+        ),
+    ],
+)
+def test_reader_rejects_manifest_only_provenance_relabelling(
+    tmp_path: Path,
+    config: CausalExperimentConfig,
+    code: CSSCode,
+    mutate,
+    match: str,
+) -> None:
+    _, observed, supervision, diagnostics, manifest = _materialize(config, code)
+    artifact = tmp_path / "sequence"
+    write_sequence(artifact, observed, supervision, diagnostics, manifest)
+    _rewrite_manifest(artifact, mutate)
+
+    with pytest.raises(ValueError, match=match):
+        read_verified_sequence(artifact, config=config, code=code)
+
+
+def test_reader_requires_current_source_commit_unless_historical_commit_is_explicit(
+    tmp_path: Path, config: CausalExperimentConfig, code: CSSCode
+) -> None:
+    _, observed, supervision, diagnostics, manifest = _materialize(config, code)
+    artifact = tmp_path / "sequence"
+    write_sequence(artifact, observed, supervision, diagnostics, manifest)
+    historical_commit = "1" * 40
+    _rewrite_manifest(
+        artifact, lambda contents: contents.update(source_commit=historical_commit)
+    )
+
+    with pytest.raises(ValueError, match="source commit does not match expected commit"):
+        read_verified_sequence(artifact, config=config, code=code)
+    read_verified_sequence(
+        artifact,
+        config=config,
+        code=code,
+        expected_source_commit=historical_commit,
+    )
 
 
 def test_reader_rejects_unexpected_files_in_completed_artifact(
@@ -324,7 +393,7 @@ def test_reader_rejects_unexpected_files_in_completed_artifact(
     (artifact / "undeclared.bin").write_bytes(b"surprise")
 
     with pytest.raises(ValueError, match="undeclared files"):
-        read_verified_sequence(artifact)
+        read_verified_sequence(artifact, config=config, code=code)
 
 
 def test_regeneration_is_byte_identical_and_detects_wrong_config(
