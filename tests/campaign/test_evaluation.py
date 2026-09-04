@@ -121,6 +121,90 @@ def _write_verified_batch(
     )
 
 
+def _write_complete_evaluation_publication(
+    output: Path,
+) -> tuple[dict[str, object], dict[str, object], SimpleNamespace]:
+    output.mkdir()
+    source_sha256: dict[str, object] = {"selection_verification": "c" * 64}
+    selected_calibration: dict[str, object] = {}
+    config = SimpleNamespace(
+        max_test_shots_per_point=1,
+        selection_mode="fixed",
+        target_failures=1,
+        test_batch_shots=1,
+        test_stopping_mode="fixed",
+    )
+    record = _write_verified_batch(
+        output,
+        source_sha256=source_sha256,
+    )
+    evaluation_module._finalize(
+        output,
+        status="complete",
+        source_sha256=source_sha256,
+        rates=(0.01,),
+        records={0: [record]},
+        config=config,
+        selected_calibration=selected_calibration,
+        campaign_mode="canonical",
+        scientific_claims_permitted=True,
+    )
+    return source_sha256, selected_calibration, config
+
+
+@pytest.mark.parametrize(
+    "rogue_kind",
+    (
+        "undeclared_rate_batch_marker",
+        "arbitrary_root_entry",
+        "non_batch_rate_entry",
+        "unfinished_batch_staging",
+        "root_crash_temp",
+        "rate_crash_temp",
+    ),
+)
+def test_terminal_evaluation_publication_rejects_every_undeclared_artifact(
+    tmp_path: Path,
+    rogue_kind: str,
+) -> None:
+    output = tmp_path / "evaluation"
+    source_sha256, selected_calibration, config = (
+        _write_complete_evaluation_publication(output)
+    )
+    verify_kwargs = {
+        "source_sha256": source_sha256,
+        "selected_calibration": selected_calibration,
+        "expected_rates": (0.01,),
+        "expected_indices": {0: np.arange(1, dtype=np.int64)},
+        "config": config,
+        "campaign_mode": "canonical",
+        "scientific_claims_permitted": True,
+    }
+    assert (
+        evaluation_module.verify_evaluation_publication(output, **verify_kwargs).status
+        == "complete"
+    )
+
+    if rogue_kind == "undeclared_rate_batch_marker":
+        rogue = output / "rate-999/batch-marker"
+        rogue.mkdir(parents=True)
+    elif rogue_kind == "arbitrary_root_entry":
+        (output / "notes.txt").write_text("undeclared\n")
+    elif rogue_kind == "non_batch_rate_entry":
+        (output / "rate-000/batch-marker").mkdir()
+    elif rogue_kind == "unfinished_batch_staging":
+        (output / "rate-000/.batch-00001.tmp").mkdir()
+    elif rogue_kind == "root_crash_temp":
+        (output / ".progress.json.tmp").write_text("{}\n")
+    elif rogue_kind == "rate_crash_temp":
+        (output / "rate-000/.summary.json.tmp").write_text("{}\n")
+    else:  # pragma: no cover - guarded by the parameter table
+        raise AssertionError(f"unsupported rogue kind: {rogue_kind}")
+
+    with pytest.raises(ValueError):
+        evaluation_module.verify_evaluation_publication(output, **verify_kwargs)
+
+
 def test_atomic_json_hash_uses_the_exact_bytes_written_across_newline_translation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

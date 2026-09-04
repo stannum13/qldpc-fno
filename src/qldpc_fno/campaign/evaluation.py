@@ -1061,12 +1061,17 @@ def _scan_all_batches(
     expected_rate_names = {f"rate-{index:03d}" for index in range(len(rates))}
     allowed_root_files = {
         "selection-verification.json",
-        ".selection-verification.json.tmp",
         "progress.json",
-        ".progress.json.tmp",
         "manifest.json",
-        ".manifest.json.tmp",
     }
+    if allow_staging:
+        allowed_root_files.update(
+            {
+                ".selection-verification.json.tmp",
+                ".progress.json.tmp",
+                ".manifest.json.tmp",
+            }
+        )
     for entry in output.iterdir():
         if entry.name in expected_rate_names:
             if entry.is_symlink() or not entry.is_dir():
@@ -1084,7 +1089,9 @@ def _scan_all_batches(
         if not rate_dir.exists():
             continue
         for entry in rate_dir.iterdir():
-            if entry.name in {"summary.json", ".summary.json.tmp"}:
+            if entry.name == "summary.json" or (
+                allow_staging and entry.name == ".summary.json.tmp"
+            ):
                 if entry.is_symlink() or not entry.is_file():
                     raise ValueError(f"unexpected evaluation rate artifact: {entry}")
                 has_derived_summary |= entry.name == "summary.json"
@@ -1787,16 +1794,13 @@ def verify_evaluation_publication(
     """Verify final summaries against immutable batches and deterministic test shots."""
     if set(expected_indices) != set(range(len(expected_rates))):
         raise ValueError("evaluation test-shot coordinates are incomplete")
-    records = {
-        rate_index: _scan_batches(
-            output,
-            rate_index=rate_index,
-            rate=rate,
-            expected_indices=expected_indices[rate_index],
-            source_sha256=source_sha256,
-        )
-        for rate_index, rate in enumerate(expected_rates)
-    }
+    records = _scan_all_batches(
+        output,
+        rates=expected_rates,
+        expected_indices=expected_indices,
+        source_sha256=source_sha256,
+        allow_staging=False,
+    )
     publication = _verify_final_manifest(
         output,
         source_sha256=source_sha256,
