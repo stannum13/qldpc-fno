@@ -26,7 +26,7 @@ def _write_config(path: Path) -> None:
         path,
         {
             "campaign_seed": 20260901,
-            "noise_grid": [0.003, 0.005],
+            "noise_grid": [0.2, 0.25],
             "selection_mode": "pilot",
             "pilot_shots_per_point": 1,
             "train_shots_cap": 4,
@@ -35,8 +35,8 @@ def _write_config(path: Path) -> None:
             "calibration_shortlist_per_method": 1,
             "test_batch_shots": 1,
             "max_test_shots_per_point": 2,
-            "target_failures": 2,
-            "test_stopping_mode": "adaptive",
+            "target_failures": 1,
+            "test_stopping_mode": "fixed",
             "training_epochs": 1,
             "training_batch_size": 1,
             "training_learning_rate": 0.001,
@@ -56,7 +56,7 @@ def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
         {
             "evidence_role": "selection_only_not_held_out",
             "pilot_rows": [],
-            "selected_noise_points": [0.003, 0.005],
+            "selected_noise_points": [0.2, 0.25],
             "selection_mode": "pilot",
             "source_sha256": {
                 "code_manifest": sha256_file(code_manifest),
@@ -128,7 +128,7 @@ def _evaluate(
     )
 
 
-def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
+def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     tmp_path: Path,
 ) -> None:
     config = tmp_path / "campaign.json"
@@ -330,6 +330,7 @@ def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     assert len(partial_manifests) == 1
     first_batch_manifest = partial_manifests[0]
     first_batch = json.loads(first_batch_manifest.read_text())
+    assert first_batch["failures"] == {"baseline": 1, "residual": 1, "soft_prior": 1}
     first_outcomes = first_batch_manifest.parent / first_batch["outcomes_path"]
     first_bytes = first_outcomes.read_bytes()
     first_stat = first_outcomes.stat()
@@ -353,6 +354,12 @@ def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     assert deadline_manifest["status"] == "partial_deadline"
     assert deadline_manifest["rates"]["0"]["shots"] == 0
     assert deadline_manifest["rates"]["1"]["shots"] == 0
+    partial_summary = json.loads(
+        (immediate_deadline / deadline_manifest["rates"]["0"]["summary_path"]).read_text()
+    )
+    assert partial_summary["comparison_status"]["soft_prior"] == "not_fixed_sample"
+    assert partial_summary["comparison_status"]["residual"] == "not_fixed_sample"
+    assert "accuracy_compatible" not in partial_summary
 
     resumed_deadline = _evaluate(
         config=config,
@@ -446,6 +453,9 @@ def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     manifest = json.loads((evaluation / "manifest.json").read_text())
     assert manifest["complete"] is True
     assert manifest["status"] == "complete"
+    assert manifest["selection_mode"] == "pilot"
+    assert manifest["test_stopping_mode"] == "fixed"
+    assert manifest["target_failures_active"] is False
     assert set(manifest["source_sha256"]) == {
         "calibration_grid",
         "calibration_manifest",
@@ -500,8 +510,9 @@ def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
         assert rate_record["summary_sha256"] == sha256_file(summary_path)
         summary = json.loads(summary_path.read_text())
         assert summary["status"] == "complete"
-        assert summary["stop_reason"] in {"shot_cap", "target_failures"}
+        assert summary["stop_reason"] == "shot_cap"
         assert summary["shots"] == 2
+        assert "accuracy_compatible" not in summary
         for method in ("soft_prior", "residual"):
             reliability = summary["diagnostics"][f"{method}_probability_reliability"]
             assert len(reliability) == 10
@@ -509,11 +520,14 @@ def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
             assert summary["diagnostics"][f"{method}_end_to_end_latency_seconds"]["mean"] >= 0
         for method in ("soft_prior", "residual"):
             paired = summary["paired"][method]
-            expected_compatible = (
-                summary["decoders"][method]["syndrome_valid_rate"] == 1.0
-                and paired["block_error_delta_95ci_low"] <= 0.0
-            )
-            assert summary["accuracy_compatible"][method] is expected_compatible
+            assert summary["comparison_status"][method] in {
+                "harm_detected",
+                "benefit_detected",
+                "inconclusive",
+                "no_discordances",
+            }
+            assert "block_error_delta_95ci_low" not in paired
+            assert "block_error_delta_95ci_high" not in paired
 
     completed_bytes = {path: path.read_bytes() for path in batch_manifests}
     verified_resume = _evaluate(
@@ -528,6 +542,63 @@ def test_adaptive_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     )
     assert verified_resume.returncode == 0, verified_resume.stderr
     assert all(path.read_bytes() == payload for path, payload in completed_bytes.items())
+
+    missing_exact = campaign / "evaluation-missing-exact"
+    shutil.copytree(evaluation, missing_exact)
+    missing_manifest_path = missing_exact / "manifest.json"
+    missing_manifest = json.loads(missing_manifest_path.read_text())
+    missing_summary_path = missing_exact / missing_manifest["rates"]["0"]["summary_path"]
+    missing_summary = json.loads(missing_summary_path.read_text())
+    missing_summary["paired"]["soft_prior"].pop("mcnemar_exact_pvalue_harm")
+    write_canonical_json(missing_summary_path, missing_summary)
+    missing_manifest["rates"]["0"]["summary_sha256"] = sha256_file(missing_summary_path)
+    write_canonical_json(missing_manifest_path, missing_manifest)
+    missing_batches = {
+        path: path.read_bytes() for path in sorted(missing_exact.glob("rate-*/batch-*/manifest.json"))
+    }
+    rejected_missing_exact = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=missing_exact,
+        extra=("--resume",),
+    )
+    assert rejected_missing_exact.returncode != 0
+    assert "exact paired fields" in rejected_missing_exact.stderr
+    assert all(path.read_bytes() == payload for path, payload in missing_batches.items())
+
+    under_cap = campaign / "evaluation-under-cap"
+    shutil.copytree(evaluation, under_cap)
+    under_cap_manifest_path = under_cap / "manifest.json"
+    under_cap_manifest = json.loads(under_cap_manifest_path.read_text())
+    under_cap_summary_path = under_cap / under_cap_manifest["rates"]["0"]["summary_path"]
+    under_cap_summary = json.loads(under_cap_summary_path.read_text())
+    under_cap_summary["shots"] = 1
+    write_canonical_json(under_cap_summary_path, under_cap_summary)
+    under_cap_manifest["rates"]["0"]["shots"] = 1
+    under_cap_manifest["rates"]["0"]["summary_sha256"] = sha256_file(under_cap_summary_path)
+    write_canonical_json(under_cap_manifest_path, under_cap_manifest)
+    under_cap_batches = {
+        path: path.read_bytes() for path in sorted(under_cap.glob("rate-*/batch-*/manifest.json"))
+    }
+    rejected_under_cap = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=under_cap,
+        extra=("--resume",),
+    )
+    assert rejected_under_cap.returncode != 0
+    assert "fixed evaluation rate must complete at the configured shot cap" in (
+        rejected_under_cap.stderr
+    )
+    assert all(path.read_bytes() == payload for path, payload in under_cap_batches.items())
 
     manifest_path = evaluation / "manifest.json"
     manifest_text = manifest_path.read_text()

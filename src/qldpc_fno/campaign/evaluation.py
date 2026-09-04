@@ -27,9 +27,9 @@ from qldpc_fno.data.ring_fields import to_ring_field
 from qldpc_fno.decoders.bplsd import decode_bplsd_batch
 from qldpc_fno.decoders.hybrid import decode_residual_batch, decode_soft_prior_batch
 from qldpc_fno.metrics.paired import (
-    accuracy_compatible,
-    adaptive_stop_reason,
+    paired_comparison_status,
     paired_decoder_summary,
+    test_stop_reason,
 )
 from qldpc_fno.models.fno1d import RingFNO
 from qldpc_fno.training.calibration import (
@@ -498,11 +498,6 @@ def _load_selected_models(
     return loaded, provenance
 
 
-def _bootstrap_seed(campaign_seed: int, rate_index: int, method: str) -> int:
-    payload = f"{campaign_seed}:{rate_index}:{method}:paired_bootstrap".encode()
-    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") & ((1 << 63) - 1)
-
-
 def _indices_sha256(indices: np.ndarray) -> str:
     return hashlib.sha256(indices.astype("<i8", copy=False).tobytes()).hexdigest()
 
@@ -935,12 +930,7 @@ def _decoder_summary(outcomes: dict[str, np.ndarray], decoder: str) -> dict[str,
     failures = outcomes[f"{decoder}_failure"]
     valid = outcomes[f"{decoder}_syndrome_valid"]
     mismatch = outcomes[f"{decoder}_logical_mismatch"]
-    base = paired_decoder_summary(
-        failures,
-        failures,
-        bootstrap_seed=0,
-        samples=1,
-    )["baseline"]
+    base = paired_decoder_summary(failures, failures)["baseline"]
     return {
         **base,
         "converged": int(np.count_nonzero(outcomes[f"{decoder}_converged"])),
@@ -987,14 +977,13 @@ def _write_rate_summary(
     records: list[tuple[Path, dict[str, object]]],
     status: str,
     stop_reason: str,
-    bootstrap_samples: int,
-    campaign_seed: int,
+    fixed_sample: bool,
     source_sha256: dict[str, object],
 ) -> tuple[Path, dict[str, object]]:
     summary_path = output / f"rate-{rate_index:03d}" / "summary.json"
     if not records:
         payload: dict[str, object] = {
-            "accuracy_compatible": {method: False for method in _HYBRIDS},
+            "comparison_status": {method: "not_fixed_sample" for method in _HYBRIDS},
             "decoders": {},
             "error_rate": rate,
             "paired": {},
@@ -1012,18 +1001,13 @@ def _write_rate_summary(
         method: paired_decoder_summary(
             outcomes["baseline_failure"],
             outcomes[f"{method}_failure"],
-            bootstrap_seed=_bootstrap_seed(campaign_seed, rate_index, method),
-            samples=bootstrap_samples,
         )
         for method in _HYBRIDS
     }
     decoders = {name: _decoder_summary(outcomes, name) for name in _DECODERS}
     payload = {
-        "accuracy_compatible": {
-            method: accuracy_compatible(
-                paired[method],
-                syndrome_valid=decoders[method]["syndrome_valid_rate"] == 1.0,
-            )
+        "comparison_status": {
+            method: paired_comparison_status(paired[method], fixed_sample=fixed_sample)
             for method in _HYBRIDS
         },
         "decoders": decoders,
@@ -1141,12 +1125,21 @@ def _verify_final_manifest(
     selected_calibration: dict[str, object],
     expected_rates: tuple[float, ...],
     rate_records: dict[int, list[tuple[Path, dict[str, object]]]],
+    config: CampaignConfig,
 ) -> str:
     manifest = json.loads((output / "manifest.json").read_text())
     if manifest.get("complete") is not True or manifest.get("source_sha256") != source_sha256:
         raise ValueError("completed evaluation provenance mismatch")
     if manifest.get("selected_calibration") != selected_calibration:
         raise ValueError("completed evaluation calibration selection mismatch")
+    if manifest.get("selection_mode") != config.selection_mode:
+        raise ValueError("completed evaluation selection mode mismatch")
+    if manifest.get("test_stopping_mode") != config.test_stopping_mode:
+        raise ValueError("completed evaluation test stopping mode mismatch")
+    if manifest.get("target_failures_active") is not (
+        config.test_stopping_mode == "adaptive"
+    ):
+        raise ValueError("completed evaluation target-failure policy mismatch")
     status = manifest.get("status")
     if status not in {"complete", "partial_deadline"}:
         raise ValueError("completed evaluation status is invalid")
@@ -1185,10 +1178,62 @@ def _verify_final_manifest(
         recorded_shots = record.get("shots")
         if type(recorded_shots) is not int or recorded_shots < 0:
             raise ValueError("completed evaluation rate shot count is invalid")
+        if (
+            config.test_stopping_mode == "fixed"
+            and record.get("status") == "complete"
+            and (
+                record.get("stop_reason") != "shot_cap"
+                or recorded_shots != config.max_test_shots_per_point
+            )
+        ):
+            raise ValueError("fixed evaluation rate must complete at the configured shot cap")
         if status == "complete" and recorded_shots != decoded_shots:
             raise ValueError("completed evaluation rate shot count disagrees with outcomes")
         if status == "partial_deadline" and recorded_shots > decoded_shots:
             raise ValueError("deadline evaluation rate shot count exceeds available outcomes")
+        comparison_status = summary.get("comparison_status")
+        if not isinstance(comparison_status, dict) or set(comparison_status) != set(_HYBRIDS):
+            raise ValueError("completed evaluation comparison status is malformed")
+        if "accuracy_compatible" in summary:
+            raise ValueError("completed evaluation contains obsolete compatibility status")
+        if decoded_shots:
+            outcomes = _load_rate_outcomes(rate_records[rate_index])
+            expected_paired = {
+                method: paired_decoder_summary(
+                    outcomes["baseline_failure"],
+                    outcomes[f"{method}_failure"],
+                )
+                for method in _HYBRIDS
+            }
+            paired = summary.get("paired")
+            if not isinstance(paired, dict) or set(paired) != set(_HYBRIDS):
+                raise ValueError("completed evaluation exact paired fields are malformed")
+            for method in _HYBRIDS:
+                if not isinstance(paired[method], dict) or set(paired[method]) != set(
+                    expected_paired[method]
+                ):
+                    raise ValueError("completed evaluation exact paired fields are malformed")
+                if paired[method] != expected_paired[method]:
+                    raise ValueError("completed evaluation paired summary disagrees with outcomes")
+            fixed_sample = (
+                config.test_stopping_mode == "fixed"
+                and record.get("status") == "complete"
+                and record.get("stop_reason") == "shot_cap"
+                and recorded_shots == config.max_test_shots_per_point
+            )
+            expected_comparison = {
+                method: paired_comparison_status(
+                    expected_paired[method],
+                    fixed_sample=fixed_sample,
+                )
+                for method in _HYBRIDS
+            }
+        else:
+            if summary.get("paired") != {}:
+                raise ValueError("empty evaluation rate has malformed paired summaries")
+            expected_comparison = {method: "not_fixed_sample" for method in _HYBRIDS}
+        if comparison_status != expected_comparison:
+            raise ValueError("completed evaluation comparison status disagrees with outcomes")
     return status
 
 
@@ -1201,20 +1246,26 @@ def _finalize(
     rates: tuple[float, ...],
     records: dict[int, list[tuple[Path, dict[str, object]]]],
     config: CampaignConfig,
-    bootstrap_samples: int,
     selected_calibration: dict[str, object],
 ) -> None:
     rate_results: dict[str, object] = {}
     for rate_index, rate in enumerate(rates):
         counts = _aggregate_counts(records[rate_index])
-        scientific_reason = adaptive_stop_reason(
+        scientific_reason = test_stop_reason(
             counts["failures"],
             shots=int(counts["shots"]),
             target_failures=config.target_failures,
             shot_cap=config.max_test_shots_per_point,
+            mode=config.test_stopping_mode,
         )
         stop_reason = scientific_reason or reason_for_unfinished
         rate_status = "complete" if scientific_reason is not None else status
+        fixed_sample = (
+            config.test_stopping_mode == "fixed"
+            and rate_status == "complete"
+            and stop_reason == "shot_cap"
+            and int(counts["shots"]) == config.max_test_shots_per_point
+        )
         summary_path, summary = _write_rate_summary(
             output,
             rate_index=rate_index,
@@ -1222,8 +1273,7 @@ def _finalize(
             records=records[rate_index],
             status=rate_status,
             stop_reason=stop_reason,
-            bootstrap_samples=bootstrap_samples,
-            campaign_seed=config.campaign_seed,
+            fixed_sample=fixed_sample,
             source_sha256=source_sha256,
         )
         rate_results[str(rate_index)] = {
@@ -1246,15 +1296,18 @@ def _finalize(
         {
             "complete": True,
             "rates": rate_results,
+            "selection_mode": config.selection_mode,
             "selected_calibration": selected_calibration,
             "source_sha256": source_sha256,
             "status": status,
+            "target_failures_active": config.test_stopping_mode == "adaptive",
+            "test_stopping_mode": config.test_stopping_mode,
         },
     )
 
 
 def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
-    """Verify inputs, evaluate paired decoders adaptively, and publish outcomes."""
+    """Verify inputs, evaluate paired decoders, and publish outcomes."""
     if args.bootstrap_samples <= 0:
         raise ValueError("bootstrap-samples must be positive")
     if args.max_batches_this_run is not None and args.max_batches_this_run <= 0:
@@ -1365,6 +1418,7 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
                 selected_calibration=selected_calibration,
                 expected_rates=rates,
                 rate_records=records,
+                config=config,
             )
             if final_status == "complete":
                 return
@@ -1380,11 +1434,12 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
     deadline_requested = False
     for rate_index, rate in enumerate(rates):
         counts = _aggregate_counts(records[rate_index])
-        stop_reason = adaptive_stop_reason(
+        stop_reason = test_stop_reason(
             counts["failures"],
             shots=int(counts["shots"]),
             target_failures=config.target_failures,
             shot_cap=config.max_test_shots_per_point,
+            mode=config.test_stopping_mode,
         )
         while stop_reason is None:
             if args.deadline_monotonic is not None and monotonic() >= args.deadline_monotonic:
@@ -1446,11 +1501,12 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
             manifest_path = batch_dir / "manifest.json"
             records[rate_index].append((manifest_path, json.loads(manifest_path.read_text())))
             counts = _aggregate_counts(records[rate_index])
-            stop_reason = adaptive_stop_reason(
+            stop_reason = test_stop_reason(
                 counts["failures"],
                 shots=int(counts["shots"]),
                 target_failures=config.target_failures,
                 shot_cap=config.max_test_shots_per_point,
+                mode=config.test_stopping_mode,
             )
             batches_this_run += 1
             _write_progress(
@@ -1472,7 +1528,6 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
             rates=rates,
             records=records,
             config=config,
-            bootstrap_samples=args.bootstrap_samples,
             selected_calibration=selected_calibration,
         )
         return
@@ -1484,6 +1539,5 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         rates=rates,
         records=records,
         config=config,
-        bootstrap_samples=args.bootstrap_samples,
         selected_calibration=selected_calibration,
     )

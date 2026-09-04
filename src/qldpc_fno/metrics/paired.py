@@ -8,6 +8,8 @@ from collections.abc import Mapping
 import numpy as np
 from scipy.stats import binomtest
 
+_DECODER_NAMES = {"baseline", "soft_prior", "residual"}
+
 
 def _failure_outcomes(values: np.ndarray, *, name: str) -> np.ndarray:
     outcomes = np.asarray(values)
@@ -161,19 +163,20 @@ def paired_comparison_status(
     return "inconclusive"
 
 
-def adaptive_stop_reason(
+def test_stop_reason(
     failure_counts: Mapping[str, object],
     *,
     shots: int,
     target_failures: int,
     shot_cap: int,
+    mode: str,
 ) -> str | None:
-    """Return a scientific stopping reason, or ``None`` while collection continues."""
-    decoder_names = {"baseline", "soft_prior", "residual"}
-    if set(failure_counts) != decoder_names:
+    """Return the configured test stopping reason, or ``None`` while collection continues."""
+    if set(failure_counts) != _DECODER_NAMES:
         raise ValueError("failure counts must cover baseline, soft_prior, and residual")
     if any(
-        type(failure_counts[name]) is not int or failure_counts[name] < 0 for name in decoder_names
+        type(failure_counts[name]) is not int or failure_counts[name] < 0
+        for name in _DECODER_NAMES
     ):
         raise ValueError("failure counts must be non-negative integers")
     if type(shots) is not int or shots < 0:
@@ -182,7 +185,11 @@ def adaptive_stop_reason(
         raise ValueError("target_failures must be a positive integer")
     if type(shot_cap) is not int or shot_cap <= 0 or shots > shot_cap:
         raise ValueError("shot_cap must be positive and no smaller than shots")
-    if all(failure_counts[name] >= target_failures for name in decoder_names):
+    if mode not in {"adaptive", "fixed"}:
+        raise ValueError("test stopping mode must be 'adaptive' or 'fixed'")
+    if mode == "adaptive" and all(
+        int(failure_counts[name]) >= target_failures for name in _DECODER_NAMES
+    ):
         return "target_failures"
     if shots >= shot_cap:
         return "shot_cap"

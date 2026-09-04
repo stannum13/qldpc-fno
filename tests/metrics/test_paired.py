@@ -4,10 +4,10 @@ import numpy as np
 import pytest
 
 from qldpc_fno.metrics.paired import (
-    adaptive_stop_reason,
     paired_comparison_status,
     paired_decoder_summary,
 )
+from qldpc_fno.metrics.paired import test_stop_reason as stopping_reason
 
 
 def test_all_hybrid_only_discordances_have_nonzero_exact_uncertainty() -> None:
@@ -179,29 +179,81 @@ def test_paired_status_rejects_invalid_alpha(alpha: float) -> None:
 
 def test_adaptive_stop_requires_every_decoder_to_reach_failure_target() -> None:
     assert (
-        adaptive_stop_reason(
+        stopping_reason(
             {"baseline": 3, "soft_prior": 2, "residual": 1},
             shots=3,
             target_failures=2,
             shot_cap=5,
+            mode="adaptive",
         )
         is None
     )
     assert (
-        adaptive_stop_reason(
+        stopping_reason(
             {"baseline": 3, "soft_prior": 2, "residual": 2},
             shots=3,
             target_failures=2,
             shot_cap=5,
+            mode="adaptive",
         )
         == "target_failures"
     )
     assert (
-        adaptive_stop_reason(
+        stopping_reason(
             {"baseline": 0, "soft_prior": 0, "residual": 0},
             shots=5,
             target_failures=2,
             shot_cap=5,
+            mode="adaptive",
         )
         == "shot_cap"
     )
+
+
+def test_fixed_stop_ignores_failure_target_until_shot_cap() -> None:
+    counts = {"baseline": 8, "soft_prior": 8, "residual": 8}
+    assert (
+        stopping_reason(
+            counts,
+            shots=8,
+            target_failures=1,
+            shot_cap=16,
+            mode="fixed",
+        )
+        is None
+    )
+    assert (
+        stopping_reason(
+            counts,
+            shots=16,
+            target_failures=1,
+            shot_cap=16,
+            mode="fixed",
+        )
+        == "shot_cap"
+    )
+
+
+def test_adaptive_stop_preserves_target_failure_behavior() -> None:
+    counts = {"baseline": 2, "soft_prior": 2, "residual": 2}
+    assert (
+        stopping_reason(
+            counts,
+            shots=4,
+            target_failures=2,
+            shot_cap=16,
+            mode="adaptive",
+        )
+        == "target_failures"
+    )
+
+
+def test_stop_reason_rejects_invalid_mode() -> None:
+    with pytest.raises(ValueError, match="test stopping mode must be 'adaptive' or 'fixed'"):
+        stopping_reason(
+            {"baseline": 0, "soft_prior": 0, "residual": 0},
+            shots=0,
+            target_failures=2,
+            shot_cap=16,
+            mode="unexpected",
+        )
