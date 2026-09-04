@@ -36,7 +36,7 @@ class SpectralConv1d(nn.Module):
         return torch.fft.irfft(output, n=values.shape[-1], dim=-1)
 
 
-class _FNOBlock1d(nn.Module):
+class FNOBlock1d(nn.Module):
     def __init__(self, width: int, modes: int) -> None:
         super().__init__()
         self.spectral = SpectralConv1d(width, width, modes)
@@ -67,7 +67,7 @@ class RingFNO(nn.Module):
         self.modes = modes
         self.depth = depth
         self.lift = nn.Conv1d(in_channels, width, kernel_size=1)
-        self.blocks = nn.ModuleList(_FNOBlock1d(width, modes) for _ in range(depth))
+        self.blocks = nn.ModuleList(FNOBlock1d(width, modes) for _ in range(depth))
         self.project = nn.Conv1d(width, out_channels, kernel_size=1)
 
     def forward(self, values: torch.Tensor) -> torch.Tensor:
@@ -90,3 +90,36 @@ class RingFNO(nn.Module):
             "out_channels": self.out_channels,
             "width": self.width,
         }
+
+
+class RingFNOEncoder(nn.Module):
+    """Translation-equivariant FNO feature encoder without an output projection."""
+
+    def __init__(
+        self,
+        in_channels: int = 21,
+        width: int = 32,
+        modes: int = 12,
+        depth: int = 2,
+    ) -> None:
+        super().__init__()
+        if depth <= 0:
+            raise ValueError("depth must be positive")
+        self.in_channels = in_channels
+        self.width = width
+        self.modes = modes
+        self.depth = depth
+        self.lift = nn.Conv1d(in_channels, width, kernel_size=1)
+        self.blocks = nn.ModuleList(FNOBlock1d(width, modes) for _ in range(depth))
+
+    def forward(self, values: torch.Tensor) -> torch.Tensor:
+        if values.ndim != 3:
+            raise ValueError("values must have shape (batch, channels, ring length)")
+        if values.shape[1] != self.in_channels:
+            raise ValueError(
+                f"input has {values.shape[1]} channels; expected {self.in_channels}"
+            )
+        hidden = self.lift(values)
+        for block in self.blocks:
+            hidden = block(hidden)
+        return hidden
