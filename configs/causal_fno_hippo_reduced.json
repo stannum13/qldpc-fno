@@ -72,5 +72,15 @@
     "max_epochs": 60,
     "gradient_norm_cap": 1.0,
     "training_seed": 1701
+  },
+  "overfit_fixture": {
+    "seed": 1801,
+    "sequences": 2,
+    "burn_in": 8,
+    "scored": 16,
+    "learning_rate": 0.01,
+    "max_steps": 2000,
+    "nll_threshold": 0.03,
+    "accuracy_threshold": 0.995
   }
 }

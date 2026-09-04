@@ -228,6 +228,32 @@ class OptimizerConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OverfitFixtureConfig:
+    seed: int
+    sequences: int
+    burn_in: int
+    scored: int
+    learning_rate: float
+    max_steps: int
+    nll_threshold: float
+    accuracy_threshold: float
+
+    def validate(self) -> None:
+        if self.seed != 1801:
+            raise ValueError("overfit fixture seed must be 1801")
+        if (self.sequences, self.burn_in, self.scored) != (2, 8, 16):
+            raise ValueError("overfit fixture geometry must be two sequences, 8 burn-in, 16 scored")
+        if _number(self.learning_rate, "overfit learning_rate", lower=0.0) != 0.01:
+            raise ValueError("overfit fixture learning_rate must be 0.01")
+        if _integer(self.max_steps, "overfit max_steps") != 2000:
+            raise ValueError("overfit fixture max_steps must be 2000")
+        nll = _number(self.nll_threshold, "overfit nll_threshold", lower=0.0)
+        accuracy = _number(self.accuracy_threshold, "overfit accuracy_threshold", lower=0.0)
+        if nll != 0.03 or accuracy != 0.995:
+            raise ValueError("overfit fixture thresholds must be NLL 0.03 and accuracy 0.995")
+
+
+@dataclass(frozen=True, slots=True)
 class CausalExperimentConfig:
     """Complete causal experiment policy with recursively strict JSON parsing."""
 
@@ -241,6 +267,7 @@ class CausalExperimentConfig:
     model: ModelConfig
     decoder: DecoderConfig
     optimizer: OptimizerConfig
+    overfit_fixture: OverfitFixtureConfig
 
     _ARTIFACT_MODES: ClassVar[frozenset[str]] = frozenset(
         {"reduced_non_scientific", "discovery_non_scientific", "confirmation"}
@@ -277,6 +304,11 @@ class CausalExperimentConfig:
             optimizer=OptimizerConfig(
                 **_strict_section(values["optimizer"], OptimizerConfig, "optimizer")
             ),
+            overfit_fixture=OverfitFixtureConfig(
+                **_strict_section(
+                    values["overfit_fixture"], OverfitFixtureConfig, "overfit_fixture"
+                )
+            ),
         )
         config.validate()
         return config
@@ -300,3 +332,4 @@ class CausalExperimentConfig:
         self.model.validate(self.code.ell)
         self.decoder.validate()
         self.optimizer.validate()
+        self.overfit_fixture.validate()

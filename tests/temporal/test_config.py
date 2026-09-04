@@ -48,6 +48,13 @@ def test_reduced_config_matches_the_causal_experiment_contract() -> None:
     assert config.decoder.lsd_method == "LSD_E"
     assert config.decoder.lsd_order == 5
     assert config.optimizer.training_seed == 1701
+    assert config.overfit_fixture.seed == 1801
+    assert (config.overfit_fixture.sequences, config.overfit_fixture.burn_in) == (2, 8)
+    assert config.overfit_fixture.scored == 16
+    assert config.overfit_fixture.learning_rate == 0.01
+    assert config.overfit_fixture.max_steps == 2000
+    assert config.overfit_fixture.nll_threshold == 0.03
+    assert config.overfit_fixture.accuracy_threshold == 0.995
 
 
 def test_config_round_trips_without_losing_schema_information() -> None:
