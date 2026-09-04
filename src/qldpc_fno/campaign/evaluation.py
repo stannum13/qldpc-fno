@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import os
 import shutil
 from dataclasses import dataclass
-from itertools import pairwise
 from pathlib import Path
 from time import monotonic, perf_counter
 
@@ -15,7 +15,12 @@ import torch
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
 from qldpc_fno.campaign.config import CampaignConfig
+from qldpc_fno.campaign.inputs import verify_campaign_run_mode
 from qldpc_fno.campaign.local import resolve_git_commit
+from qldpc_fno.campaign.selection import (
+    verify_selection_publication,
+    verify_shard_selection_provenance,
+)
 from qldpc_fno.campaign.shard_io import (
     VerifiedShardSet,
     load_campaign_code,
@@ -93,6 +98,7 @@ class EvaluationRequest:
 
     config: Path
     code: Path
+    run_mode: Path
     selection: Path
     test: Path
     model: Path
@@ -104,6 +110,38 @@ class EvaluationRequest:
     resume: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedEvaluationPublication:
+    """A final evaluation reconstructed and verified from immutable batches."""
+
+    status: str
+    summaries: tuple[dict[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedBatch:
+    """One verified batch and its deterministic test-shot coordinates."""
+
+    manifest_path: Path
+    manifest: dict[str, object]
+    manifest_sha256: str
+    expected_indices: np.ndarray
+
+
+def _require_plain_directory(path: Path, *, label: str) -> None:
+    if path.is_symlink():
+        raise ValueError(f"{label} must not be a symlink")
+    if not path.is_dir():
+        raise ValueError(f"{label} must be a directory")
+
+
+def _require_plain_file(path: Path, *, label: str) -> None:
+    if path.is_symlink():
+        raise ValueError(f"{label} must not be a symlink")
+    if not path.is_file():
+        raise ValueError(f"{label} must be a regular file")
+
+
 def _git_commit() -> str:
     return resolve_git_commit(Path(__file__).resolve().parents[3])
 
@@ -112,78 +150,6 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     write_canonical_json(temporary, payload)
     os.replace(temporary, path)
-
-
-def _verify_selection(
-    selection_path: Path,
-    *,
-    config_path: Path,
-    code_manifest_path: Path,
-) -> tuple[float, ...]:
-    pilot_manifest_path = selection_path.parent / "manifest.json"
-    pilot_manifest = json.loads(pilot_manifest_path.read_text())
-    if pilot_manifest.get("complete") is not True or pilot_manifest.get("role") != "pilot":
-        raise ValueError("selection does not belong to a completed pilot publication")
-    verify_sha256(selection_path, str(pilot_manifest["selection_sha256"]), label="selection")
-    selection = json.loads(selection_path.read_text())
-    sources = selection.get("source_sha256")
-    if not isinstance(sources, dict):
-        raise TypeError("selection is missing source SHA-256 provenance")
-    if sources.get("config") != sha256_file(config_path):
-        raise ValueError("selection configuration provenance mismatch")
-    if sources.get("code_manifest") != sha256_file(code_manifest_path):
-        raise ValueError("selection code provenance mismatch")
-    config = CampaignConfig.from_json(config_path)
-    if selection.get("selection_mode") != config.selection_mode:
-        raise ValueError("selection mode does not match campaign configuration")
-    evidence_roles = {
-        "fixed": "predeclared_selection_not_evidence",
-        "pilot": "selection_only_not_held_out",
-    }
-    if selection.get("evidence_role") != evidence_roles[config.selection_mode]:
-        raise ValueError("selection evidence role does not match campaign configuration")
-    raw_rates = selection.get("selected_noise_points")
-    if not isinstance(raw_rates, list) or not raw_rates:
-        raise ValueError("selection must contain non-empty selected_noise_points")
-    if config.selection_mode == "fixed" and tuple(raw_rates) != config.noise_grid:
-        raise ValueError("fixed selection rates do not match configured noise_grid")
-    if any(type(rate) not in (int, float) or not math.isfinite(rate) for rate in raw_rates):
-        raise ValueError("selected noise points must be finite numbers")
-    rates = tuple(float(rate) for rate in raw_rates)
-    if any(not 0.0 < rate < 0.5 for rate in rates) or any(
-        left >= right for left, right in pairwise(rates)
-    ):
-        raise ValueError("selected noise points must be strictly increasing probabilities")
-    return rates
-
-
-def _verify_shard_selection(
-    shards: VerifiedShardSet,
-    *,
-    rates: tuple[float, ...],
-    selection_path: Path,
-) -> None:
-    rate_map: dict[int, float] = {}
-    expected_sources = {
-        "code_manifest": None,
-        "config": None,
-        "dem": None,
-        "pilot_manifest": sha256_file(selection_path.parent / "manifest.json"),
-        "selection": sha256_file(selection_path),
-    }
-    for shard in shards.shards:
-        previous = rate_map.setdefault(shard.rate_index, shard.error_rate)
-        if previous != shard.error_rate:
-            raise ValueError(f"{shards.role} shards have inconsistent rate coordinates")
-        manifest = json.loads(shard.manifest_path.read_text())
-        sources = manifest.get("source_sha256")
-        if not isinstance(sources, dict) or set(sources) != set(expected_sources):
-            raise ValueError(f"{shards.role} shard source provenance fields are incomplete")
-        for key in ("pilot_manifest", "selection"):
-            if sources.get(key) != expected_sources[key]:
-                raise ValueError(f"{shards.role} shard {key} provenance mismatch")
-    if tuple(rate_map[index] for index in sorted(rate_map)) != rates:
-        raise ValueError(f"{shards.role} shard rates do not match the pilot selection")
 
 
 def _model_sources(
@@ -680,10 +646,38 @@ def _verify_batch_manifest(
     expected_start: int,
     expected_indices: np.ndarray,
     source_sha256: dict[str, object],
-) -> dict[str, object]:
-    manifest = json.loads(path.read_text())
+) -> _VerifiedBatch:
+    _require_plain_file(path, label="evaluation batch manifest")
+    manifest_payload = path.read_bytes()
+    manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+    manifest = json.loads(manifest_payload)
+    expected_manifest_fields = {
+        "batch_index",
+        "complete",
+        "error_rate",
+        "failures",
+        "fno_inference_latency_seconds",
+        "invalid",
+        "logical_mismatch",
+        "outcomes_path",
+        "outcomes_sha256",
+        "paired",
+        "probability_reliability",
+        "rate_index",
+        "shot_indices_sha256",
+        "shots",
+        "source_sha256",
+        "start",
+        "stop",
+    }
+    if not isinstance(manifest, dict) or set(manifest) != expected_manifest_fields:
+        raise ValueError(f"evaluation batch manifest schema is malformed: {path}")
     if manifest.get("complete") is not True:
         raise ValueError(f"evaluation batch is incomplete: {path}")
+    if any(type(manifest.get(field)) is not int for field in ("batch_index", "rate_index", "start")):
+        raise ValueError(f"evaluation batch {path} has invalid integer coordinates")
+    if type(manifest.get("error_rate")) is not float:
+        raise ValueError(f"evaluation batch {path} has invalid error_rate coordinate")
     expected_values = {
         "batch_index": batch_index,
         "error_rate": rate,
@@ -713,7 +707,10 @@ def _verify_batch_manifest(
     if manifest.get("outcomes_path") != expected_name:
         raise ValueError(f"evaluation batch {path} outcome path mismatch")
     outcomes_path = path.parent / expected_name
-    verify_sha256(outcomes_path, str(manifest["outcomes_sha256"]), label="batch outcomes")
+    _require_plain_file(outcomes_path, label="evaluation batch outcomes")
+    outcomes_sha256 = manifest.get("outcomes_sha256")
+    if not isinstance(outcomes_sha256, str):
+        raise TypeError(f"evaluation batch {path} outcome SHA-256 must be a string")
     for field in ("failures", "invalid", "logical_mismatch"):
         counts = manifest.get(field)
         if (
@@ -790,12 +787,39 @@ def _verify_batch_manifest(
                     f"evaluation batch {path} reliability probability sum falls outside "
                     f"the declared {method} bin"
                 )
-    _verify_outcome_archive(
+    outcomes = _verify_outcome_archive(
         outcomes_path,
         manifest=manifest,
         expected_indices=batch_expected_indices,
+        expected_sha256=outcomes_sha256,
     )
-    return manifest
+    inference_latency = manifest.get("fno_inference_latency_seconds")
+    if (
+        not isinstance(inference_latency, dict)
+        or set(inference_latency) != set(_HYBRIDS)
+        or any(
+            isinstance(inference_latency[method], bool)
+            or type(inference_latency[method]) not in (int, float)
+            or not math.isfinite(inference_latency[method])
+            or inference_latency[method] < 0.0
+            for method in _HYBRIDS
+        )
+    ):
+        raise ValueError(f"evaluation batch {path} has invalid FNO inference latency")
+    for method in _HYBRIDS:
+        if not math.isclose(
+            float(inference_latency[method]),
+            float(np.sum(outcomes[f"{method}_fno_latency_seconds"])),
+            rel_tol=0.0,
+            abs_tol=1e-15,
+        ):
+            raise ValueError(f"evaluation batch {path} FNO inference latency disagrees with outcomes")
+    return _VerifiedBatch(
+        manifest_path=path,
+        manifest=manifest,
+        manifest_sha256=manifest_sha256,
+        expected_indices=np.array(batch_expected_indices, copy=True),
+    )
 
 
 def _verify_outcome_archive(
@@ -803,12 +827,20 @@ def _verify_outcome_archive(
     *,
     manifest: dict[str, object],
     expected_indices: np.ndarray,
-) -> None:
+    expected_sha256: str,
+) -> dict[str, np.ndarray]:
     shots = int(manifest["shots"])
-    with np.load(path, allow_pickle=False) as archive:
+    payload = path.read_bytes()
+    actual_sha256 = hashlib.sha256(payload).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            "batch outcomes SHA-256 mismatch: "
+            f"expected {expected_sha256}, found {actual_sha256}"
+        )
+    with np.load(io.BytesIO(payload), allow_pickle=False) as archive:
         if set(archive.files) != _OUTCOME_FIELDS:
             raise ValueError("batch outcome schema does not match the declared evaluation format")
-        arrays = {name: np.asarray(archive[name]) for name in archive.files}
+        arrays = {name: np.array(archive[name], copy=True) for name in archive.files}
         if any(array.shape != (shots,) for array in arrays.values()):
             raise ValueError("batch outcomes must contain one value per test shot")
         if any(arrays[name].dtype != np.dtype(np.bool_) for name in _BOOLEAN_OUTCOME_FIELDS):
@@ -858,6 +890,7 @@ def _verify_outcome_archive(
                 atol=1e-15,
             ):
                 raise ValueError(f"{method} end-to-end latency disagrees with batch outcomes")
+    return arrays
 
 
 def _scan_batches(
@@ -867,25 +900,42 @@ def _scan_batches(
     rate: float,
     expected_indices: np.ndarray,
     source_sha256: dict[str, object],
-) -> list[tuple[Path, dict[str, object]]]:
+    allow_staging: bool = False,
+) -> list[_VerifiedBatch]:
+    _require_plain_directory(output, label="evaluation output")
     rate_dir = output / f"rate-{rate_index:03d}"
+    if rate_dir.is_symlink():
+        raise ValueError(f"evaluation rate {rate_index} directory must not be a symlink")
     if not rate_dir.exists():
         return []
-    for staging in rate_dir.glob(".batch-*.tmp"):
-        if not staging.is_dir():
+    _require_plain_directory(rate_dir, label=f"evaluation rate {rate_index} directory")
+    staging_directories = sorted(rate_dir.glob(".batch-*.tmp"))
+    for staging in staging_directories:
+        staging_index = staging.name.removeprefix(".batch-").removesuffix(".tmp")
+        if (
+            len(staging_index) != 5
+            or not staging_index.isdecimal()
+            or staging.is_symlink()
+            or not staging.is_dir()
+        ):
             raise ValueError(f"rate {rate_index} has a malformed batch staging artifact")
-        shutil.rmtree(staging)
+    if staging_directories and not allow_staging:
+        raise ValueError(f"rate {rate_index} has an unfinished batch staging artifact")
     batch_directories = sorted(rate_dir.glob("batch-*"))
-    records: list[tuple[Path, dict[str, object]]] = []
+    records: list[_VerifiedBatch] = []
     expected_start = 0
     for batch_index, directory in enumerate(batch_directories):
-        if not directory.is_dir() or directory.name != f"batch-{batch_index:05d}":
+        if (
+            directory.is_symlink()
+            or not directory.is_dir()
+            or directory.name != f"batch-{batch_index:05d}"
+        ):
             raise ValueError(f"rate {rate_index} evaluation batch indices are not consecutive")
         if {path.name for path in directory.iterdir()} != {"manifest.json", "outcomes.npz"}:
             raise ValueError(f"rate {rate_index} has an incomplete evaluation batch directory")
-        path = directory / "manifest.json"
-        manifest = _verify_batch_manifest(
-            path,
+        manifest_path = directory / "manifest.json"
+        record = _verify_batch_manifest(
+            manifest_path,
             rate_index=rate_index,
             rate=rate,
             batch_index=batch_index,
@@ -893,17 +943,43 @@ def _scan_batches(
             expected_indices=expected_indices,
             source_sha256=source_sha256,
         )
-        expected_start = int(manifest["stop"])
-        records.append((path, manifest))
+        expected_start = int(record.manifest["stop"])
+        records.append(record)
     return records
 
 
-def _aggregate_counts(records: list[tuple[Path, dict[str, object]]]) -> dict[str, object]:
+def _discard_batch_staging(output: Path, *, rate_count: int) -> None:
+    """Delete only validated local staging directories after resume verification."""
+    _require_plain_directory(output, label="evaluation output")
+    staging_directories: list[Path] = []
+    for rate_index in range(rate_count):
+        rate_dir = output / f"rate-{rate_index:03d}"
+        if rate_dir.is_symlink():
+            raise ValueError(f"evaluation rate {rate_index} directory must not be a symlink")
+        if not rate_dir.exists():
+            continue
+        _require_plain_directory(rate_dir, label=f"evaluation rate {rate_index} directory")
+        for staging in sorted(rate_dir.glob(".batch-*.tmp")):
+            staging_index = staging.name.removeprefix(".batch-").removesuffix(".tmp")
+            if (
+                len(staging_index) != 5
+                or not staging_index.isdecimal()
+                or staging.is_symlink()
+                or not staging.is_dir()
+            ):
+                raise ValueError(f"rate {rate_index} has a malformed batch staging artifact")
+            staging_directories.append(staging)
+    for staging in staging_directories:
+        shutil.rmtree(staging)
+
+
+def _aggregate_counts(records: list[_VerifiedBatch]) -> dict[str, object]:
     failures = {name: 0 for name in _DECODERS}
     invalid = {name: 0 for name in _DECODERS}
     mismatch = {name: 0 for name in _DECODERS}
     shots = 0
-    for _, manifest in records:
+    for record in records:
+        manifest = record.manifest
         shots += int(manifest["shots"])
         for name in _DECODERS:
             failures[name] += int(manifest["failures"][name])
@@ -912,14 +988,50 @@ def _aggregate_counts(records: list[tuple[Path, dict[str, object]]]) -> dict[str
     return {"failures": failures, "invalid": invalid, "logical_mismatch": mismatch, "shots": shots}
 
 
+def _verify_batch_trajectory(
+    records: list[_VerifiedBatch],
+    *,
+    config: CampaignConfig,
+) -> None:
+    """Verify exact batch sizing and prohibit outcomes after the stopping rule fires."""
+    failures = {name: 0 for name in _DECODERS}
+    shots = 0
+    for record in records:
+        prior_stop_reason = test_stop_reason(
+            failures,
+            shots=shots,
+            target_failures=config.target_failures,
+            shot_cap=config.max_test_shots_per_point,
+            mode=config.test_stopping_mode,
+        )
+        if prior_stop_reason is not None:
+            raise ValueError("evaluation contains a batch after the configured stopping rule")
+        expected_shots = min(
+            config.test_batch_shots,
+            config.max_test_shots_per_point - shots,
+        )
+        if record.manifest["shots"] != expected_shots:
+            raise ValueError("evaluation batch does not have the configured batch size")
+        shots += int(record.manifest["shots"])
+        for decoder in _DECODERS:
+            failures[decoder] += int(record.manifest["failures"][decoder])
+
+
 def _load_rate_outcomes(
-    records: list[tuple[Path, dict[str, object]]],
+    records: list[_VerifiedBatch],
 ) -> dict[str, np.ndarray]:
     batches: dict[str, list[np.ndarray]] = {}
-    for path, manifest in records:
-        with np.load(path.parent / str(manifest["outcomes_path"]), allow_pickle=False) as archive:
-            for key in archive.files:
-                batches.setdefault(key, []).append(np.array(archive[key], copy=True))
+    for record in records:
+        outcomes_path = record.manifest_path.parent / str(record.manifest["outcomes_path"])
+        _require_plain_file(outcomes_path, label="evaluation batch outcomes")
+        arrays = _verify_outcome_archive(
+            outcomes_path,
+            manifest=record.manifest,
+            expected_indices=record.expected_indices,
+            expected_sha256=str(record.manifest["outcomes_sha256"]),
+        )
+        for key, array in arrays.items():
+            batches.setdefault(key, []).append(array)
     return {
         key: np.concatenate(values) if values else np.empty(0) for key, values in batches.items()
     }
@@ -946,12 +1058,15 @@ def _decoder_summary(outcomes: dict[str, np.ndarray], decoder: str) -> dict[str,
 
 
 def _aggregate_reliability(
-    records: list[tuple[Path, dict[str, object]]],
+    records: list[_VerifiedBatch],
     method: str,
 ) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
     for bin_index in range(10):
-        rows = [manifest["probability_reliability"][method][bin_index] for _, manifest in records]
+        rows = [
+            record.manifest["probability_reliability"][method][bin_index]
+            for record in records
+        ]
         count = sum(int(row["count"]) for row in rows)
         observed = sum(int(row["observed_errors"]) for row in rows)
         probability_sum = sum(float(row["probability_sum"]) for row in rows)
@@ -968,20 +1083,18 @@ def _aggregate_reliability(
     return result
 
 
-def _write_rate_summary(
-    output: Path,
+def _rate_summary_payload(
     *,
     rate_index: int,
     rate: float,
-    records: list[tuple[Path, dict[str, object]]],
+    records: list[_VerifiedBatch],
     status: str,
     stop_reason: str,
     fixed_sample: bool,
     source_sha256: dict[str, object],
-) -> tuple[Path, dict[str, object]]:
-    summary_path = output / f"rate-{rate_index:03d}" / "summary.json"
+) -> dict[str, object]:
     if not records:
-        payload: dict[str, object] = {
+        return {
             "comparison_status": {method: "not_fixed_sample" for method in _HYBRIDS},
             "decoders": {},
             "error_rate": rate,
@@ -992,8 +1105,6 @@ def _write_rate_summary(
             "status": status,
             "stop_reason": stop_reason,
         }
-        _write_json_atomic(summary_path, payload)
-        return summary_path, payload
 
     outcomes = _load_rate_outcomes(records)
     paired = {
@@ -1004,7 +1115,7 @@ def _write_rate_summary(
         for method in _HYBRIDS
     }
     decoders = {name: _decoder_summary(outcomes, name) for name in _DECODERS}
-    payload = {
+    return {
         "comparison_status": {
             method: paired_comparison_status(paired[method], fixed_sample=fixed_sample)
             for method in _HYBRIDS
@@ -1051,6 +1162,29 @@ def _write_rate_summary(
         "status": status,
         "stop_reason": stop_reason,
     }
+
+
+def _write_rate_summary(
+    output: Path,
+    *,
+    rate_index: int,
+    rate: float,
+    records: list[_VerifiedBatch],
+    status: str,
+    stop_reason: str,
+    fixed_sample: bool,
+    source_sha256: dict[str, object],
+) -> tuple[Path, dict[str, object]]:
+    summary_path = output / f"rate-{rate_index:03d}" / "summary.json"
+    payload = _rate_summary_payload(
+        rate_index=rate_index,
+        rate=rate,
+        records=records,
+        status=status,
+        stop_reason=stop_reason,
+        fixed_sample=fixed_sample,
+        source_sha256=source_sha256,
+    )
     _write_json_atomic(summary_path, payload)
     return summary_path, payload
 
@@ -1060,7 +1194,7 @@ def _write_progress(
     *,
     source_sha256: dict[str, object],
     rates: tuple[float, ...],
-    rate_records: dict[int, list[tuple[Path, dict[str, object]]]],
+    rate_records: dict[int, list[_VerifiedBatch]],
     status: str,
 ) -> None:
     rate_payload: dict[str, object] = {}
@@ -1069,7 +1203,8 @@ def _write_progress(
         counts = _aggregate_counts(records)
         rate_payload[str(rate_index)] = {
             "batch_manifests": {
-                str(path.relative_to(output)): sha256_file(path) for path, _ in records
+                str(record.manifest_path.relative_to(output)): record.manifest_sha256
+                for record in records
             },
             "error_rate": rate,
             **counts,
@@ -1089,32 +1224,74 @@ def _verify_existing_progress(
     *,
     source_sha256: dict[str, object],
     rates: tuple[float, ...],
-    rate_records: dict[int, list[tuple[Path, dict[str, object]]]],
-) -> None:
+    rate_records: dict[int, list[_VerifiedBatch]],
+    expected_status: str | None = None,
+    strict: bool = False,
+) -> str:
     progress_path = output / "progress.json"
+    if progress_path.is_symlink():
+        raise ValueError("evaluation progress must not be a symlink")
     if not progress_path.is_file():
         raise FileNotFoundError("evaluation resume requires progress.json")
     progress = json.loads(progress_path.read_text())
+    if not isinstance(progress, dict) or set(progress) != {"rates", "source_sha256", "status"}:
+        raise ValueError("evaluation progress schema is malformed")
     if progress.get("source_sha256") != source_sha256:
         raise ValueError("evaluation progress source provenance mismatch")
+    status = progress.get("status")
+    if status not in {"in_progress", "partial_deadline", "complete"}:
+        raise ValueError("evaluation progress status is invalid")
+    if expected_status is not None and status != expected_status:
+        raise ValueError("evaluation progress status disagrees with final manifest")
     previous_rates = progress.get("rates")
     if not isinstance(previous_rates, dict) or set(previous_rates) != {
         str(index) for index in range(len(rates))
     }:
         raise ValueError("evaluation progress rate coordinates are malformed")
+    trailing_batches = 0
     for rate_index in range(len(rates)):
         previous = previous_rates[str(rate_index)]
-        if not isinstance(previous, dict):
-            raise TypeError("evaluation progress rate entry must be an object")
-        declared = previous.get("batch_manifests")
-        if not isinstance(declared, dict):
-            raise TypeError("evaluation progress batch provenance must be an object")
-        discovered = {
-            str(path.relative_to(output)): sha256_file(path) for path, _ in rate_records[rate_index]
+        expected_rate_fields = {
+            "batch_manifests",
+            "error_rate",
+            "failures",
+            "invalid",
+            "logical_mismatch",
+            "shots",
         }
-        for relative, digest in declared.items():
-            if discovered.get(relative) != digest:
-                raise ValueError("evaluation progress batch-manifest provenance mismatch")
+        if not isinstance(previous, dict) or set(previous) != expected_rate_fields:
+            raise ValueError("evaluation progress rate entry is malformed")
+        if type(previous.get("error_rate")) is not float or previous["error_rate"] != rates[
+            rate_index
+        ]:
+            raise ValueError("evaluation progress error-rate coordinate mismatch")
+        declared = previous.get("batch_manifests")
+        if not isinstance(declared, dict) or any(
+            not isinstance(relative, str) or not isinstance(digest, str)
+            for relative, digest in declared.items()
+        ):
+            raise TypeError("evaluation progress batch provenance must be an object")
+        records = rate_records[rate_index]
+        discovered_items = [
+            (
+                str(record.manifest_path.relative_to(output)),
+                record.manifest_sha256,
+            )
+            for record in records
+        ]
+        declared_prefix = dict(discovered_items[: len(declared)])
+        if declared != declared_prefix:
+            raise ValueError("evaluation progress batch-manifest provenance mismatch")
+        trailing_batches += len(discovered_items) - len(declared)
+        if strict and len(discovered_items) != len(declared):
+            raise ValueError("evaluation progress batch-manifest provenance mismatch")
+        expected_counts = _aggregate_counts(records[: len(declared)])
+        for field in ("failures", "invalid", "logical_mismatch", "shots"):
+            if not _type_strict_equal(previous.get(field), expected_counts[field]):
+                raise ValueError("evaluation progress aggregate counts disagree with batches")
+    if trailing_batches > 1 or (trailing_batches and status != "in_progress"):
+        raise ValueError("evaluation progress has an invalid trailing batch set")
+    return str(status)
 
 
 def _rate_finalization_semantics(
@@ -1147,16 +1324,85 @@ def _rate_finalization_semantics(
     return rate_status, stop_reason, fixed_sample
 
 
+def _expected_terminal_status(
+    records: dict[int, list[_VerifiedBatch]],
+    *,
+    config: CampaignConfig,
+) -> str:
+    for rate_records in records.values():
+        counts = _aggregate_counts(rate_records)
+        if (
+            test_stop_reason(
+                counts["failures"],
+                shots=int(counts["shots"]),
+                target_failures=config.target_failures,
+                shot_cap=config.max_test_shots_per_point,
+                mode=config.test_stopping_mode,
+            )
+            is None
+        ):
+            return "partial_deadline"
+    return "complete"
+
+
+def _type_strict_equal(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(  # type: ignore[arg-type]
+            _type_strict_equal(actual[key], value)  # type: ignore[index]
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(  # type: ignore[arg-type]
+            _type_strict_equal(actual_value, expected_value)
+            for actual_value, expected_value in zip(actual, expected, strict=True)  # type: ignore[arg-type]
+        )
+    return bool(actual == expected)
+
+
+def _read_verified_json(path: Path, expected_sha256: object, *, label: str) -> object:
+    _require_plain_file(path, label=label)
+    if not isinstance(expected_sha256, str):
+        raise TypeError(f"{label} SHA-256 must be a string")
+    payload = path.read_bytes()
+    actual_sha256 = hashlib.sha256(payload).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"{label} SHA-256 mismatch: expected {expected_sha256}, found {actual_sha256}"
+        )
+    return json.loads(payload)
+
+
 def _verify_final_manifest(
     output: Path,
     *,
     source_sha256: dict[str, object],
     selected_calibration: dict[str, object],
     expected_rates: tuple[float, ...],
-    rate_records: dict[int, list[tuple[Path, dict[str, object]]]],
+    rate_records: dict[int, list[_VerifiedBatch]],
     config: CampaignConfig,
-) -> str:
-    manifest = json.loads((output / "manifest.json").read_text())
+    campaign_mode: str,
+    scientific_claims_permitted: bool,
+) -> VerifiedEvaluationPublication:
+    _require_plain_directory(output, label="evaluation output")
+    manifest_path = output / "manifest.json"
+    _require_plain_file(manifest_path, label="completed evaluation manifest")
+    manifest = json.loads(manifest_path.read_text())
+    expected_manifest_fields = {
+        "campaign_mode",
+        "complete",
+        "rates",
+        "selection_mode",
+        "selected_calibration",
+        "scientific_claims_permitted",
+        "source_sha256",
+        "status",
+        "target_failures_active",
+        "test_stopping_mode",
+    }
+    if not isinstance(manifest, dict) or set(manifest) != expected_manifest_fields:
+        raise ValueError("completed evaluation manifest schema is malformed")
     if manifest.get("complete") is not True or manifest.get("source_sha256") != source_sha256:
         raise ValueError("completed evaluation provenance mismatch")
     if manifest.get("selected_calibration") != selected_calibration:
@@ -1165,6 +1411,11 @@ def _verify_final_manifest(
         raise ValueError("completed evaluation selection mode mismatch")
     if manifest.get("test_stopping_mode") != config.test_stopping_mode:
         raise ValueError("completed evaluation test stopping mode mismatch")
+    if (
+        manifest.get("campaign_mode") != campaign_mode
+        or manifest.get("scientific_claims_permitted") is not scientific_claims_permitted
+    ):
+        raise ValueError("completed evaluation run-mode provenance mismatch")
     if manifest.get("target_failures_active") is not (
         config.test_stopping_mode == "adaptive"
     ):
@@ -1172,11 +1423,18 @@ def _verify_final_manifest(
     status = manifest.get("status")
     if status not in {"complete", "partial_deadline"}:
         raise ValueError("completed evaluation status is invalid")
+    expected_terminal_status = _expected_terminal_status(rate_records, config=config)
+    if status != expected_terminal_status:
+        if status == "partial_deadline":
+            raise ValueError("partial_deadline requires an unfinished rate")
+        raise ValueError("complete evaluation requires every rate to be complete")
     rates = manifest.get("rates")
     expected_rate_keys = {str(index) for index in range(len(expected_rates))}
     if not isinstance(rates, dict) or set(rates) != expected_rate_keys:
         raise ValueError("completed evaluation rate coordinates are malformed")
+    verified_summaries: list[dict[str, object]] = []
     for rate_index, error_rate in enumerate(expected_rates):
+        _verify_batch_trajectory(rate_records[rate_index], config=config)
         record = rates[str(rate_index)]
         expected_record_fields = {
             "error_rate",
@@ -1188,12 +1446,19 @@ def _verify_final_manifest(
         }
         if not isinstance(record, dict) or set(record) != expected_record_fields:
             raise ValueError("completed evaluation rate record is malformed")
+        if type(record.get("error_rate")) is not float or record["error_rate"] != error_rate:
+            raise ValueError("completed evaluation rate error-rate coordinate mismatch")
         expected_summary_relative = f"rate-{rate_index:03d}/summary.json"
         if record.get("summary_path") != expected_summary_relative:
             raise ValueError("completed evaluation summary path is unsafe or mismatched")
         summary_path = output / expected_summary_relative
-        verify_sha256(summary_path, str(record["summary_sha256"]), label="rate summary")
-        summary = json.loads(summary_path.read_text())
+        summary = _read_verified_json(
+            summary_path,
+            record.get("summary_sha256"),
+            label="rate summary",
+        )
+        if not isinstance(summary, dict):
+            raise TypeError("completed evaluation rate summary schema is malformed")
         if (
             summary.get("source_sha256") != source_sha256
             or summary.get("rate_index") != rate_index
@@ -1229,48 +1494,154 @@ def _verify_final_manifest(
             )
         ):
             raise ValueError("fixed evaluation rate must complete at the configured shot cap")
-        if status == "complete" and recorded_shots != decoded_shots:
+        if recorded_shots != decoded_shots:
             raise ValueError("completed evaluation rate shot count disagrees with outcomes")
-        if status == "partial_deadline" and recorded_shots > decoded_shots:
-            raise ValueError("deadline evaluation rate shot count exceeds available outcomes")
-        comparison_status = summary.get("comparison_status")
-        if not isinstance(comparison_status, dict) or set(comparison_status) != set(_HYBRIDS):
-            raise ValueError("completed evaluation comparison status is malformed")
         if "accuracy_compatible" in summary:
             raise ValueError("completed evaluation contains obsolete compatibility status")
-        if decoded_shots:
-            outcomes = _load_rate_outcomes(rate_records[rate_index])
-            expected_paired = {
-                method: paired_decoder_summary(
-                    outcomes["baseline_failure"],
-                    outcomes[f"{method}_failure"],
-                )
-                for method in _HYBRIDS
-            }
-            paired = summary.get("paired")
-            if not isinstance(paired, dict) or set(paired) != set(_HYBRIDS):
+        expected_summary = _rate_summary_payload(
+            rate_index=rate_index,
+            rate=error_rate,
+            records=rate_records[rate_index],
+            status=expected_rate_status,
+            stop_reason=expected_stop_reason,
+            fixed_sample=fixed_sample,
+            source_sha256=source_sha256,
+        )
+        expected_paired = expected_summary["paired"]
+        paired = summary.get("paired")
+        if not isinstance(paired, dict) or set(paired) != set(expected_paired):
+            raise ValueError("completed evaluation exact paired fields are malformed")
+        for method, expected_method in expected_paired.items():
+            if not isinstance(paired[method], dict) or set(paired[method]) != set(
+                expected_method
+            ):
                 raise ValueError("completed evaluation exact paired fields are malformed")
-            for method in _HYBRIDS:
-                if not isinstance(paired[method], dict) or set(paired[method]) != set(
-                    expected_paired[method]
-                ):
-                    raise ValueError("completed evaluation exact paired fields are malformed")
-                if paired[method] != expected_paired[method]:
-                    raise ValueError("completed evaluation paired summary disagrees with outcomes")
-            expected_comparison = {
-                method: paired_comparison_status(
-                    expected_paired[method],
-                    fixed_sample=fixed_sample,
-                )
-                for method in _HYBRIDS
-            }
-        else:
-            if summary.get("paired") != {}:
-                raise ValueError("empty evaluation rate has malformed paired summaries")
-            expected_comparison = {method: "not_fixed_sample" for method in _HYBRIDS}
-        if comparison_status != expected_comparison:
+            if not _type_strict_equal(paired[method], expected_method):
+                raise ValueError("completed evaluation paired summary disagrees with outcomes")
+        comparison_status = summary.get("comparison_status")
+        if not _type_strict_equal(
+            comparison_status,
+            expected_summary["comparison_status"],
+        ):
             raise ValueError("completed evaluation comparison status disagrees with outcomes")
-    return status
+        if not _type_strict_equal(summary, expected_summary):
+            raise ValueError("completed evaluation rate summary disagrees with verified outcomes")
+        verified_summaries.append(summary)
+    return VerifiedEvaluationPublication(
+        status=str(status),
+        summaries=tuple(verified_summaries),
+    )
+
+
+def verify_evaluation_publication(
+    output: Path,
+    *,
+    source_sha256: dict[str, object],
+    selected_calibration: dict[str, object],
+    expected_rates: tuple[float, ...],
+    expected_indices: dict[int, np.ndarray],
+    config: CampaignConfig,
+    campaign_mode: str,
+    scientific_claims_permitted: bool,
+) -> VerifiedEvaluationPublication:
+    """Verify final summaries against immutable batches and deterministic test shots."""
+    if set(expected_indices) != set(range(len(expected_rates))):
+        raise ValueError("evaluation test-shot coordinates are incomplete")
+    records = {
+        rate_index: _scan_batches(
+            output,
+            rate_index=rate_index,
+            rate=rate,
+            expected_indices=expected_indices[rate_index],
+            source_sha256=source_sha256,
+        )
+        for rate_index, rate in enumerate(expected_rates)
+    }
+    publication = _verify_final_manifest(
+        output,
+        source_sha256=source_sha256,
+        selected_calibration=selected_calibration,
+        expected_rates=expected_rates,
+        rate_records=records,
+        config=config,
+        campaign_mode=campaign_mode,
+        scientific_claims_permitted=scientific_claims_permitted,
+    )
+    _verify_existing_progress(
+        output,
+        source_sha256=source_sha256,
+        rates=expected_rates,
+        rate_records=records,
+        expected_status=publication.status,
+        strict=True,
+    )
+    return publication
+
+
+def _verify_orphan_rate_summaries(
+    output: Path,
+    *,
+    source_sha256: dict[str, object],
+    rates: tuple[float, ...],
+    records: dict[int, list[_VerifiedBatch]],
+    config: CampaignConfig,
+    progress_status: str,
+) -> None:
+    """Verify manifest-less derived summaries before resume may retire them."""
+    summary_paths = [
+        output / f"rate-{rate_index:03d}" / "summary.json"
+        for rate_index in range(len(rates))
+    ]
+    for path in summary_paths:
+        if path.is_symlink():
+            raise ValueError("orphan rate summary must not be a symlink")
+    existing_indices = [
+        rate_index for rate_index, path in enumerate(summary_paths) if path.exists()
+    ]
+    terminal_status = _expected_terminal_status(records, config=config)
+    if progress_status != "in_progress" and progress_status != terminal_status:
+        raise ValueError("evaluation progress status disagrees with orphan rate summaries")
+    if progress_status != "in_progress" and existing_indices != list(range(len(rates))):
+        raise ValueError("terminal progress requires the complete orphan summary set")
+    if not existing_indices:
+        return
+    if existing_indices != list(range(len(existing_indices))):
+        raise ValueError("orphan rate summaries are not a consecutive finalization prefix")
+    for rate_index in existing_indices:
+        path = summary_paths[rate_index]
+        _require_plain_file(path, label="orphan rate summary")
+        summary = json.loads(path.read_bytes())
+        counts = _aggregate_counts(records[rate_index])
+        rate_status, stop_reason, fixed_sample = _rate_finalization_semantics(
+            counts,
+            campaign_status=terminal_status,
+            config=config,
+        )
+        expected_summary = _rate_summary_payload(
+            rate_index=rate_index,
+            rate=rates[rate_index],
+            records=records[rate_index],
+            status=rate_status,
+            stop_reason=stop_reason,
+            fixed_sample=fixed_sample,
+            source_sha256=source_sha256,
+        )
+        if not _type_strict_equal(summary, expected_summary):
+            raise ValueError("orphan rate summary disagrees with verified outcomes")
+
+
+def _retire_partial_finalization(output: Path, *, rate_count: int) -> None:
+    """Remove verified derived finalization artifacts before collecting more shots."""
+    paths = [output / "manifest.json"]
+    for rate_index in range(rate_count):
+        paths.append(output / f"rate-{rate_index:03d}" / "summary.json")
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError("evaluation finalization artifacts must not be symlinks")
+        if path.exists() and not path.is_file():
+            raise ValueError("evaluation finalization artifacts must be regular files")
+    for path in paths:
+        path.unlink(missing_ok=True)
 
 
 def _finalize(
@@ -1279,9 +1650,11 @@ def _finalize(
     status: str,
     source_sha256: dict[str, object],
     rates: tuple[float, ...],
-    records: dict[int, list[tuple[Path, dict[str, object]]]],
+    records: dict[int, list[_VerifiedBatch]],
     config: CampaignConfig,
     selected_calibration: dict[str, object],
+    campaign_mode: str,
+    scientific_claims_permitted: bool,
 ) -> None:
     rate_results: dict[str, object] = {}
     for rate_index, rate in enumerate(rates):
@@ -1319,10 +1692,12 @@ def _finalize(
     _write_json_atomic(
         output / "manifest.json",
         {
+            "campaign_mode": campaign_mode,
             "complete": True,
             "rates": rate_results,
             "selection_mode": config.selection_mode,
             "selected_calibration": selected_calibration,
+            "scientific_claims_permitted": scientific_claims_permitted,
             "source_sha256": source_sha256,
             "status": status,
             "target_failures_active": config.test_stopping_mode == "adaptive",
@@ -1339,14 +1714,25 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         raise ValueError("deadline-monotonic must be finite")
     if args.campaign_mode not in {"canonical", "reduced_non_scientific"}:
         raise ValueError("evaluation campaign mode is invalid")
+    if args.out.is_symlink():
+        raise ValueError("evaluation output must not be a symlink")
     config = CampaignConfig.from_json(args.config)
     code_manifest_path = args.code / "code.json"
+    run_mode = verify_campaign_run_mode(
+        args.run_mode,
+        config_path=args.config,
+        code_manifest_path=code_manifest_path,
+        git_commit=_git_commit(),
+    )
+    if args.campaign_mode != run_mode["mode"]:
+        raise ValueError("evaluation campaign mode does not match verified run mode")
     _, hx, _, logical_x = load_campaign_code(args.code)
-    rates = _verify_selection(
+    selection = verify_selection_publication(
         args.selection,
         config_path=args.config,
         code_manifest_path=code_manifest_path,
     )
+    rates = selection.rates
     test_shards = load_verified_shards(
         args.test,
         role="test",
@@ -1359,8 +1745,14 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         config_path=args.config,
         code_manifest_path=code_manifest_path,
     )
-    _verify_shard_selection(test_shards, rates=rates, selection_path=args.selection)
-    _verify_shard_selection(calibration_shards, rates=rates, selection_path=args.selection)
+    verify_shard_selection_provenance(
+        test_shards,
+        selection=selection,
+    )
+    verify_shard_selection_provenance(
+        calibration_shards,
+        selection=selection,
+    )
     if {shard.seed for shard in test_shards.shards} & {
         shard.seed for shard in calibration_shards.shards
     }:
@@ -1388,7 +1780,8 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
     }
     source_sha256.update(
         {
-            "selection": sha256_file(args.selection),
+            "run_mode": sha256_file(args.run_mode),
+            "selection": selection.selection_sha256,
             "test_manifest": test_shards.manifest_sha256,
             "test_shard_manifests": test_shards.shard_manifest_sha256,
         }
@@ -1422,27 +1815,55 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
             rate=rate,
             expected_indices=rate_indices[index],
             source_sha256=source_sha256,
+            allow_staging=args.resume,
         )
         for index, rate in enumerate(rates)
     }
+    for rate_records in records.values():
+        _verify_batch_trajectory(rate_records, config=config)
     if args.resume:
-        _verify_existing_progress(
+        final_manifest_path = args.out / "manifest.json"
+        if final_manifest_path.is_symlink():
+            raise ValueError("completed evaluation manifest must not be a symlink")
+        if final_manifest_path.exists() and not final_manifest_path.is_file():
+            raise ValueError("completed evaluation manifest must be a regular file")
+        has_final_manifest = final_manifest_path.is_file()
+        progress_status = _verify_existing_progress(
             args.out,
             source_sha256=source_sha256,
             rates=rates,
             rate_records=records,
+            strict=has_final_manifest,
         )
-        if (args.out / "manifest.json").is_file():
-            final_status = _verify_final_manifest(
+        final_publication: VerifiedEvaluationPublication | None = None
+        if has_final_manifest:
+            final_publication = _verify_final_manifest(
                 args.out,
                 source_sha256=source_sha256,
                 selected_calibration=selected_calibration,
                 expected_rates=rates,
                 rate_records=records,
                 config=config,
+                campaign_mode=str(run_mode["mode"]),
+                scientific_claims_permitted=bool(
+                    run_mode["scientific_claims_permitted"]
+                ),
             )
-            if final_status == "complete":
-                return
+            if final_publication.status != progress_status:
+                raise ValueError("evaluation progress status disagrees with final manifest")
+        else:
+            _verify_orphan_rate_summaries(
+                args.out,
+                source_sha256=source_sha256,
+                rates=rates,
+                records=records,
+                config=config,
+                progress_status=progress_status,
+            )
+        _discard_batch_staging(args.out, rate_count=len(rates))
+        if final_publication is not None and final_publication.status == "complete":
+            return
+        _retire_partial_finalization(args.out, rate_count=len(rates))
         _write_progress(
             args.out,
             source_sha256=source_sha256,
@@ -1520,7 +1941,17 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
             os.replace(staging_dir, batch_dir)
             outcomes_path = batch_dir / "outcomes.npz"
             manifest_path = batch_dir / "manifest.json"
-            records[rate_index].append((manifest_path, json.loads(manifest_path.read_text())))
+            records[rate_index].append(
+                _verify_batch_manifest(
+                    manifest_path,
+                    rate_index=rate_index,
+                    rate=rate,
+                    batch_index=batch_index,
+                    expected_start=start,
+                    expected_indices=rate_indices[rate_index],
+                    source_sha256=source_sha256,
+                )
+            )
             counts = _aggregate_counts(records[rate_index])
             stop_reason = test_stop_reason(
                 counts["failures"],
@@ -1549,6 +1980,8 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
             records=records,
             config=config,
             selected_calibration=selected_calibration,
+            campaign_mode=args.campaign_mode,
+            scientific_claims_permitted=bool(run_mode["scientific_claims_permitted"]),
         )
         return
     _finalize(
@@ -1559,4 +1992,6 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         records=records,
         config=config,
         selected_calibration=selected_calibration,
+        campaign_mode=args.campaign_mode,
+        scientific_claims_permitted=bool(run_mode["scientific_claims_permitted"]),
     )

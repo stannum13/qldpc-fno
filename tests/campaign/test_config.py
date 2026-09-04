@@ -115,6 +115,22 @@ def test_config_rejects_invalid_campaign_modes(
         CampaignConfig.from_json(path)
 
 
+@pytest.mark.parametrize("field", ["selection_mode", "test_stopping_mode"])
+@pytest.mark.parametrize("value", [None, True, 1, [], {}])
+def test_config_rejects_non_string_campaign_modes(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    payload = _canonical_payload()
+    payload[field] = value
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match=rf"{field} must be"):
+        CampaignConfig.from_json(path)
+
+
 def test_disconfirming_config_is_strict_and_fixed() -> None:
     config = CampaignConfig.from_json(Path("configs/accuracy_disconfirm_p0375.json"))
     assert config.noise_grid == (0.0375,)

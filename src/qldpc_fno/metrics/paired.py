@@ -41,8 +41,6 @@ def _wilson_summary(outcomes: np.ndarray) -> dict[str, object]:
 def paired_decoder_summary(
     baseline_failures: np.ndarray,
     hybrid_failures: np.ndarray,
-    *,
-    alpha: float = 0.05,
 ) -> dict[str, object]:
     """Summarize paired block failures with exact discordant-pair inference."""
     baseline = _failure_outcomes(baseline_failures, name="baseline")
@@ -51,9 +49,6 @@ def paired_decoder_summary(
         raise ValueError("baseline and hybrid outcomes must have equal shape")
     if baseline.size == 0:
         raise ValueError("paired outcomes must contain at least one shot")
-    if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
-        raise ValueError("alpha must be strictly between zero and one")
-
     both_succeed = int(np.count_nonzero(~baseline & ~hybrid))
     baseline_only = int(np.count_nonzero(baseline & ~hybrid))
     hybrid_only = int(np.count_nonzero(~baseline & hybrid))
@@ -66,7 +61,7 @@ def paired_decoder_summary(
         harm = float(binomtest(hybrid_only, discordant, 0.5, alternative="greater").pvalue)
         benefit = float(binomtest(hybrid_only, discordant, 0.5, alternative="less").pvalue)
         interval = binomtest(hybrid_only, discordant).proportion_ci(
-            confidence_level=1.0 - alpha,
+            confidence_level=0.95,
             method="exact",
         )
         harm_share: float | None = hybrid_only / discordant
@@ -99,13 +94,10 @@ def paired_comparison_status(
     paired_summary: Mapping[str, object],
     *,
     fixed_sample: bool,
-    alpha: float = 0.05,
 ) -> str:
     """Classify exact paired comparison evidence for a fixed sample."""
     if not isinstance(fixed_sample, (bool, np.bool_)):
         raise TypeError("fixed_sample must be boolean")
-    if not math.isfinite(alpha) or not 0.0 < alpha < 1.0:
-        raise ValueError("alpha must be strictly between zero and one")
     if not isinstance(paired_summary, Mapping):
         raise TypeError("paired_summary must be a mapping")
 
@@ -145,20 +137,26 @@ def paired_comparison_status(
         raise ValueError("paired summary counts must add up to shots")
     if discordant != baseline_only + hybrid_only:
         raise ValueError("discordant_pairs must equal the discordant counts")
-    try:
-        pvalue = float(pvalue)
-    except (TypeError, ValueError) as error:
-        raise ValueError("McNemar exact p-value must be finite and in [0, 1]") from error
+    if isinstance(pvalue, (bool, np.bool_)) or not isinstance(
+        pvalue, (int, float, np.integer, np.floating)
+    ):
+        raise TypeError("McNemar exact p-value must be numeric")
+    pvalue = float(pvalue)
     if not math.isfinite(pvalue) or not 0.0 <= pvalue <= 1.0:
         raise ValueError("McNemar exact p-value must be finite and in [0, 1]")
+    expected_pvalue = (
+        float(binomtest(hybrid_only, discordant, 0.5).pvalue) if discordant else 1.0
+    )
+    if pvalue != expected_pvalue:
+        raise ValueError("McNemar exact p-value does not match discordant counts")
 
     if not fixed_sample:
         return "not_fixed_sample"
     if discordant == 0:
         return "no_discordances"
-    if pvalue <= alpha and hybrid_only > baseline_only:
+    if expected_pvalue <= 0.05 and hybrid_only > baseline_only:
         return "harm_detected"
-    if pvalue <= alpha and baseline_only > hybrid_only:
+    if expected_pvalue <= 0.05 and baseline_only > hybrid_only:
         return "benefit_detected"
     return "inconclusive"
 

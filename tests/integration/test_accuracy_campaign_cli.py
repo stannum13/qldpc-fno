@@ -148,6 +148,9 @@ def test_reduced_campaign_completes_refuses_overwrite_and_resumes_verified_stage
     assert "| Decoder | Shots | Failures |" in markdown
     assert "| Hybrid | Paired comparison status | Delta |" in markdown
     assert "Reproducibility and provenance" in markdown
+    assert "Selected noise rates" in markdown
+    assert "Selection and calibration provenance" in markdown
+    assert "Pilot-selected" not in markdown
     assert "NON-SCIENTIFIC REDUCED CAMPAIGN" in markdown
 
     completion_paths = [output / stage / "_COMPLETE.json" for stage in _STAGES]

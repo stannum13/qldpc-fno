@@ -73,7 +73,7 @@ study.
 flowchart LR
     A[Published lifted-product seed] --> B[Validated Hx and Hz]
     B --> C[Independent-Z Stim DEM]
-    C --> D[Pilot noise grid]
+    C --> D[Selection publication: pilot or fixed]
     D --> E[Selected noise points]
     E --> F[Train / calibration / test shards]
     F --> G[Uniform-prior BP-LSD teacher]
@@ -279,6 +279,11 @@ store layout described in [Reproducibility](docs/reproducibility.md). The option
 source-lock step records bibliography/software references for manual reporting;
 the runner itself does not publish or verify `source-lock.json`.
 
+The final evaluator additionally requires the verified `inputs/run-mode.json`
+published for the exact config, code manifest, Git commit, campaign mode, and
+execution controls. The placeholder below must point to that immutable runner
+input; the preceding manual commands do not synthesize a run-mode publication.
+
 ```bash
 uv run python experiments/00_lock_sources.py \
   --out artifacts/accuracy-campaign/source-lock.json
@@ -330,6 +335,7 @@ uv run python experiments/14_generate_campaign_shards.py \
 uv run python experiments/17_evaluate_hybrid_decoders.py \
   --config configs/accuracy_campaign.json \
   --code artifacts/accuracy-campaign/code \
+  --run-mode /path/to/verified-runner-workspace/inputs/run-mode.json \
   --selection artifacts/accuracy-campaign/pilot/selection.json \
   --test artifacts/accuracy-campaign/test \
   --model artifacts/accuracy-campaign/model \
@@ -369,10 +375,11 @@ held-out paired evaluation is:
 6. **Timing:** report the measured batch and decoder components only after the
    accuracy comparison is valid; do not generalize one machine's timing.
 
-The pilot is a preselection stage, not the final comparison. It reports syndrome
-validity and counts either an invalid correction or an observable mismatch as a
-block failure. Pilot rows should still be used only to select a noise range, not
-as final comparative evidence.
+In pilot mode, pilot rows are a preselection stage, not the final comparison. They
+report syndrome validity and count either an invalid correction or an observable
+mismatch as a block failure; they select a noise range and are not final
+comparative evidence. In fixed mode, the predeclared selection is provenance only
+and contains no pilot observations or shards.
 
 See [Experiment methodology](docs/experiment-methodology.md) for the exact model,
 decoder settings, data roles, and calibration rule.

@@ -62,9 +62,13 @@ and code provenance, role, payload schema, rate coordinates, and deterministical
 derived seeds. Git identity is first enforced by training and is rechecked when
 the trained model is calibrated; smoke and shard publication do not enforce it.
 
-Pilot and shard-role publishers write into private staging directories and expose
-the final directory only after `manifest.json` is complete. A role directory with
-a valid completion manifest is an immutable publication.
+Selection and shard-role publishers write into private staging directories and
+expose the final directory only after `manifest.json` is complete. A role
+directory with a valid completion manifest is an immutable publication.
+Fixed selections are verified as empty, observation-free publications whose
+rates exactly equal the committed grid. Pilot selections additionally verify
+every pilot shard and configured shot/rate coordinate, replay baseline failures
+from those samples, and recompute the deterministic selected noise points.
 
 ## Smoke artifact tree
 
@@ -95,8 +99,8 @@ configured Cloud Storage prefix) publishes:
 | `inputs/config.json` | Immutable effective campaign configuration |
 | `inputs/run-mode.json` | Git commit, config/code hashes, exact controls, execution identity, mode, and permitted claims |
 | `inputs/code/` | Canonical `Hx`/`Hz`, source metadata, validation, and hashes |
-| `pilot/selection.json` | Pilot rows and deterministic noise-point selection |
-| `pilot/manifest.json` | Pilot completion and shard hashes |
+| `pilot/selection.json` | Pilot-derived or predeclared fixed noise-point selection |
+| `pilot/manifest.json` | Selection completion and optional pilot shard hashes |
 | `shards/{train,calibration,test}/manifest.json` | Immutable role completion manifest |
 | `shards/{role}/rate-*/shard-*/samples.json` | Per-shard identity, seed, rate, dimensions, and file hashes |
 | `training/resume.json` | Current teacher/training restart state |
@@ -120,7 +124,19 @@ configured Cloud Storage prefix) publishes:
 
 Evaluation verifies the selection, test, model, teacher, checkpoint, and
 calibration chain before decoding. Existing batches are semantically revalidated
-on `--resume` without loading all prior outcome arrays at once.
+on `--resume` without loading all prior outcome arrays at once. A verified
+deadline-partial manifest and its derived rate summaries are retired before new
+shots are collected; immutable batches remain. Manifest-less summaries from an
+interrupted finalization are reconstructed and verified before that same
+retirement, and tampered summaries are preserved and rejected.
+
+Final summary generation derives campaign mode and claim permission from the
+verified `inputs/run-mode.json`. It rechecks every evaluation batch and outcome
+hash, deterministic test-shot coordinate, stopping decision, marginal decoder
+metric, paired statistic, and comparison status. Rehashing an edited rate summary
+inside the mutable evaluation manifest therefore cannot make it reportable.
+Verification hashes the exact bytes it parses and requires the terminal progress
+index to match every batch-manifest digest exactly.
 
 The store prefix `training/` materializes as the runner's local `model/` working
 directory. This is intentional; do not construct manual stage commands from the
@@ -133,7 +149,7 @@ The individual commands in the README use a different local layout:
 | Path | Meaning |
 | --- | --- |
 | `source-lock.json` | Optional bibliography/software source lock |
-| `code/`, `pilot/` | Validated code and pilot selection |
+| `code/`, `pilot/` | Validated code and noise-point selection |
 | `{train,calibration,test}/` | Role shards at the campaign root |
 | `model/` | Teacher cache, checkpoints, and frozen model |
 | `calibration/{progress,grid,selected}.json` | Calibration restart, grid, and selections beside calibration-role shards |
@@ -253,10 +269,16 @@ does not match. Preserve the exact checkout used to start a long run.
 The first evaluator invocation creates the output publication. To bound a worker
 allocation, stop after a fixed number of new batches:
 
+`--run-mode` must name the immutable `inputs/run-mode.json` published for the
+exact config, code manifest, Git commit, campaign mode, and execution controls.
+The manual preparation commands do not create this file; use one materialized
+from the matching campaign-runner input publication.
+
 ```bash
 uv run python experiments/17_evaluate_hybrid_decoders.py \
   --config configs/accuracy_campaign.json \
   --code artifacts/accuracy-campaign/code \
+  --run-mode /path/to/verified-runner-workspace/inputs/run-mode.json \
   --selection artifacts/accuracy-campaign/pilot/selection.json \
   --test artifacts/accuracy-campaign/test \
   --model artifacts/accuracy-campaign/model \
@@ -277,8 +299,8 @@ continue until scientific stopping or an externally supplied deadline.
 
 - **Smoke:** there is no stage-level resume. Keep the failed directory for
   diagnosis and choose a fresh output root for another run.
-- **Pilot or role generation:** incomplete staging is not a published role. Rerun
-  with the intended final role path after diagnosing the failure.
+- **Selection or role generation:** incomplete staging is not a published role.
+  Rerun with the intended final role path after diagnosing the failure.
 - **Training:** inspect `model/resume.json`; restart only with `--resume`. Existing
   teacher chunks and the checkpoint referenced by `resume.json` are verified
   before reuse.

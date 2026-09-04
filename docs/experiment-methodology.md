@@ -39,7 +39,7 @@ The Stim DEM contains one independent Z-error mechanism per physical qubit. At a
 noise point `p`, every mechanism has probability `p`; its targets are the affected
 X-check detectors and logical-X observables. Syndrome measurement is perfect.
 
-## Pilot selection and data roles
+## Noise-point selection and data roles
 
 The committed campaign grid is
 `[0.003, 0.005, 0.008, 0.012, 0.018, 0.025]`, with 256 pilot shots at each point.
@@ -228,7 +228,8 @@ claim.
 
 - Results apply to one code, one error sector, and an independent code-capacity
   noise family.
-- Pilot adaptation chooses the studied noise range from baseline observations.
+- When pilot mode is used, pilot adaptation chooses the studied noise range from
+  baseline observations.
 - BP-LSD teacher labels are one valid representative, not a unique ground truth
   correction.
 - Calibration screens all checkpoints/parameters and decodes shortlisted

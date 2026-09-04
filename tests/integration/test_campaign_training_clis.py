@@ -26,7 +26,7 @@ def _write_config(path: Path) -> None:
         {
             "campaign_seed": 20260901,
             "noise_grid": [0.003, 0.005],
-            "selection_mode": "pilot",
+            "selection_mode": "fixed",
             "pilot_shots_per_point": 1,
             "train_shots_cap": 16,
             "calibration_shots_cap": 8,
@@ -53,10 +53,10 @@ def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
     write_canonical_json(
         path,
         {
-            "evidence_role": "selection_only_not_held_out",
+            "evidence_role": "predeclared_selection_not_evidence",
             "pilot_rows": [],
             "selected_noise_points": [0.003, 0.005],
-            "selection_mode": "pilot",
+            "selection_mode": "fixed",
             "source_sha256": {
                 "code_manifest": sha256_file(code_manifest),
                 "config": sha256_file(config),
@@ -65,7 +65,12 @@ def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
     )
     write_canonical_json(
         path.parent / "manifest.json",
-        {"complete": True, "role": "pilot", "selection_sha256": sha256_file(path)},
+        {
+            "complete": True,
+            "role": "pilot",
+            "selection_sha256": sha256_file(path),
+            "shards": {},
+        },
     )
 
 

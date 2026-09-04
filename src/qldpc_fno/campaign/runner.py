@@ -20,8 +20,17 @@ from time import monotonic
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
 from qldpc_fno.campaign.config import CampaignConfig
-from qldpc_fno.campaign.inputs import CampaignInputRequest, prepare_campaign_inputs
+from qldpc_fno.campaign.evaluation import verify_evaluation_publication
+from qldpc_fno.campaign.inputs import (
+    CampaignInputRequest,
+    prepare_campaign_inputs,
+    verify_campaign_run_mode,
+)
 from qldpc_fno.campaign.local import resolve_git_commit
+from qldpc_fno.campaign.selection import (
+    verify_selection_publication,
+    verify_shard_selection_provenance,
+)
 from qldpc_fno.campaign.shard_io import load_campaign_code, load_verified_shards
 from qldpc_fno.campaign.storage import (
     ArtifactStore,
@@ -312,27 +321,28 @@ class CampaignRunner:
         return CampaignStatus.COMPLETE
 
 
-def _verified_pilot(campaign: Path) -> dict[str, object] | None:
+def _verified_pilot(
+    campaign: Path,
+    *,
+    config_path: Path,
+    code_path: Path,
+) -> dict[str, object] | None:
     pilot = campaign / "pilot"
     manifest_path = pilot / "manifest.json"
     selection_path = pilot / "selection.json"
     if not manifest_path.is_file() or not selection_path.is_file():
         return None
-    manifest_path = _safe_artifact_path(pilot, "manifest.json", label="pilot manifest")
-    manifest = json.loads(manifest_path.read_text())
-    if manifest.get("complete") is not True or manifest.get("role") != "pilot":
-        raise ValueError("pilot manifest is not a completed pilot publication")
-    selection_path = _safe_artifact_path(pilot, "selection.json", label="pilot selection")
-    verify_sha256(selection_path, str(manifest["selection_sha256"]), label="pilot selection")
-    selection = json.loads(selection_path.read_text())
-    rates = selection.get("selected_noise_points")
-    if not isinstance(rates, list) or any(type(rate) not in (int, float) for rate in rates):
-        raise ValueError("pilot selection noise points are malformed")
+    verified = verify_selection_publication(
+        selection_path,
+        config_path=config_path,
+        code_manifest_path=code_path / "code.json",
+    )
     return {
-        "evidence_role": "selection_only_not_held_out",
-        "manifest_sha256": sha256_file(manifest_path),
-        "selected_noise_points": rates,
-        "selection_sha256": sha256_file(selection_path),
+        "evidence_role": verified.evidence_role,
+        "manifest_sha256": verified.manifest_sha256,
+        "selected_noise_points": list(verified.rates),
+        "selection_mode": verified.selection_mode,
+        "selection_sha256": verified.selection_sha256,
     }
 
 
@@ -385,71 +395,41 @@ def _verified_calibration(campaign: Path) -> dict[str, object] | None:
     }
 
 
-def _verified_evaluation(campaign: Path) -> tuple[str | None, list[dict[str, object]]]:
-    evaluation = campaign / "evaluation"
-    manifest_path = evaluation / "manifest.json"
-    if not manifest_path.is_file():
-        return None, []
-    manifest_path = _safe_artifact_path(evaluation, "manifest.json", label="evaluation manifest")
-    manifest = json.loads(manifest_path.read_text())
-    status = manifest.get("status")
-    if manifest.get("complete") is not True or status not in {
-        "complete",
-        "partial_deadline",
-    }:
-        raise ValueError("evaluation manifest is not a valid final publication")
-    sources = manifest.get("source_sha256")
-    rates = manifest.get("rates")
-    if not isinstance(sources, dict) or not isinstance(rates, dict):
-        raise TypeError("evaluation provenance or rate table is malformed")
-    results: list[dict[str, object]] = []
-    for raw_index in sorted(rates, key=int):
-        record = rates[raw_index]
-        if not isinstance(record, dict):
-            raise TypeError("evaluation rate record must be an object")
-        summary_path = _safe_artifact_path(
-            evaluation,
-            record.get("summary_path"),
-            label="evaluation summary path",
-        )
-        verify_sha256(
-            summary_path,
-            str(record["summary_sha256"]),
-            label=f"evaluation rate {raw_index} summary",
-        )
-        summary = json.loads(summary_path.read_text())
-        if summary.get("source_sha256") != sources:
-            raise ValueError("evaluation rate source provenance mismatch")
-        for field in ("error_rate", "shots", "status", "stop_reason"):
-            if summary.get(field) != record.get(field):
-                raise ValueError(f"evaluation rate summary has mismatched {field}")
-        results.append(summary)
-    return str(status), results
-
-
 def _verify_scientific_chain(
     campaign: Path,
     *,
     config_path: Path,
     code_path: Path,
     git_commit: str,
-) -> None:
+) -> tuple[dict[str, object], str, list[dict[str, object]]]:
     """Cross-check every scientific role against the actual campaign inputs."""
-    CampaignConfig.from_json(config_path)
+    config = CampaignConfig.from_json(config_path)
     load_campaign_code(code_path)
     code_manifest_path = code_path / "code.json"
     config_sha256 = sha256_file(config_path)
     code_sha256 = sha256_file(code_manifest_path)
-    selection_path = _safe_artifact_path(campaign, "pilot/selection.json", label="pilot selection")
-    selection = json.loads(selection_path.read_text())
-    if selection.get("source_sha256") != {
-        "code_manifest": code_sha256,
-        "config": config_sha256,
-    }:
-        raise ValueError("pilot selection provenance does not match config and code")
-    rates = tuple(float(rate) for rate in selection.get("selected_noise_points", ()))
-    if not rates:
-        raise ValueError("pilot selection must contain noise points")
+    run_mode_path = _safe_artifact_path(
+        campaign,
+        "inputs/run-mode.json",
+        label="campaign run-mode manifest",
+    )
+    run_mode = verify_campaign_run_mode(
+        run_mode_path,
+        config_path=config_path,
+        code_manifest_path=code_manifest_path,
+        git_commit=git_commit,
+    )
+    selection_path = _safe_artifact_path(
+        campaign,
+        "pilot/selection.json",
+        label="noise-point selection",
+    )
+    selection = verify_selection_publication(
+        selection_path,
+        config_path=config_path,
+        code_manifest_path=code_manifest_path,
+    )
+    rates = selection.rates
 
     shards = {
         role: load_verified_shards(
@@ -469,12 +449,10 @@ def _verify_scientific_chain(
     ):
         raise ValueError("training, calibration, and test seeds are not disjoint")
     for role in ("train", "calibration", "test"):
-        rate_map = {shard.rate_index: shard.error_rate for shard in shards[role].shards}
-        if (
-            set(rate_map) != set(range(len(rates)))
-            or tuple(rate_map[index] for index in range(len(rates))) != rates
-        ):
-            raise ValueError(f"{role} shard rates do not match pilot selection")
+        verify_shard_selection_provenance(
+            shards[role],
+            selection=selection,
+        )
 
     model_path = _safe_artifact_path(campaign, "model/model.json", label="model manifest")
     model = json.loads(model_path.read_text())
@@ -509,6 +487,23 @@ def _verify_scientific_chain(
     ):
         raise ValueError("calibration provenance does not match calibration-only inputs")
 
+    selected_rows = selected.get("selected")
+    if not isinstance(selected_rows, dict) or set(selected_rows) != {
+        "soft_prior",
+        "residual",
+    }:
+        raise ValueError("calibration selection methods are malformed")
+    selected_calibration: dict[str, object] = {}
+    for method in ("soft_prior", "residual"):
+        row = selected_rows[method]
+        if not isinstance(row, dict):
+            raise TypeError("calibration selected method must be an object")
+        selected_calibration[method] = {
+            "model_checkpoint": row.get("model_checkpoint"),
+            "model_epoch": row.get("model_epoch"),
+            "parameters": row.get("parameters"),
+        }
+
     evaluation_path = _safe_artifact_path(
         campaign, "evaluation/manifest.json", label="evaluation manifest"
     )
@@ -521,7 +516,8 @@ def _verify_scientific_chain(
         "code_manifest": code_sha256,
         "config": config_sha256,
         "model_manifest": sha256_file(model_path),
-        "selection": sha256_file(selection_path),
+        "run_mode": sha256_file(run_mode_path),
+        "selection": selection.selection_sha256,
         "test_manifest": shards["test"].manifest_sha256,
         "test_shard_manifests": shards["test"].shard_manifest_sha256,
     }
@@ -534,7 +530,21 @@ def _verify_scientific_chain(
         or tuple(float(evaluation_rates[str(index)]["error_rate"]) for index in range(len(rates)))
         != rates
     ):
-        raise ValueError("evaluation rates do not match the pilot-selected test rates")
+        raise ValueError("evaluation rates do not match the selected test rates")
+    verified_evaluation = verify_evaluation_publication(
+        campaign / "evaluation",
+        source_sha256=expected_evaluation_sources,
+        selected_calibration=selected_calibration,
+        expected_rates=rates,
+        expected_indices={
+            rate_index: shards["test"].indices_for_rate(rate_index)
+            for rate_index in range(len(rates))
+        },
+        config=config,
+        campaign_mode=str(run_mode["mode"]),
+        scientific_claims_permitted=bool(run_mode["scientific_claims_permitted"]),
+    )
+    return run_mode, verified_evaluation.status, list(verified_evaluation.summaries)
 
 
 def _summary_markdown(results: dict[str, object]) -> str:
@@ -582,7 +592,7 @@ def _summary_markdown(results: dict[str, object]) -> str:
             "## Reproducibility and provenance",
             "",
             f"- Git commit: `{results.get('git_commit', 'unavailable')}`",
-            f"- Pilot-selected noise rates: `{selected_rates}`",
+            f"- Selected noise rates: `{selected_rates}`",
             f"- Model manifest SHA-256: `{model_manifest or 'unavailable'}`",
             f"- Model SHA-256: `{model_sha256 or 'unavailable'}`",
             f"- Calibration grid SHA-256: `{calibration_grid or 'unavailable'}`",
@@ -658,11 +668,12 @@ def _summary_markdown(results: dict[str, object]) -> str:
                     "",
                     (
                         "| Hybrid | Paired comparison status | Delta | Baseline-only failures | "
-                        "Hybrid-only failures | Discordant pairs | exact McNemar two-sided "
+                        "Hybrid-only failures | Both succeed | Both fail | Discordant pairs | "
+                        "exact McNemar two-sided p-value | exact harm p-value | exact benefit "
                         "p-value | Hybrid-harm share conditional on discordance | 95% "
                         "Clopper-Pearson interval conditional on discordance |"
                     ),
-                    "|---|---|---:|---:|---:|---:|---:|---:|---|",
+                    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
                 ]
             )
             paired = row.get("paired", {})
@@ -685,8 +696,12 @@ def _summary_markdown(results: dict[str, object]) -> str:
                         f"{metrics.get('block_error_delta')} | "
                         f"{metrics.get('baseline_only_failure')} | "
                         f"{metrics.get('hybrid_only_failure')} | "
+                        f"{metrics.get('both_succeed')} | "
+                        f"{metrics.get('both_fail')} | "
                         f"{metrics.get('discordant_pairs')} | "
                         f"{metrics.get('mcnemar_exact_pvalue_two_sided')} | "
+                        f"{metrics.get('mcnemar_exact_pvalue_harm')} | "
+                        f"{metrics.get('mcnemar_exact_pvalue_benefit')} | "
                         f"{metrics.get('hybrid_harm_share_given_discordance')} | {interval} |"
                     )
             if "not_fixed_sample" in comparison_status.values():
@@ -733,11 +748,12 @@ def _summary_markdown(results: dict[str, object]) -> str:
     lines.extend(
         [
             "",
-            "## Calibration and pilot provenance",
+            "## Selection and calibration provenance",
             "",
             (
-                "Calibration is not held-out evidence. Pilot rows select operating points only; "
-                "calibration rows tune priors only. Neither is included in the held-out table."
+                "Calibration is not held-out evidence. The selection publication identifies "
+                "operating points only; calibration rows tune priors only. Neither is included "
+                "in the held-out table."
             ),
             "",
             "No timing-only winner or speed claim is made by this accuracy campaign.",
@@ -756,44 +772,91 @@ def write_campaign_summary(
     early_stop_reasons: Sequence[str],
     config_path: Path | None = None,
     code_path: Path | None = None,
-    campaign_mode: str = "canonical",
-    scientific_claims_permitted: bool = True,
+    campaign_mode: str | None = None,
+    scientific_claims_permitted: bool | None = None,
 ) -> dict[str, object]:
     """Write verified JSON/Markdown summaries without mixing scientific roles."""
     if not git_commit:
         raise ValueError("summary Git commit must be non-empty")
-    if campaign_mode not in {"canonical", "reduced_non_scientific"}:
+    if campaign_mode is not None and campaign_mode not in {
+        "canonical",
+        "reduced_non_scientific",
+    }:
         raise ValueError("summary campaign mode is invalid")
-    if type(scientific_claims_permitted) is not bool:
+    if scientific_claims_permitted is not None and type(scientific_claims_permitted) is not bool:
         raise TypeError("scientific_claims_permitted must be a boolean")
-    if campaign_mode == "reduced_non_scientific" and scientific_claims_permitted:
+    if campaign_mode == "reduced_non_scientific" and scientific_claims_permitted is True:
         raise ValueError("reduced campaign summaries cannot permit scientific claims")
     if output.is_symlink():
         raise ValueError("campaign summary output must not be a symlink")
     if output.exists() and any(output.iterdir()):
         raise FileExistsError(f"refusing to overwrite campaign summary: {output}")
-    output.mkdir(parents=True, exist_ok=True)
-    pilot = _verified_pilot(campaign)
-    model = _verified_model(campaign)
-    calibration = _verified_calibration(campaign)
-    evaluation_status, held_out = _verified_evaluation(campaign)
-    if evaluation_status is not None:
-        if config_path is None or code_path is None:
+
+    evaluation_exists = (campaign / "evaluation/manifest.json").is_file()
+    pilot_manifest_exists = (campaign / "pilot/manifest.json").is_file()
+    selection_exists = (campaign / "pilot/selection.json").is_file()
+    if pilot_manifest_exists is not selection_exists:
+        raise ValueError("selection publication is incomplete")
+    pilot_exists = pilot_manifest_exists and selection_exists
+    if (evaluation_exists or pilot_exists) and (config_path is None or code_path is None):
+        if evaluation_exists:
             raise ValueError(
                 "held-out summary provenance verification requires config_path and code_path"
             )
-        _verify_scientific_chain(
+        raise ValueError("selection summary verification requires config_path and code_path")
+    if (config_path is None) is not (code_path is None):
+        raise ValueError("summary provenance requires both config_path and code_path")
+
+    verified_mode: dict[str, object] | None = None
+    evaluation_status: str | None = None
+    held_out: list[dict[str, object]] = []
+    if evaluation_exists:
+        assert config_path is not None and code_path is not None
+        verified_mode, evaluation_status, held_out = _verify_scientific_chain(
             campaign,
             config_path=config_path,
             code_path=code_path,
             git_commit=git_commit,
         )
+    elif config_path is not None and code_path is not None:
+        verified_mode = verify_campaign_run_mode(
+            campaign / "inputs/run-mode.json",
+            config_path=config_path,
+            code_manifest_path=code_path / "code.json",
+            git_commit=git_commit,
+        )
+
+    if verified_mode is not None:
+        verified_campaign_mode = str(verified_mode["mode"])
+        verified_claims = bool(verified_mode["scientific_claims_permitted"])
+        if campaign_mode is not None and campaign_mode != verified_campaign_mode:
+            raise ValueError("summary campaign mode does not match verified run mode")
+        if (
+            scientific_claims_permitted is not None
+            and scientific_claims_permitted is not verified_claims
+        ):
+            raise ValueError("summary claim policy does not match verified run mode")
+        campaign_mode = verified_campaign_mode
+        scientific_claims_permitted = verified_claims
+    else:
+        campaign_mode = campaign_mode or "canonical"
+        if scientific_claims_permitted is None:
+            scientific_claims_permitted = campaign_mode == "canonical"
+
+    pilot = (
+        _verified_pilot(campaign, config_path=config_path, code_path=code_path)
+        if config_path is not None and code_path is not None
+        else None
+    )
+    model = _verified_model(campaign)
+    calibration = _verified_calibration(campaign)
     if completion_state is CampaignStatus.COMPLETE and (
         pilot is None or model is None or calibration is None or evaluation_status != "complete"
     ):
         raise ValueError(
             "complete summary requires verified pilot, model, calibration, and evaluation stages"
         )
+    output.mkdir(parents=True, exist_ok=True)
     stop_reasons = list(dict.fromkeys(str(reason) for reason in early_stop_reasons if reason))
     for row in held_out:
         reason = row.get("stop_reason")
@@ -927,11 +990,8 @@ class _CampaignCommands:
     def pilot(self, deadline: float | None) -> StageResult:
         output = self.workspace / "pilot"
         if (output / "manifest.json").is_file():
-            if _verified_pilot(self.workspace) is None:
-                raise ValueError("pilot completion is missing verified selection artifacts")
-            load_verified_shards(
-                output,
-                role="pilot",
+            verify_selection_publication(
+                output / "selection.json",
                 config_path=self.config_path,
                 code_manifest_path=self.code_path / "code.json",
             )
@@ -1050,6 +1110,8 @@ class _CampaignCommands:
             self.config_path,
             "--code",
             self.code_path,
+            "--run-mode",
+            self.workspace / "inputs/run-mode.json",
             "--selection",
             self.workspace / "pilot/selection.json",
             "--test",
@@ -1089,6 +1151,8 @@ class _CampaignCommands:
             self.config_path,
             "--code",
             self.code_path,
+            "--run-mode",
+            self.workspace / "inputs/run-mode.json",
             "--selection",
             self.workspace / "pilot/selection.json",
             "--test",

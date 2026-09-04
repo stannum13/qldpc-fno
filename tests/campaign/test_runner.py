@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from qldpc_fno.artifacts import sha256_file
+from qldpc_fno.artifacts import sha256_file, write_canonical_json
 from qldpc_fno.campaign import runner as runner_module
 from qldpc_fno.campaign.runner import (
     CampaignRunner,
@@ -283,12 +283,17 @@ def test_runner_discovers_recovery_only_checkpoint_generation(tmp_path: Path) ->
     assert runner._checkpoint_count(stage) == 1
 
 
-def test_checkpoint_tombstone_removes_deleted_file_on_resume(tmp_path: Path) -> None:
+def test_evaluation_checkpoint_tombstones_retired_partial_summaries_on_resume(
+    tmp_path: Path,
+) -> None:
     store = LocalArtifactStore(tmp_path / "store", monotonic_clock=lambda: 0.0)
-    directory = tmp_path / "training"
-    directory.mkdir()
-    obsolete = directory / "obsolete.bin"
-    obsolete.write_bytes(b"old")
+    directory = tmp_path / "evaluation"
+    batch = directory / "rate-000/batch-00000/outcomes.npz"
+    summary = directory / "rate-000/summary.json"
+    batch.parent.mkdir(parents=True)
+    batch.write_bytes(b"immutable batch")
+    summary.write_text('{"status":"partial_deadline"}')
+    (directory / "manifest.json").write_text('{"status":"partial_deadline"}')
     calls = 0
 
     def unit(deadline: float | None) -> StageResult:
@@ -298,26 +303,29 @@ def test_checkpoint_tombstone_removes_deleted_file_on_resume(tmp_path: Path) -> 
         if calls == 1:
             return StageResult.CHECKPOINTED
         if calls == 2:
-            obsolete.unlink()
-            (directory / "current.bin").write_bytes(b"new")
+            (directory / "manifest.json").unlink()
+            summary.unlink()
+            (directory / "progress.json").write_text('{"status":"in_progress"}')
             return StageResult.CHECKPOINTED
-        assert not obsolete.exists()
+        assert not (directory / "manifest.json").exists()
+        assert not summary.exists()
+        assert batch.read_bytes() == b"immutable batch"
         return StageResult.COMPLETE
 
     runner = CampaignRunner(
         store=store,
-        stages=(CampaignStage("training", directory, unit),),
+        stages=(CampaignStage("evaluation", directory, unit),),
         checkpoint_grace_seconds=1,
         monotonic=lambda: 0.0,
     )
 
     assert runner.run(100.0) is CampaignStatus.COMPLETE
-    _, second = read_completion_manifest(store, ".checkpoints/training/00000001")
-    assert second["deleted"] == ["obsolete.bin"]
+    _, second = read_completion_manifest(store, ".checkpoints/evaluation/00000001")
+    assert second["deleted"] == ["manifest.json", "rate-000/summary.json"]
 
     restored = tmp_path / "restored"
     restored.mkdir()
-    materialized_stage = CampaignStage("training", restored, FakeAction(StageResult.COMPLETE))
+    materialized_stage = CampaignStage("evaluation", restored, FakeAction(StageResult.COMPLETE))
     resumed = CampaignRunner(
         store=store,
         stages=(materialized_stage,),
@@ -325,8 +333,10 @@ def test_checkpoint_tombstone_removes_deleted_file_on_resume(tmp_path: Path) -> 
         monotonic=lambda: 0.0,
     )
     resumed._restore_checkpoints(materialized_stage, 2)
-    assert not (restored / "obsolete.bin").exists()
-    assert (restored / "current.bin").read_bytes() == b"new"
+    assert not (restored / "manifest.json").exists()
+    assert not (restored / "rate-000/summary.json").exists()
+    assert (restored / "rate-000/batch-00000/outcomes.npz").read_bytes() == b"immutable batch"
+    assert json.loads((restored / "progress.json").read_text())["status"] == "in_progress"
 
 
 def test_runner_rejects_nonfinite_deadline(tmp_path: Path) -> None:
@@ -604,6 +614,7 @@ def test_evaluation_deadline_finalizer_uses_evaluator_deadline_path(tmp_path: Pa
     assert commands.finalize_evaluation(7.5) is True
     command, timeout = commands_seen[0]
     assert command[command.index("--deadline-monotonic") + 1] == "0"
+    assert command[command.index("--run-mode") + 1] == str(workspace / "inputs/run-mode.json")
     assert "--bootstrap-samples" not in command
     assert "--resume" in command
     assert timeout == 7.5
@@ -630,6 +641,138 @@ def test_pilot_adapter_does_not_trust_manifest_presence_alone(tmp_path: Path) ->
         pass
     else:
         raise AssertionError("pilot manifest presence bypassed content verification")
+
+
+def _write_fixed_pilot_publication(
+    workspace: Path,
+    *,
+    config_path: Path,
+    code_manifest_path: Path,
+    pilot_rows: list[dict[str, object]] | None = None,
+    shards: dict[str, str] | None = None,
+) -> None:
+    pilot = workspace / "pilot"
+    pilot.mkdir(parents=True)
+    selection_path = pilot / "selection.json"
+    write_canonical_json(
+        selection_path,
+        {
+            "evidence_role": "predeclared_selection_not_evidence",
+            "pilot_rows": [] if pilot_rows is None else pilot_rows,
+            "selected_noise_points": [0.0375],
+            "selection_mode": "fixed",
+            "source_sha256": {
+                "code_manifest": sha256_file(code_manifest_path),
+                "config": sha256_file(config_path),
+            },
+        },
+    )
+    write_canonical_json(
+        pilot / "manifest.json",
+        {
+            "complete": True,
+            "role": "pilot",
+            "selection_sha256": sha256_file(selection_path),
+            "shards": {} if shards is None else shards,
+        },
+    )
+
+
+def test_fixed_pilot_adapter_resumes_committed_disconfirm_selection_without_shards(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "work"
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "code.json").write_text("{}")
+    config = Path("configs/accuracy_disconfirm_p0375.json")
+    _write_fixed_pilot_publication(
+        workspace,
+        config_path=config,
+        code_manifest_path=code / "code.json",
+    )
+    commands = _CampaignCommands(
+        config_path=config,
+        code_path=code,
+        workspace=workspace,
+        command_runner=lambda command, timeout: (_ for _ in ()).throw(
+            AssertionError(f"unexpected command: {command}")
+        ),
+        calibration_grid_limit=None,
+    )
+
+    assert commands.pilot(None) is StageResult.COMPLETE
+    verified = _verified_pilot(workspace, config_path=config, code_path=code)
+    assert verified is not None
+    assert verified["selection_mode"] == "fixed"
+    assert verified["evidence_role"] == "predeclared_selection_not_evidence"
+
+
+@pytest.mark.parametrize(
+    ("pilot_rows", "shards", "message"),
+    [
+        ([{"error_rate": 0.0375}], None, "empty pilot_rows"),
+        (None, {"rate-000/shard-00000/samples.json": "0" * 64}, "empty shard table"),
+    ],
+)
+def test_fixed_pilot_adapter_rejects_evidence_bearing_publication(
+    tmp_path: Path,
+    pilot_rows: list[dict[str, object]] | None,
+    shards: dict[str, str] | None,
+    message: str,
+) -> None:
+    workspace = tmp_path / "work"
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "code.json").write_text("{}")
+    config = Path("configs/accuracy_disconfirm_p0375.json")
+    _write_fixed_pilot_publication(
+        workspace,
+        config_path=config,
+        code_manifest_path=code / "code.json",
+        pilot_rows=pilot_rows,
+        shards=shards,
+    )
+    commands = _CampaignCommands(
+        config_path=config,
+        code_path=code,
+        workspace=workspace,
+        command_runner=lambda command, timeout: (_ for _ in ()).throw(
+            AssertionError(f"unexpected command: {command}")
+        ),
+        calibration_grid_limit=None,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        commands.pilot(None)
+
+
+def test_fixed_pilot_adapter_rejects_undeclared_rate_artifacts(tmp_path: Path) -> None:
+    workspace = tmp_path / "work"
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "code.json").write_text("{}")
+    config = Path("configs/accuracy_disconfirm_p0375.json")
+    _write_fixed_pilot_publication(
+        workspace,
+        config_path=config,
+        code_manifest_path=code / "code.json",
+    )
+    unexpected = workspace / "pilot/rate-000"
+    unexpected.mkdir()
+    (unexpected / "evidence.bin").write_bytes(b"not predeclared")
+    commands = _CampaignCommands(
+        config_path=config,
+        code_path=code,
+        workspace=workspace,
+        command_runner=lambda command, timeout: (_ for _ in ()).throw(
+            AssertionError(f"unexpected command: {command}")
+        ),
+        calibration_grid_limit=None,
+    )
+
+    with pytest.raises(ValueError, match="must not contain rate artifacts"):
+        commands.pilot(None)
 
 
 def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_evidence(
@@ -659,6 +802,7 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
             "complete": True,
             "role": "pilot",
             "selection_sha256": sha256_file(pilot / "selection.json"),
+            "shards": {},
         },
     )
     write_canonical_json(calibration / "grid.json", {"candidates": [{"soft_prior": {}}]})
@@ -693,9 +837,13 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
         "paired": {
             "soft_prior": {
                 "baseline_only_failure": 1,
+                "both_fail": 1,
+                "both_succeed": 4,
                 "hybrid_only_failure": 2,
                 "discordant_pairs": 3,
                 "block_error_delta": 0.01,
+                "mcnemar_exact_pvalue_benefit": 0.314159,
+                "mcnemar_exact_pvalue_harm": 0.271828,
                 "mcnemar_exact_pvalue_two_sided": 1.0,
                 "hybrid_harm_share_given_discordance": 2 / 3,
                 "hybrid_harm_share_given_discordance_95ci_low": 0.09429932405024608,
@@ -738,7 +886,6 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
             early_stop_reasons=(),
         )
 
-    assert _verified_pilot(campaign)["evidence_role"] == "selection_only_not_held_out"
     assert _verified_calibration(campaign)["evidence_role"] == "tuning_only_not_held_out"
     markdown = _summary_markdown(
         {
@@ -754,7 +901,11 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
                 "manifest_sha256": "model-manifest-hash",
                 "model_sha256": "model-hash",
             },
-            "pilot": {"selected_noise_points": [0.01]},
+            "pilot": {
+                "evidence_role": "predeclared_selection_not_evidence",
+                "selected_noise_points": [0.01],
+                "selection_mode": "fixed",
+            },
         }
     )
     assert "Held-out test results" in markdown
@@ -764,11 +915,29 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
     assert "discordant pairs" in markdown
     assert "exact McNemar" in markdown
     assert "conditional on discordance" in markdown
+    assert "Both succeed" in markdown
+    assert "Both fail" in markdown
+    assert "exact harm p-value" in markdown
+    assert "exact benefit p-value" in markdown
+    for numeric_sentinel in (
+        "0.125",
+        "0.47",
+        "0.01",
+        "0.314159",
+        "0.271828",
+        "0.09429932405024608",
+        "0.9915962413403874",
+    ):
+        assert numeric_sentinel in markdown
     for forbidden in ("accuracy-compatible", "noninferior", "equivalent", "paired 95% interval"):
         assert forbidden not in markdown.lower()
     assert "Syndrome-valid rate" in markdown
     assert "Timing diagnostics" in markdown
     assert "Calibration is not held-out evidence" in markdown
+    assert "Selected noise rates" in markdown
+    assert "Selection and calibration provenance" in markdown
+    assert "Pilot-selected" not in markdown
+    assert "Pilot rows" not in markdown
     assert "abc123" in markdown
     assert "grid-hash" in markdown
     assert "model-hash" in markdown
@@ -879,8 +1048,9 @@ def test_scientific_chain_requires_exact_selected_rate_coordinates(
     code.mkdir()
     (code / "code.json").write_text("{}")
     campaign = tmp_path / "campaign"
-    for directory in ("pilot", "model", "calibration", "evaluation"):
+    for directory in ("inputs", "pilot", "model", "calibration", "evaluation"):
         (campaign / directory).mkdir(parents=True)
+    (campaign / "inputs/run-mode.json").write_text("{}")
     selection = {
         "evidence_role": "selection_only_not_held_out",
         "selected_noise_points": [0.01],
@@ -911,6 +1081,35 @@ def test_scientific_chain_requires_exact_selected_rate_coordinates(
     monkeypatch.setattr(runner_module, "load_campaign_code", lambda path: None)
     monkeypatch.setattr(
         runner_module,
+        "verify_campaign_run_mode",
+        lambda *args, **kwargs: {
+            "mode": "reduced_non_scientific",
+            "scientific_claims_permitted": False,
+        },
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "verify_selection_publication",
+        lambda *args, **kwargs: SimpleNamespace(
+            manifest_sha256="pilot-manifest",
+            rates=(0.01,),
+            selection_sha256=sha256_file(campaign / "pilot/selection.json"),
+        ),
+    )
+
+    def verify_role_rates(shard_set: SimpleNamespace, **kwargs: object) -> None:
+        del kwargs
+        rate_map = {shard.rate_index: shard.error_rate for shard in shard_set.shards}
+        if set(rate_map) != {0} or rate_map[0] != 0.01:
+            raise ValueError(f"{shard_set.shards[0]} rates do not match selection")
+
+    monkeypatch.setattr(
+        runner_module,
+        "verify_shard_selection_provenance",
+        verify_role_rates,
+    )
+    monkeypatch.setattr(
+        runner_module,
         "load_verified_shards",
         lambda path, **kwargs: shard_sets[path.name],
     )
@@ -934,7 +1133,13 @@ def test_scientific_chain_requires_exact_selected_rate_coordinates(
         "model_manifest": sha256_file(campaign / "model/model.json"),
     }
     (campaign / "calibration/selected.json").write_text(
-        json.dumps({"source_role": "calibration", "source_sha256": calibration_sources})
+        json.dumps(
+            {
+                "selected": {"residual": {}, "soft_prior": {}},
+                "source_role": "calibration",
+                "source_sha256": calibration_sources,
+            }
+        )
     )
     evaluation_sources = {
         "calibration_grid": sha256_file(campaign / "calibration/grid.json"),
@@ -944,6 +1149,7 @@ def test_scientific_chain_requires_exact_selected_rate_coordinates(
         "code_manifest": sha256_file(code / "code.json"),
         "config": sha256_file(config),
         "model_manifest": sha256_file(campaign / "model/model.json"),
+        "run_mode": sha256_file(campaign / "inputs/run-mode.json"),
         "selection": sha256_file(campaign / "pilot/selection.json"),
         "test_manifest": "test-manifest",
         "test_shard_manifests": ["test-shard"],

@@ -10,6 +10,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--code", type=Path, required=True)
+    parser.add_argument("--run-mode", type=Path, required=True)
     parser.add_argument("--selection", type=Path, required=True)
     parser.add_argument("--test", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)

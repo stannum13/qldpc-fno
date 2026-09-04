@@ -8,8 +8,10 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.campaign.runner import CampaignStatus, write_campaign_summary
 
 
 def _run(*arguments: object) -> subprocess.CompletedProcess[str]:
@@ -27,7 +29,7 @@ def _write_config(path: Path) -> None:
         {
             "campaign_seed": 20260901,
             "noise_grid": [0.2, 0.25],
-            "selection_mode": "pilot",
+            "selection_mode": "fixed",
             "pilot_shots_per_point": 1,
             "train_shots_cap": 4,
             "calibration_shots_cap": 2,
@@ -54,10 +56,10 @@ def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
     write_canonical_json(
         path,
         {
-            "evidence_role": "selection_only_not_held_out",
+            "evidence_role": "predeclared_selection_not_evidence",
             "pilot_rows": [],
             "selected_noise_points": [0.2, 0.25],
-            "selection_mode": "pilot",
+            "selection_mode": "fixed",
             "source_sha256": {
                 "code_manifest": sha256_file(code_manifest),
                 "config": sha256_file(config),
@@ -66,7 +68,47 @@ def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
     )
     write_canonical_json(
         path.parent / "manifest.json",
-        {"complete": True, "role": "pilot", "selection_sha256": sha256_file(path)},
+        {
+            "complete": True,
+            "role": "pilot",
+            "selection_sha256": sha256_file(path),
+            "shards": {},
+        },
+    )
+
+
+def _git_commit() -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _write_run_mode(
+    path: Path,
+    *,
+    config: Path,
+    code_manifest: Path,
+    mode: str = "reduced_non_scientific",
+) -> None:
+    canonical = mode == "canonical"
+    write_canonical_json(
+        path,
+        {
+            "canonical_config": "campaign.json",
+            "canonical_config_sha256": sha256_file(config),
+            "code_manifest_sha256": sha256_file(code_manifest),
+            "effective_config_sha256": sha256_file(config),
+            "execution_controls": {"calibration_grid_limit": None if canonical else 1},
+            "execution_identity": {"kind": "local", "store": "integration-test"},
+            "git_commit": _git_commit(),
+            "mode": mode,
+            "overrides": {} if canonical else {"integration_fixture": True},
+            "schema_version": 3,
+            "scientific_claims_permitted": canonical,
+        },
     )
 
 
@@ -110,6 +152,8 @@ def _evaluate(
         config,
         "--code",
         code,
+        "--run-mode",
+        config.with_name("run-mode.json"),
         "--selection",
         selection,
         "--test",
@@ -128,6 +172,7 @@ def _evaluate(
 
 def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = tmp_path / "campaign.json"
     code = tmp_path / "code"
@@ -144,6 +189,11 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
 
     built = _run("experiments/01_build_lp_codes.py", "--out", code)
     assert built.returncode == 0, built.stderr
+    _write_run_mode(
+        config.with_name("run-mode.json"),
+        config=config,
+        code_manifest=code / "code.json",
+    )
     _write_selection(selection, config=config, code_manifest=code / "code.json")
     _generate_role(config=config, code=code, selection=selection, role="train", shots=4, out=train)
     _generate_role(
@@ -195,6 +245,8 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
         config,
         "--code",
         code,
+        "--run-mode",
+        config.with_name("run-mode.json"),
         "--selection",
         selection,
         "--test",
@@ -207,7 +259,7 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
         evaluation,
     )
     assert canonical_reject.returncode != 0
-    assert "two-stage policy" in canonical_reject.stderr
+    assert "does not match verified run mode" in canonical_reject.stderr
 
     grid_path = calibration / "grid.json"
     grid_text = grid_path.read_text()
@@ -376,6 +428,43 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     )
     assert all(path.read_bytes() == payload for path, payload in laundered_batches.items())
 
+    underreported_partial = campaign / "evaluation-underreported-partial"
+    shutil.copytree(laundered_deadline, underreported_partial)
+    underreported_manifest_path = underreported_partial / "manifest.json"
+    underreported_manifest = json.loads(underreported_manifest_path.read_text())
+    underreported_manifest["status"] = "partial_deadline"
+    underreported_summary_path = (
+        underreported_partial / underreported_manifest["rates"]["0"]["summary_path"]
+    )
+    underreported_summary = json.loads(underreported_summary_path.read_text())
+    underreported_summary["shots"] = 0
+    write_canonical_json(underreported_summary_path, underreported_summary)
+    underreported_manifest["rates"]["0"]["shots"] = 0
+    underreported_manifest["rates"]["0"]["summary_sha256"] = sha256_file(
+        underreported_summary_path
+    )
+    write_canonical_json(underreported_manifest_path, underreported_manifest)
+    underreported_batches = {
+        path: path.read_bytes()
+        for path in sorted(underreported_partial.glob("rate-*/batch-*/manifest.json"))
+    }
+
+    rejected_underreported_partial = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=underreported_partial,
+        extra=("--resume", "--max-batches-this-run", 1),
+    )
+
+    assert rejected_underreported_partial.returncode != 0
+    assert "shot count disagrees with outcomes" in rejected_underreported_partial.stderr
+    assert underreported_manifest_path.is_file()
+    assert all(path.read_bytes() == payload for path, payload in underreported_batches.items())
+
     immediate_deadline = campaign / "evaluation-immediate-deadline"
     deadline = _evaluate(
         config=config,
@@ -400,6 +489,27 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     assert partial_summary["comparison_status"]["residual"] == "not_fixed_sample"
     assert "accuracy_compatible" not in partial_summary
 
+    bounded_deadline_resume = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=immediate_deadline,
+        extra=("--resume", "--max-batches-this-run", 1),
+    )
+
+    assert bounded_deadline_resume.returncode == 0, bounded_deadline_resume.stderr
+    assert json.loads((immediate_deadline / "progress.json").read_text())["status"] == (
+        "in_progress"
+    )
+    bounded_batches = sorted(immediate_deadline.glob("rate-*/batch-*/manifest.json"))
+    assert len(bounded_batches) == 1
+    bounded_batch_bytes = bounded_batches[0].read_bytes()
+    assert not (immediate_deadline / "manifest.json").exists()
+    assert not list(immediate_deadline.glob("rate-*/summary.json"))
+
     resumed_deadline = _evaluate(
         config=config,
         code=code,
@@ -412,6 +522,7 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     )
     assert resumed_deadline.returncode == 0, resumed_deadline.stderr
     assert json.loads((immediate_deadline / "manifest.json").read_text())["status"] == "complete"
+    assert bounded_batches[0].read_bytes() == bounded_batch_bytes
 
     tampered_evaluation = campaign / "evaluation-tampered"
     shutil.copytree(evaluation, tampered_evaluation)
@@ -492,9 +603,11 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     manifest = json.loads((evaluation / "manifest.json").read_text())
     assert manifest["complete"] is True
     assert manifest["status"] == "complete"
-    assert manifest["selection_mode"] == "pilot"
+    assert manifest["selection_mode"] == "fixed"
     assert manifest["test_stopping_mode"] == "fixed"
     assert manifest["target_failures_active"] is False
+    assert manifest["campaign_mode"] == "reduced_non_scientific"
+    assert manifest["scientific_claims_permitted"] is False
     assert set(manifest["source_sha256"]) == {
         "calibration_grid",
         "calibration_manifest",
@@ -503,6 +616,7 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
         "code_manifest",
         "config",
         "model_manifest",
+        "run_mode",
         "selection",
         "test_manifest",
         "test_shard_manifests",
@@ -568,6 +682,233 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
             assert "block_error_delta_95ci_low" not in paired
             assert "block_error_delta_95ci_high" not in paired
 
+    summary_campaign = campaign / "summary-campaign"
+    (summary_campaign / "inputs").mkdir(parents=True)
+    shutil.copy2(config, summary_campaign / "inputs/config.json")
+    shutil.copy2(config.with_name("run-mode.json"), summary_campaign / "inputs/run-mode.json")
+    shutil.copytree(code, summary_campaign / "inputs/code")
+    shutil.copytree(pilot, summary_campaign / "pilot")
+    for role, source in (("train", train), ("calibration", calibration), ("test", test)):
+        shutil.copytree(source, summary_campaign / "shards" / role)
+    shutil.copytree(model, summary_campaign / "model")
+    shutil.copytree(calibration, summary_campaign / "calibration")
+    shutil.copytree(evaluation, summary_campaign / "evaluation")
+    summary_config = summary_campaign / "inputs/config.json"
+    summary_code = summary_campaign / "inputs/code"
+
+    verified_results = write_campaign_summary(
+        summary_campaign,
+        summary_campaign / "verified-summary",
+        completion_state=CampaignStatus.COMPLETE,
+        git_commit=_git_commit(),
+        early_stop_reasons=(),
+        config_path=summary_config,
+        code_path=summary_code,
+    )
+    assert verified_results["scientific_scope"]["campaign_mode"] == (
+        "reduced_non_scientific"
+    )
+    assert verified_results["scientific_scope"]["scientific_claims_permitted"] is False
+
+    first_verified_outcomes = next(
+        (summary_campaign / "evaluation").glob("rate-*/batch-*/outcomes.npz")
+    )
+    original_read_bytes = Path.read_bytes
+    outcome_content_reads = 0
+
+    def counting_outcome_read(path: Path) -> bytes:
+        nonlocal outcome_content_reads
+        if path == first_verified_outcomes:
+            outcome_content_reads += 1
+        return original_read_bytes(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", counting_outcome_read)
+        write_campaign_summary(
+            summary_campaign,
+            summary_campaign / "single-read-outcome-summary",
+            completion_state=CampaignStatus.COMPLETE,
+            git_commit=_git_commit(),
+            early_stop_reasons=(),
+            config_path=summary_config,
+            code_path=summary_code,
+        )
+    assert outcome_content_reads == 2
+
+    first_verified_summary = summary_campaign / "evaluation/rate-000/summary.json"
+    original_summary_read_bytes = Path.read_bytes
+    summary_content_reads = 0
+
+    def counting_summary_read(path: Path) -> bytes:
+        nonlocal summary_content_reads
+        if path == first_verified_summary:
+            summary_content_reads += 1
+        return original_summary_read_bytes(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_bytes", counting_summary_read)
+        write_campaign_summary(
+            summary_campaign,
+            summary_campaign / "single-read-rate-summary",
+            completion_state=CampaignStatus.COMPLETE,
+            git_commit=_git_commit(),
+            early_stop_reasons=(),
+            config_path=summary_config,
+            code_path=summary_code,
+        )
+    assert summary_content_reads == 1
+
+    symlinked_summary_campaign = campaign / "summary-campaign-symlinked-summary"
+    shutil.copytree(summary_campaign, symlinked_summary_campaign)
+    shutil.rmtree(symlinked_summary_campaign / "verified-summary")
+    outside_summary = campaign / "outside-rate-summary.json"
+    symlinked_summary = symlinked_summary_campaign / "evaluation/rate-000/summary.json"
+    shutil.copy2(symlinked_summary, outside_summary)
+    symlinked_summary.unlink()
+    symlinked_summary.symlink_to(outside_summary)
+    with pytest.raises(ValueError, match="symlink"):
+        write_campaign_summary(
+            symlinked_summary_campaign,
+            symlinked_summary_campaign / "summary",
+            completion_state=CampaignStatus.COMPLETE,
+            git_commit=_git_commit(),
+            early_stop_reasons=(),
+            config_path=symlinked_summary_campaign / "inputs/config.json",
+            code_path=symlinked_summary_campaign / "inputs/code",
+        )
+
+    symlinked_resume = campaign / "evaluation-symlinked-resume"
+    shutil.copytree(evaluation, symlinked_resume)
+    outside_rate = campaign / "outside-evaluation-rate"
+    shutil.copytree(symlinked_resume / "rate-000", outside_rate)
+    shutil.rmtree(symlinked_resume / "rate-000")
+    (symlinked_resume / "rate-000").symlink_to(outside_rate, target_is_directory=True)
+    outside_staging = outside_rate / ".batch-99999.tmp"
+    outside_staging.mkdir()
+    outside_sentinel = outside_staging / "sentinel"
+    outside_sentinel.write_text("must survive rejected resume")
+    rejected_symlinked_resume = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=symlinked_resume,
+        extra=("--resume",),
+    )
+    assert rejected_symlinked_resume.returncode != 0
+    assert "symlink" in rejected_symlinked_resume.stderr
+    assert outside_sentinel.read_text() == "must survive rejected resume"
+
+    with pytest.raises(ValueError, match="does not match verified run mode"):
+        write_campaign_summary(
+            summary_campaign,
+            summary_campaign / "wrong-mode-summary",
+            completion_state=CampaignStatus.COMPLETE,
+            git_commit=_git_commit(),
+            early_stop_reasons=(),
+            config_path=summary_config,
+            code_path=summary_code,
+            campaign_mode="canonical",
+            scientific_claims_permitted=True,
+        )
+
+    rehashed_status = campaign / "summary-campaign-rehashed-status"
+    shutil.copytree(summary_campaign, rehashed_status)
+    shutil.rmtree(rehashed_status / "verified-summary")
+    rehashed_manifest_path = rehashed_status / "evaluation/manifest.json"
+    rehashed_manifest = json.loads(rehashed_manifest_path.read_text())
+    rehashed_summary_path = (
+        rehashed_status / "evaluation" / rehashed_manifest["rates"]["0"]["summary_path"]
+    )
+    rehashed_summary = json.loads(rehashed_summary_path.read_text())
+    current_status = rehashed_summary["comparison_status"]["soft_prior"]
+    rehashed_summary["comparison_status"]["soft_prior"] = next(
+        status
+        for status in ("harm_detected", "benefit_detected", "inconclusive", "no_discordances")
+        if status != current_status
+    )
+    write_canonical_json(rehashed_summary_path, rehashed_summary)
+    rehashed_manifest["rates"]["0"]["summary_sha256"] = sha256_file(rehashed_summary_path)
+    write_canonical_json(rehashed_manifest_path, rehashed_manifest)
+    with pytest.raises(ValueError, match="comparison status disagrees with outcomes"):
+        write_campaign_summary(
+            rehashed_status,
+            rehashed_status / "summary",
+            completion_state=CampaignStatus.COMPLETE,
+            git_commit=_git_commit(),
+            early_stop_reasons=(),
+            config_path=rehashed_status / "inputs/config.json",
+            code_path=rehashed_status / "inputs/code",
+        )
+
+    rehashed_missing = campaign / "summary-campaign-rehashed-missing"
+    shutil.copytree(summary_campaign, rehashed_missing)
+    shutil.rmtree(rehashed_missing / "verified-summary")
+    missing_manifest_path = rehashed_missing / "evaluation/manifest.json"
+    missing_manifest = json.loads(missing_manifest_path.read_text())
+    missing_summary_path = (
+        rehashed_missing / "evaluation" / missing_manifest["rates"]["0"]["summary_path"]
+    )
+    missing_summary = json.loads(missing_summary_path.read_text())
+    missing_summary["decoders"]["baseline"].pop("block_errors")
+    write_canonical_json(missing_summary_path, missing_summary)
+    missing_manifest["rates"]["0"]["summary_sha256"] = sha256_file(missing_summary_path)
+    write_canonical_json(missing_manifest_path, missing_manifest)
+    with pytest.raises(ValueError, match="summary disagrees with verified outcomes"):
+        write_campaign_summary(
+            rehashed_missing,
+            rehashed_missing / "summary",
+            completion_state=CampaignStatus.COMPLETE,
+            git_commit=_git_commit(),
+            early_stop_reasons=(),
+            config_path=rehashed_missing / "inputs/config.json",
+            code_path=rehashed_missing / "inputs/code",
+        )
+
+    stale_batch_digest = campaign / "summary-campaign-stale-batch-digest"
+    shutil.copytree(summary_campaign, stale_batch_digest)
+    shutil.rmtree(stale_batch_digest / "verified-summary")
+    stale_batch_manifest = next(
+        (stale_batch_digest / "evaluation").glob("rate-*/batch-*/manifest.json")
+    )
+    stale_batch_manifest.write_text(stale_batch_manifest.read_text() + "\n")
+    with pytest.raises(ValueError, match="batch-manifest provenance mismatch"):
+        write_campaign_summary(
+            stale_batch_digest,
+            stale_batch_digest / "summary",
+            completion_state=CampaignStatus.COMPLETE,
+            git_commit=_git_commit(),
+            early_stop_reasons=(),
+            config_path=stale_batch_digest / "inputs/config.json",
+            code_path=stale_batch_digest / "inputs/code",
+        )
+
+    rehashed_boolean = campaign / "summary-campaign-rehashed-boolean"
+    shutil.copytree(summary_campaign, rehashed_boolean)
+    shutil.rmtree(rehashed_boolean / "verified-summary")
+    boolean_manifest_path = rehashed_boolean / "evaluation/manifest.json"
+    boolean_manifest = json.loads(boolean_manifest_path.read_text())
+    boolean_summary_path = (
+        rehashed_boolean / "evaluation" / boolean_manifest["rates"]["0"]["summary_path"]
+    )
+    boolean_summary = json.loads(boolean_summary_path.read_text())
+    boolean_summary["paired"]["soft_prior"]["mcnemar_exact_pvalue_two_sided"] = True
+    write_canonical_json(boolean_summary_path, boolean_summary)
+    boolean_manifest["rates"]["0"]["summary_sha256"] = sha256_file(boolean_summary_path)
+    write_canonical_json(boolean_manifest_path, boolean_manifest)
+    with pytest.raises(ValueError, match="paired summary disagrees with outcomes"):
+        write_campaign_summary(
+            rehashed_boolean,
+            rehashed_boolean / "summary",
+            completion_state=CampaignStatus.COMPLETE,
+            git_commit=_git_commit(),
+            early_stop_reasons=(),
+            config_path=rehashed_boolean / "inputs/config.json",
+            code_path=rehashed_boolean / "inputs/code",
+        )
+
     completed_bytes = {path: path.read_bytes() for path in batch_manifests}
     verified_resume = _evaluate(
         config=config,
@@ -581,6 +922,90 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     )
     assert verified_resume.returncode == 0, verified_resume.stderr
     assert all(path.read_bytes() == payload for path, payload in completed_bytes.items())
+
+    mismatched_rate = campaign / "evaluation-mismatched-rate"
+    shutil.copytree(evaluation, mismatched_rate)
+    mismatched_rate_manifest_path = mismatched_rate / "manifest.json"
+    mismatched_rate_manifest = json.loads(mismatched_rate_manifest_path.read_text())
+    mismatched_rate_manifest["rates"]["0"]["error_rate"] = 0.123
+    write_canonical_json(mismatched_rate_manifest_path, mismatched_rate_manifest)
+    rejected_mismatched_rate = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=mismatched_rate,
+        extra=("--resume",),
+    )
+    assert rejected_mismatched_rate.returncode != 0
+    assert "rate error-rate coordinate mismatch" in rejected_mismatched_rate.stderr
+
+    false_partial = campaign / "evaluation-false-partial"
+    shutil.copytree(evaluation, false_partial)
+    false_partial_manifest_path = false_partial / "manifest.json"
+    false_partial_manifest = json.loads(false_partial_manifest_path.read_text())
+    false_partial_manifest["status"] = "partial_deadline"
+    write_canonical_json(false_partial_manifest_path, false_partial_manifest)
+    false_partial_progress_path = false_partial / "progress.json"
+    false_partial_progress = json.loads(false_partial_progress_path.read_text())
+    false_partial_progress["status"] = "partial_deadline"
+    write_canonical_json(false_partial_progress_path, false_partial_progress)
+    rejected_false_partial = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=false_partial,
+        extra=("--resume",),
+    )
+    assert rejected_false_partial.returncode != 0
+    assert "partial_deadline requires an unfinished rate" in rejected_false_partial.stderr
+
+    valid_orphan_summaries = campaign / "evaluation-valid-orphan-summaries"
+    shutil.copytree(evaluation, valid_orphan_summaries)
+    (valid_orphan_summaries / "manifest.json").unlink()
+    resumed_valid_orphans = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=valid_orphan_summaries,
+        extra=("--resume",),
+    )
+    assert resumed_valid_orphans.returncode == 0, resumed_valid_orphans.stderr
+    assert json.loads((valid_orphan_summaries / "manifest.json").read_text())["status"] == (
+        "complete"
+    )
+
+    tampered_orphan_summaries = campaign / "evaluation-tampered-orphan-summaries"
+    shutil.copytree(evaluation, tampered_orphan_summaries)
+    (tampered_orphan_summaries / "manifest.json").unlink()
+    tampered_orphan_path = tampered_orphan_summaries / "rate-000/summary.json"
+    tampered_orphan = json.loads(tampered_orphan_path.read_text())
+    tampered_orphan["shots"] = 1
+    write_canonical_json(tampered_orphan_path, tampered_orphan)
+    tampered_orphan_bytes = tampered_orphan_path.read_bytes()
+    rejected_tampered_orphan = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=tampered_orphan_summaries,
+        extra=("--resume",),
+    )
+    assert rejected_tampered_orphan.returncode != 0
+    assert "orphan rate summary disagrees with verified outcomes" in (
+        rejected_tampered_orphan.stderr
+    )
+    assert tampered_orphan_path.read_bytes() == tampered_orphan_bytes
 
     missing_exact = campaign / "evaluation-missing-exact"
     shutil.copytree(evaluation, missing_exact)

@@ -31,6 +31,19 @@ _CLOUD_IDENTITY_FIELDS = {
     "store",
     "work_cutoff_seconds",
 }
+_RUN_MODE_FIELDS = {
+    "canonical_config",
+    "canonical_config_sha256",
+    "code_manifest_sha256",
+    "effective_config_sha256",
+    "execution_controls",
+    "execution_identity",
+    "git_commit",
+    "mode",
+    "overrides",
+    "schema_version",
+    "scientific_claims_permitted",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +125,69 @@ def _expected_mode(
         "schema_version": 3,
         "scientific_claims_permitted": request.campaign_mode == "canonical",
     }
+
+
+def verify_campaign_run_mode(
+    path: Path,
+    *,
+    config_path: Path,
+    code_manifest_path: Path,
+    git_commit: str,
+) -> dict[str, object]:
+    """Verify immutable run mode, claim policy, and input provenance."""
+    if path.is_symlink():
+        raise ValueError("campaign run-mode manifest must not be a symlink")
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("campaign run-mode manifest is unreadable") from error
+    if not isinstance(payload, dict) or set(payload) != _RUN_MODE_FIELDS:
+        raise ValueError("campaign run-mode manifest schema is malformed")
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 3:
+        raise ValueError("campaign run-mode schema version is unsupported")
+
+    mode = payload.get("mode")
+    claims_permitted = payload.get("scientific_claims_permitted")
+    if (
+        mode not in {"canonical", "reduced_non_scientific"}
+        or type(claims_permitted) is not bool
+        or claims_permitted is not (mode == "canonical")
+    ):
+        raise ValueError("campaign run mode and claim policy are inconsistent")
+    if payload.get("effective_config_sha256") != sha256_file(config_path):
+        raise ValueError("campaign run-mode configuration provenance mismatch")
+    if payload.get("code_manifest_sha256") != sha256_file(code_manifest_path):
+        raise ValueError("campaign run-mode code provenance mismatch")
+    if payload.get("git_commit") != git_commit:
+        raise ValueError("campaign run-mode Git provenance mismatch")
+
+    canonical_name = payload.get("canonical_config")
+    canonical_digest = payload.get("canonical_config_sha256")
+    overrides = payload.get("overrides")
+    controls = payload.get("execution_controls")
+    identity = payload.get("execution_identity")
+    if (
+        not isinstance(canonical_name, str)
+        or not canonical_name
+        or Path(canonical_name).name != canonical_name
+        or not isinstance(canonical_digest, str)
+        or not isinstance(overrides, dict)
+        or not isinstance(controls, dict)
+        or set(controls) != {"calibration_grid_limit"}
+        or not isinstance(identity, dict)
+    ):
+        raise ValueError("campaign run-mode policy fields are malformed")
+    grid_limit = controls["calibration_grid_limit"]
+    if mode == "canonical":
+        if (
+            canonical_digest != payload["effective_config_sha256"]
+            or overrides
+            or grid_limit is not None
+        ):
+            raise ValueError("canonical campaign run-mode policy is inconsistent")
+    elif type(grid_limit) is not int or not 0 < grid_limit <= len(CALIBRATION_GRID):
+        raise ValueError("reduced campaign run-mode policy is inconsistent")
+    return dict(payload)
 
 
 def _stage_evidence_exists(

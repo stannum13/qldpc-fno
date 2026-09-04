@@ -129,11 +129,11 @@ allow the opposite result—that the prior gives no accuracy benefit or adds mor
 cost than it removes. This is why the held-out comparison ranks validity and
 logical block errors before timing.
 
-The implementation includes pilot selection, role-separated sampling, resumable
-teacher generation and FNO training, hybrid calibration, and paired held-out
-evaluation. Calibration output alone is not evidence that either hybrid beats
-uniform BP-LSD, and no canonical held-out result is claimed until a campaign is
-run and its artifacts are reported.
+The implementation includes pilot or predeclared fixed selection, role-separated
+sampling, resumable teacher generation and FNO training, hybrid calibration, and
+paired held-out evaluation. Calibration output alone is not evidence that either
+hybrid beats uniform BP-LSD, and no canonical held-out result is claimed until a
+campaign is run and its artifacts are reported.
 
 ## A separate future question: temporal hardware data
 

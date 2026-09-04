@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from qldpc_fno.campaign.inputs import CampaignInputRequest, prepare_campaign_inputs
+from qldpc_fno.campaign.inputs import (
+    CampaignInputRequest,
+    prepare_campaign_inputs,
+    verify_campaign_run_mode,
+)
 from qldpc_fno.campaign.storage import LocalArtifactStore
 
 
@@ -131,4 +135,69 @@ def test_canonical_input_policy_rejects_non_null_calibration_grid_limit(
                 tmp_path,
                 calibration_grid_limit=1,
             ),
+        )
+
+
+def test_verified_run_mode_binds_mode_claims_config_code_and_commit(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path / "store")
+    request = _request(tmp_path)
+    prepared = prepare_campaign_inputs(store, tmp_path / "work", request)
+
+    verified = verify_campaign_run_mode(
+        prepared.run_mode,
+        config_path=prepared.config,
+        code_manifest_path=prepared.code / "code.json",
+        git_commit=request.git_commit,
+    )
+
+    assert verified["mode"] == "canonical"
+    assert verified["scientific_claims_permitted"] is True
+
+
+def test_verified_run_mode_rejects_float_schema_version(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path / "store")
+    request = _request(tmp_path)
+    prepared = prepare_campaign_inputs(store, tmp_path / "work", request)
+    payload = json.loads(prepared.run_mode.read_text())
+    payload["schema_version"] = 3.0
+    prepared.run_mode.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="schema version is unsupported"):
+        verify_campaign_run_mode(
+            prepared.run_mode,
+            config_path=prepared.config,
+            code_manifest_path=prepared.code / "code.json",
+            git_commit=request.git_commit,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("mode", "reduced_non_scientific", "mode and claim policy"),
+        ("scientific_claims_permitted", False, "mode and claim policy"),
+        ("effective_config_sha256", "0" * 64, "configuration provenance"),
+        ("code_manifest_sha256", "0" * 64, "code provenance"),
+        ("git_commit", "b" * 40, "Git provenance"),
+    ],
+)
+def test_verified_run_mode_rejects_provenance_or_claim_drift(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    store = LocalArtifactStore(tmp_path / "store")
+    request = _request(tmp_path)
+    prepared = prepare_campaign_inputs(store, tmp_path / "work", request)
+    payload = json.loads(prepared.run_mode.read_text())
+    payload[field] = value
+    prepared.run_mode.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match=message):
+        verify_campaign_run_mode(
+            prepared.run_mode,
+            config_path=prepared.config,
+            code_manifest_path=prepared.code / "code.json",
+            git_commit=request.git_commit,
         )

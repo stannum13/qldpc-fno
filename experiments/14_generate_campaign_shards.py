@@ -8,6 +8,7 @@ from scipy import sparse
 
 from qldpc_fno.artifacts import sha256_file, verify_sha256
 from qldpc_fno.campaign.config import CampaignConfig
+from qldpc_fno.campaign.selection import verify_selection_publication
 from qldpc_fno.campaign.shards import (
     allocate_total_shots,
     validate_campaign_code,
@@ -31,37 +32,12 @@ def main() -> None:
     config = CampaignConfig.from_json(args.config)
     code_manifest_path = args.code / "code.json"
     code_manifest_sha256 = sha256_file(code_manifest_path)
-    pilot_manifest_path = args.selection.parent / "manifest.json"
-    pilot_manifest = json.loads(pilot_manifest_path.read_text())
-    if pilot_manifest.get("complete") is not True or pilot_manifest.get("role") != "pilot":
-        raise ValueError("selection does not belong to a completed pilot publication")
-    verify_sha256(
+    selection = verify_selection_publication(
         args.selection,
-        str(pilot_manifest["selection_sha256"]),
-        label="selection",
+        config_path=args.config,
+        code_manifest_path=code_manifest_path,
     )
-    selection = json.loads(args.selection.read_text())
-    selection_sources = selection.get("source_sha256")
-    if not isinstance(selection_sources, dict):
-        raise TypeError("selection is missing source SHA-256 provenance")
-    if selection_sources.get("config") != sha256_file(args.config):
-        raise ValueError("campaign configuration SHA-256 mismatch in selection provenance")
-    if selection_sources.get("code_manifest") != code_manifest_sha256:
-        raise ValueError("code manifest SHA-256 mismatch in selection provenance")
-    if selection.get("selection_mode") != config.selection_mode:
-        raise ValueError("selection mode does not match campaign configuration")
-    evidence_roles = {
-        "fixed": "predeclared_selection_not_evidence",
-        "pilot": "selection_only_not_held_out",
-    }
-    if selection.get("evidence_role") != evidence_roles[config.selection_mode]:
-        raise ValueError("selection evidence role does not match campaign configuration")
-    raw_rates = selection.get("selected_noise_points")
-    if not isinstance(raw_rates, list) or not raw_rates:
-        raise ValueError("selection must contain non-empty selected_noise_points")
-    if config.selection_mode == "fixed" and tuple(raw_rates) != config.noise_grid:
-        raise ValueError("fixed selection rates do not match configured noise_grid")
-    rates = sorted(float(rate) for rate in raw_rates)
+    rates = list(selection.rates)
 
     code_metadata = json.loads(code_manifest_path.read_text())
     hx_path = args.code / "hx.npz"
@@ -102,8 +78,8 @@ def main() -> None:
         source_code_sha256=code_manifest_sha256,
         source_artifact_sha256={
             "config": sha256_file(args.config),
-            "pilot_manifest": sha256_file(pilot_manifest_path),
-            "selection": sha256_file(args.selection),
+            "pilot_manifest": selection.manifest_sha256,
+            "selection": selection.selection_sha256,
         },
     )
 

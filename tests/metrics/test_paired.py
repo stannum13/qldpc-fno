@@ -95,10 +95,13 @@ def test_paired_summary_rejects_non_shot_outcomes(
         paired_decoder_summary(baseline, hybrid)
 
 
-@pytest.mark.parametrize("alpha", [float("nan"), 0.0, 1.0, -0.1, 1.1])
-def test_paired_summary_rejects_invalid_alpha(alpha: float) -> None:
-    with pytest.raises(ValueError, match="alpha must be strictly between zero and one"):
-        paired_decoder_summary(np.zeros(2, dtype=bool), np.zeros(2, dtype=bool), alpha=alpha)
+def test_paired_summary_interval_is_fixed_at_95_percent() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'alpha'"):
+        paired_decoder_summary(  # type: ignore[call-arg]
+            np.zeros(2, dtype=bool),
+            np.zeros(2, dtype=bool),
+            alpha=0.1,
+        )
 
 
 def _valid_status_summary() -> dict[str, object]:
@@ -165,16 +168,45 @@ def test_paired_status_rejects_invalid_exact_pvalue(pvalue: float) -> None:
         paired_comparison_status(summary, fixed_sample=True)
 
 
+@pytest.mark.parametrize("pvalue", [False, True, "0.0078125", None])
+def test_paired_status_rejects_boolean_or_non_numeric_exact_pvalue(pvalue: object) -> None:
+    summary = _valid_status_summary()
+    summary["mcnemar_exact_pvalue_two_sided"] = pvalue
+    with pytest.raises(TypeError, match="must be numeric"):
+        paired_comparison_status(summary, fixed_sample=True)
+
+
+def test_paired_status_rejects_pvalue_inconsistent_with_discordant_counts() -> None:
+    summary = _valid_status_summary()
+    summary["mcnemar_exact_pvalue_two_sided"] = 0.0
+    with pytest.raises(ValueError, match="does not match discordant counts"):
+        paired_comparison_status(summary, fixed_sample=True)
+
+
+def test_paired_status_rejects_zero_for_tiny_nonzero_exact_pvalue() -> None:
+    summary = paired_decoder_summary(
+        np.zeros(60, dtype=np.bool_),
+        np.ones(60, dtype=np.bool_),
+    )
+    assert 0.0 < summary["mcnemar_exact_pvalue_two_sided"] < 1e-15
+    summary["mcnemar_exact_pvalue_two_sided"] = 0.0
+    with pytest.raises(ValueError, match="does not match discordant counts"):
+        paired_comparison_status(summary, fixed_sample=True)
+
+
 @pytest.mark.parametrize("fixed_sample", [None, 1, "true"])
 def test_paired_status_rejects_non_boolean_fixed_sample(fixed_sample: object) -> None:
     with pytest.raises(TypeError, match="fixed_sample must be boolean"):
         paired_comparison_status(_valid_status_summary(), fixed_sample=fixed_sample)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("alpha", [float("nan"), 0.0, 1.0, -0.1, 1.1])
-def test_paired_status_rejects_invalid_alpha(alpha: float) -> None:
-    with pytest.raises(ValueError, match="alpha must be strictly between zero and one"):
-        paired_comparison_status(_valid_status_summary(), fixed_sample=True, alpha=alpha)
+def test_paired_status_threshold_is_fixed_at_five_percent() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'alpha'"):
+        paired_comparison_status(  # type: ignore[call-arg]
+            _valid_status_summary(),
+            fixed_sample=True,
+            alpha=0.1,
+        )
 
 
 def test_adaptive_stop_requires_every_decoder_to_reach_failure_target() -> None:

@@ -102,6 +102,10 @@ class CampaignConfig:
         return config
 
     def _validate(self) -> None:
+        if not isinstance(self.selection_mode, str):
+            raise ValueError("selection_mode must be a string")  # noqa: TRY004
+        if not isinstance(self.test_stopping_mode, str):
+            raise ValueError("test_stopping_mode must be a string")  # noqa: TRY004
         if self.selection_mode not in {"pilot", "fixed"}:
             raise ValueError("selection_mode must be 'pilot' or 'fixed'")
         if self.test_stopping_mode not in {"adaptive", "fixed"}:

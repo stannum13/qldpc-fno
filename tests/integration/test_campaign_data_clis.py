@@ -9,6 +9,7 @@ import numpy as np
 from scipy import sparse
 
 from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.campaign.shards import select_noise_points
 
 
 def _write_noncanonical_code(path: Path) -> None:
@@ -30,13 +31,18 @@ def _write_noncanonical_code(path: Path) -> None:
     )
 
 
-def _write_reduced_config(path: Path, *, training_seed: int = 1701) -> None:
+def _write_reduced_config(
+    path: Path,
+    *,
+    training_seed: int = 1701,
+    selection_mode: str = "fixed",
+) -> None:
     write_canonical_json(
         path,
         {
             "campaign_seed": 20260901,
             "noise_grid": [0.003, 0.005],
-            "selection_mode": "pilot",
+            "selection_mode": selection_mode,
             "pilot_shots_per_point": 8,
             "train_shots_cap": 8,
             "calibration_shots_cap": 8,
@@ -123,7 +129,7 @@ def _write_selection(
     config: Path,
     code_manifest: Path,
     selected_noise_points: list[float] | None = None,
-    selection_mode: str = "pilot",
+    selection_mode: str = "fixed",
 ) -> None:
     evidence_role = {
         "fixed": "predeclared_selection_not_evidence",
@@ -146,7 +152,12 @@ def _write_selection(
     )
     write_canonical_json(
         path.parent / "manifest.json",
-        {"complete": True, "role": "pilot", "selection_sha256": sha256_file(path)},
+        {
+            "complete": True,
+            "role": "pilot",
+            "selection_sha256": sha256_file(path),
+            "shards": {},
+        },
     )
 
 
@@ -212,7 +223,69 @@ def test_reduced_real_code_campaign_data_flow_with_dynamic_extension(tmp_path: P
     assert selection["evidence_role"] == "selection_only_not_held_out"
     assert len(selection["pilot_rows"]) > 1
     assert selection["pilot_rows"][1]["error_rate"] == 0.0045
-    assert json.loads((pilot_dir / "manifest.json").read_text())["complete"] is True
+    pilot_manifest = json.loads((pilot_dir / "manifest.json").read_text())
+    assert pilot_manifest["complete"] is True
+
+    missing_pilot_shard = min(pilot_manifest["shards"])
+    missing_pilot_shard_path = pilot_dir / missing_pilot_shard
+    missing_pilot_shard_bytes = missing_pilot_shard_path.read_bytes()
+    missing_pilot_shard_path.unlink()
+    rejected_missing_pilot_shard = _run_shard_cli(
+        config=config_path,
+        code=code_dir,
+        selection=selection_path,
+        output=campaign_dir / "missing-pilot-shard/train",
+        shots=16,
+    )
+    assert rejected_missing_pilot_shard.returncode != 0
+    assert "completion manifest shard set does not match" in rejected_missing_pilot_shard.stderr
+    missing_pilot_shard_path.write_bytes(missing_pilot_shard_bytes)
+
+    selection_bytes = selection_path.read_bytes()
+    pilot_manifest_path = pilot_dir / "manifest.json"
+    pilot_manifest_bytes = pilot_manifest_path.read_bytes()
+    rehashed_selection = dict(selection)
+    rehashed_selection["selected_noise_points"] = [selection["pilot_rows"][0]["error_rate"]]
+    write_canonical_json(selection_path, rehashed_selection)
+    pilot_manifest["selection_sha256"] = sha256_file(selection_path)
+    write_canonical_json(pilot_manifest_path, pilot_manifest)
+    rejected_rehashed_selection = _run_shard_cli(
+        config=config_path,
+        code=code_dir,
+        selection=selection_path,
+        output=campaign_dir / "rehashed-selection/train",
+        shots=16,
+    )
+    assert rejected_rehashed_selection.returncode != 0
+    assert "selected noise points disagree with pilot rows" in rejected_rehashed_selection.stderr
+    selection_path.write_bytes(selection_bytes)
+    pilot_manifest_path.write_bytes(pilot_manifest_bytes)
+
+    coordinated_selection = json.loads(selection_bytes)
+    first_row = coordinated_selection["pilot_rows"][0]
+    first_row["block_errors"] = (
+        0 if first_row["block_errors"] else first_row["shots"]
+    )
+    coordinated_selection["selected_noise_points"] = list(
+        select_noise_points(coordinated_selection["pilot_rows"])
+    )
+    write_canonical_json(selection_path, coordinated_selection)
+    coordinated_manifest = json.loads(pilot_manifest_bytes)
+    coordinated_manifest["selection_sha256"] = sha256_file(selection_path)
+    write_canonical_json(pilot_manifest_path, coordinated_manifest)
+    rejected_coordinated_selection = _run_shard_cli(
+        config=config_path,
+        code=code_dir,
+        selection=selection_path,
+        output=campaign_dir / "coordinated-selection/train",
+        shots=16,
+    )
+    assert rejected_coordinated_selection.returncode != 0
+    assert "block_errors disagree with verified pilot outcomes" in (
+        rejected_coordinated_selection.stderr
+    )
+    selection_path.write_bytes(selection_bytes)
+    pilot_manifest_path.write_bytes(pilot_manifest_bytes)
 
     for role, shots in (("train", 16), ("calibration", 16), ("test", 1)):
         result = _run_shard_cli(
@@ -318,7 +391,12 @@ def test_fixed_selection_cli_rejects_selection_mode_mismatch(tmp_path: Path) -> 
     selection_path = pilot_dir / "selection.json"
     _write_noncanonical_code(code_dir)
     _write_fixed_config(config_path)
-    _write_selection(selection_path, config=config_path, code_manifest=code_dir / "code.json")
+    _write_selection(
+        selection_path,
+        config=config_path,
+        code_manifest=code_dir / "code.json",
+        selection_mode="pilot",
+    )
 
     result = _run_shard_cli(
         config=config_path,
@@ -362,7 +440,7 @@ def test_pilot_cli_rejects_noncanonical_code(tmp_path: Path) -> None:
     code_dir = tmp_path / "code"
     config_path = tmp_path / "campaign.json"
     _write_noncanonical_code(code_dir)
-    _write_reduced_config(config_path)
+    _write_reduced_config(config_path, selection_mode="pilot")
 
     result = subprocess.run(
         [
