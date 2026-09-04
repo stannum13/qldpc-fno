@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
+import re
 from dataclasses import dataclass, replace
 
 import torch
@@ -25,7 +27,7 @@ class SequenceRoleBatch:
     syndromes: torch.Tensor
     targets: torch.Tensor
     scored_mask: torch.Tensor
-    sequence_ids: tuple[str, ...] | None = None
+    sequence_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if self.role == "test":
@@ -50,24 +52,18 @@ class SequenceRoleBatch:
             raise ValueError("targets must be binary")
         if self.syndromes.data_ptr() == self.targets.data_ptr():
             raise ValueError("observed inputs and supervision must be physically separate")
-        if self.sequence_ids is None:
-            object.__setattr__(
-                self,
-                "sequence_ids",
-                tuple(f"{self.role}:{index}" for index in range(self.syndromes.shape[0])),
-            )
-        elif (
+        if not self.sequence_ids and self.role != "overfit_fixture":
+            raise ValueError("scientific batches require explicit immutable sequence_ids")
+        if (
             len(self.sequence_ids) != self.syndromes.shape[0]
             or len(set(self.sequence_ids)) != len(self.sequence_ids)
         ):
             raise ValueError("sequence_ids must uniquely identify every complete sequence")
+        if any(re.fullmatch(r"[0-9a-f]{64}", identity) is None for identity in self.sequence_ids):
+            raise ValueError("sequence_ids must be lowercase SHA-256 provenance identities")
 
     def with_role(self, role: str) -> SequenceRoleBatch:
-        return replace(
-            self,
-            role=role,
-            sequence_ids=tuple(f"{role}:{index}" for index in range(self.syndromes.shape[0])),
-        )
+        return replace(self, role=role)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +114,10 @@ def build_overfit_fixture(config: CausalExperimentConfig) -> SequenceRoleBatch:
         syndromes=syndromes,
         targets=targets,
         scored_mask=scored_mask,
+        sequence_ids=tuple(
+            hashlib.sha256(f"overfit-fixture:{fixture.seed}:{index}".encode()).hexdigest()
+            for index in range(fixture.sequences)
+        ),
     )
 
 
@@ -269,9 +269,6 @@ def train_causal_forecaster(
     train: SequenceRoleBatch,
     validation: SequenceRoleBatch,
     config: CausalExperimentConfig,
-    max_epochs: int | None = None,
-    learning_rate: float | None = None,
-    tie_tolerance: float = 0.0,
 ) -> CausalTrainingResult:
     """Train complete sequences and select the earliest validation-NLL winner."""
 
@@ -281,18 +278,15 @@ def train_causal_forecaster(
         raise ValueError("validation batch must have role 'validation'")
     if set(train.sequence_ids) & set(validation.sequence_ids):
         raise ValueError("training and validation sequence membership must be disjoint")
-    epochs = config.optimizer.max_epochs if max_epochs is None else max_epochs
-    rate = config.optimizer.learning_rate if learning_rate is None else learning_rate
-    if type(epochs) is not int or epochs <= 0 or rate <= 0.0 or tie_tolerance < 0.0:
-        raise ValueError("training overrides are invalid")
-
     _initialize_for_training(
         model,
         seed=config.optimizer.training_seed,
         base_probability=config.generator.base_probability,
     )
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=rate, weight_decay=config.optimizer.weight_decay
+        model.parameters(),
+        lr=config.optimizer.learning_rate,
+        weight_decay=config.optimizer.weight_decay,
     )
     model.eval()
     with torch.no_grad():
@@ -303,7 +297,7 @@ def train_causal_forecaster(
     validation_history = [best_nll]
     shuffle_generator = torch.Generator(device="cpu")
     shuffle_generator.manual_seed(config.optimizer.training_seed)
-    for epoch in range(1, epochs + 1):
+    for epoch in range(1, config.optimizer.max_epochs + 1):
         model.train()
         permutation = torch.randperm(
             train.syndromes.shape[0], generator=shuffle_generator
@@ -323,7 +317,7 @@ def train_causal_forecaster(
         with torch.no_grad():
             validation_nll = float(_scored_nll(model, validation))
         validation_history.append(validation_nll)
-        if validation_nll < best_nll - tie_tolerance:
+        if validation_nll < best_nll:
             best_nll = validation_nll
             best_epoch = epoch
             best_state = copy.deepcopy(model.state_dict())
@@ -344,7 +338,18 @@ def fit_calibration_temperature(logits: torch.Tensor, calibration: SequenceRoleB
         raise ValueError("calibration batch must have role 'calibration'")
     if logits.shape != calibration.targets.shape:
         raise ValueError("calibration logits and targets must have equal shapes")
-    log_temperature = torch.zeros((), dtype=logits.dtype, requires_grad=True)
+    if not logits.is_floating_point() or not torch.all(torch.isfinite(logits)):
+        raise ValueError("calibration logits must be finite floating-point values")
+    detached_logits = logits.detach()
+    detached_targets = calibration.targets.detach().to(
+        device=detached_logits.device, dtype=detached_logits.dtype
+    )
+    if not torch.all(torch.isfinite(detached_targets)):
+        raise ValueError("calibration targets must be finite")
+    scored_mask = calibration.scored_mask.to(device=detached_logits.device)
+    log_temperature = torch.zeros(
+        (), device=detached_logits.device, dtype=detached_logits.dtype, requires_grad=True
+    )
     optimizer = torch.optim.LBFGS(
         [log_temperature], lr=0.5, max_iter=100, tolerance_grad=1e-10, line_search_fn="strong_wolfe"
     )
@@ -353,11 +358,14 @@ def fit_calibration_temperature(logits: torch.Tensor, calibration: SequenceRoleB
         optimizer.zero_grad(set_to_none=True)
         temperature = log_temperature.exp()
         loss = nn.functional.binary_cross_entropy_with_logits(
-            logits[:, calibration.scored_mask] / temperature,
-            calibration.targets[:, calibration.scored_mask],
+            detached_logits[:, scored_mask] / temperature,
+            detached_targets[:, scored_mask],
         )
         loss.backward()
         return loss
 
     optimizer.step(closure)
-    return float(log_temperature.detach().exp())
+    temperature = float(log_temperature.detach().exp())
+    if not math.isfinite(temperature) or temperature <= 0.0:
+        raise RuntimeError("temperature optimization did not produce a finite positive value")
+    return temperature
