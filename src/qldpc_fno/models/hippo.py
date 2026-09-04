@@ -6,6 +6,14 @@ import torch
 from torch import nn
 
 
+def _validate_sample_index(value: int, *, name: str, minimum: int) -> None:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an exact integer")
+    if value < minimum:
+        qualifier = "positive" if minimum == 1 else "nonnegative"
+        raise ValueError(f"{name} must be a {qualifier} integer")
+
+
 def _legs_generator(
     order: int,
     *,
@@ -46,8 +54,7 @@ def legs_transition(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the LegS bilinear transition for completed sample index ``step``."""
 
-    if step <= 0:
-        raise ValueError("step must be positive")
+    _validate_sample_index(step, name="step", minimum=1)
     generator, input_vector = _legs_generator(order, dtype=dtype)
     indices = torch.tensor(step, dtype=dtype)
     return _discretize(generator, input_vector, indices)
@@ -76,8 +83,9 @@ class HiPPOLegSMemory(nn.Module):
     ) -> torch.Tensor:
         """Advance one completed sample without constructing per-site matrices."""
 
-        if completed_sample_index <= 0:
-            raise ValueError("completed_sample_index must be positive")
+        _validate_sample_index(
+            completed_sample_index, name="completed_sample_index", minimum=1
+        )
         if state.shape != (*value.shape, self.order):
             raise ValueError("state shape must equal value shape followed by order")
         if value.dtype != state.dtype or value.device != state.device:
@@ -103,10 +111,15 @@ class HiPPOLegSMemory(nn.Module):
         continuing from ``initial_state`` across streaming chunks.
         """
 
-        if type(start_completed_sample_index) is not int:
-            raise TypeError("start_completed_sample_index must be an exact integer")
-        if start_completed_sample_index < 0:
-            raise ValueError("start_completed_sample_index must be a nonnegative integer")
+        _validate_sample_index(
+            start_completed_sample_index,
+            name="start_completed_sample_index",
+            minimum=0,
+        )
+        if (initial_state is None) != (start_completed_sample_index == 0):
+            raise ValueError(
+                "initial_state and start_completed_sample_index must be provided together"
+            )
         if values.ndim < 2:
             raise ValueError("values must have shape (batch, time, ...)")
         expected_state_shape = (*values.shape[:1], *values.shape[2:], self.order)

@@ -145,7 +145,32 @@ def test_forward_rejects_non_exact_integer_completed_sample_offset(offset: objec
         memory(torch.zeros(1, 2), start_completed_sample_index=offset)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("order,step", [(0, 1), (4, 0)])
-def test_transition_rejects_nonpositive_order_or_step(order: int, step: int) -> None:
-    with pytest.raises(ValueError):
-        legs_transition(order, step, dtype=torch.float64)
+@pytest.mark.parametrize("step", [1.5, True])
+def test_transition_rejects_non_exact_integer_step(step: object) -> None:
+    with pytest.raises(TypeError, match="step"):
+        legs_transition(4, step, dtype=torch.float64)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("step", [1.5, True])
+def test_memory_step_rejects_non_exact_integer_index(step: object) -> None:
+    memory = HiPPOLegSMemory(order=4)
+    with pytest.raises(TypeError, match="completed_sample_index"):
+        memory.step(torch.zeros(2), torch.zeros(2, 4), step)  # type: ignore[arg-type]
+
+
+def test_transition_rejects_nonpositive_order_or_step() -> None:
+    with pytest.raises(ValueError, match="order"):
+        legs_transition(0, 1, dtype=torch.float64)
+    with pytest.raises(ValueError, match="step"):
+        legs_transition(4, 0, dtype=torch.float64)
+
+
+def test_forward_requires_continuation_state_and_offset_together() -> None:
+    memory = HiPPOLegSMemory(order=4)
+    values = torch.zeros(2, 3, 5)
+    state = torch.zeros(2, 5, 4)
+
+    with pytest.raises(ValueError, match="initial_state.*start_completed_sample_index"):
+        memory(values, initial_state=state)
+    with pytest.raises(ValueError, match="initial_state.*start_completed_sample_index"):
+        memory(values, start_completed_sample_index=7)
