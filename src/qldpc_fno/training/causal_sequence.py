@@ -16,6 +16,7 @@ from qldpc_fno.models.hippo import HiPPOLegSMemory
 from qldpc_fno.temporal.config import CausalExperimentConfig
 
 _ALLOWED_ROLES = frozenset({"train", "validation", "calibration", "overfit_fixture"})
+_PARTITION_VALIDATION_TOKEN = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,42 @@ class CausalTrainingResult:
     best_validation_nll: float
     training_nll_history: tuple[float, ...]
     validation_nll_history: tuple[float, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RolePartition:
+    """An identity-disjoint train/validation/calibration partition."""
+
+    train_sequence_ids: frozenset[str]
+    validation_sequence_ids: frozenset[str]
+    calibration_sequence_ids: frozenset[str]
+    _validation_token: object
+
+    def __post_init__(self) -> None:
+        if self._validation_token is not _PARTITION_VALIDATION_TOKEN:
+            raise ValueError("RolePartition must be created by validate_role_partition")
+
+
+def validate_role_partition(
+    train: SequenceRoleBatch,
+    validation: SequenceRoleBatch,
+    calibration: SequenceRoleBatch,
+) -> RolePartition:
+    """Validate exact roles and pairwise-disjoint immutable sequence identities."""
+
+    expected = ((train, "train"), (validation, "validation"), (calibration, "calibration"))
+    for batch, role in expected:
+        if batch.role != role:
+            raise ValueError(f"role partition requires {role!r} batch")
+    identities = [set(batch.sequence_ids) for batch, _ in expected]
+    if any(identities[left] & identities[right] for left in range(3) for right in range(left)):
+        raise ValueError("train, validation, and calibration membership must be pairwise disjoint")
+    return RolePartition(
+        train_sequence_ids=frozenset(identities[0]),
+        validation_sequence_ids=frozenset(identities[1]),
+        calibration_sequence_ids=frozenset(identities[2]),
+        _validation_token=_PARTITION_VALIDATION_TOKEN,
+    )
 
 
 def build_overfit_fixture(config: CausalExperimentConfig) -> SequenceRoleBatch:
@@ -331,11 +368,18 @@ def train_causal_forecaster(
     )
 
 
-def fit_calibration_temperature(logits: torch.Tensor, calibration: SequenceRoleBatch) -> float:
+def fit_calibration_temperature(
+    logits: torch.Tensor,
+    calibration: SequenceRoleBatch,
+    *,
+    partition: RolePartition,
+) -> float:
     """Fit one positive scalar temperature using calibration labels only."""
 
     if calibration.role != "calibration":
         raise ValueError("calibration batch must have role 'calibration'")
+    if frozenset(calibration.sequence_ids) != partition.calibration_sequence_ids:
+        raise ValueError("calibration batch does not match the validated partition")
     if logits.shape != calibration.targets.shape:
         raise ValueError("calibration logits and targets must have equal shapes")
     if not logits.is_floating_point() or not torch.all(torch.isfinite(logits)):

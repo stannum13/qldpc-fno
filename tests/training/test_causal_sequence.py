@@ -17,6 +17,7 @@ from qldpc_fno.training.causal_sequence import (
     ideal_previous_channel_forecast,
     overfit_causal_forecaster,
     train_causal_forecaster,
+    validate_role_partition,
 )
 
 CONFIG_PATH = Path("configs/causal_fno_hippo_reduced.json")
@@ -164,23 +165,57 @@ def test_validation_checkpoint_chooses_earliest_tied_step() -> None:
 def test_temperature_uses_calibration_role_only() -> None:
     fixture = build_overfit_fixture(_config())
     logits = torch.where(fixture.targets.bool(), 0.5, -0.5)
+    train = _independent_role_batch(fixture, "train", 19)
+    validation = _independent_role_batch(fixture, "validation", 20)
     calibration = _independent_role_batch(fixture, "calibration", 21)
+    partition = validate_role_partition(train, validation, calibration)
 
-    temperature = fit_calibration_temperature(logits, calibration)
+    temperature = fit_calibration_temperature(logits, calibration, partition=partition)
     assert temperature > 0.0
     with pytest.raises(ValueError, match="calibration batch must have role 'calibration'"):
-        fit_calibration_temperature(logits, fixture.with_role("validation"))
+        fit_calibration_temperature(logits, fixture.with_role("validation"), partition=partition)
+
+
+def test_role_partition_rejects_relabelled_training_membership_as_calibration() -> None:
+    fixture = build_overfit_fixture(_config())
+    train = _independent_role_batch(fixture, "train", 51)
+    validation = _independent_role_batch(fixture, "validation", 52)
+    relabelled_train = train.with_role("calibration")
+
+    with pytest.raises(ValueError, match="pairwise disjoint"):
+        validate_role_partition(train, validation, relabelled_train)
+
+
+def test_calibration_rejects_batch_outside_validated_partition() -> None:
+    fixture = build_overfit_fixture(_config())
+    train = _independent_role_batch(fixture, "train", 61)
+    validation = _independent_role_batch(fixture, "validation", 62)
+    calibration = _independent_role_batch(fixture, "calibration", 63)
+    other_calibration = _independent_role_batch(fixture, "calibration", 64)
+    partition = validate_role_partition(train, validation, calibration)
+
+    with pytest.raises(ValueError, match="validated partition"):
+        fit_calibration_temperature(
+            torch.zeros_like(other_calibration.targets),
+            other_calibration,
+            partition=partition,
+        )
 
 
 def test_temperature_detaches_model_logits_and_leaves_model_state_untouched() -> None:
     config = _config()
     fixture = build_overfit_fixture(config)
     calibration = _independent_role_batch(fixture, "calibration", 31)
+    partition = validate_role_partition(
+        _independent_role_batch(fixture, "train", 29),
+        _independent_role_batch(fixture, "validation", 30),
+        calibration,
+    )
     model = build_forecaster(spatial="cnn", temporal="fir", config=config)
     logits = model.readout(torch.ones(2 * 24, model.width, 45)).reshape(2, 24, 58, 45)
     parameters_before = {name: value.detach().clone() for name, value in model.named_parameters()}
 
-    temperature = fit_calibration_temperature(logits, calibration)
+    temperature = fit_calibration_temperature(logits, calibration, partition=partition)
 
     assert temperature > 0.0
     assert logits.requires_grad
@@ -195,11 +230,16 @@ def test_temperature_detaches_model_logits_and_leaves_model_state_untouched() ->
 def test_temperature_rejects_nonfinite_logits(bad: float) -> None:
     fixture = build_overfit_fixture(_config())
     calibration = _independent_role_batch(fixture, "calibration", 41)
+    partition = validate_role_partition(
+        _independent_role_batch(fixture, "train", 39),
+        _independent_role_batch(fixture, "validation", 40),
+        calibration,
+    )
     logits = torch.zeros_like(calibration.targets)
     logits[0, 0, 0, 0] = bad
 
     with pytest.raises(ValueError, match="finite"):
-        fit_calibration_temperature(logits, calibration)
+        fit_calibration_temperature(logits, calibration, partition=partition)
 
 
 @pytest.mark.parametrize(
