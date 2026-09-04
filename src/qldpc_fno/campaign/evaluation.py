@@ -13,7 +13,7 @@ from time import monotonic, perf_counter
 import numpy as np
 import torch
 
-from qldpc_fno.artifacts import sha256_file, verify_sha256, write_canonical_json
+from qldpc_fno.artifacts import sha256_file, verify_sha256
 from qldpc_fno.campaign.config import CampaignConfig
 from qldpc_fno.campaign.inputs import verify_campaign_run_mode
 from qldpc_fno.campaign.local import resolve_git_commit
@@ -149,10 +149,25 @@ def _git_commit() -> str:
     return resolve_git_commit(Path(__file__).resolve().parents[3])
 
 
+def _canonical_json_bytes(payload: dict[str, object]) -> bytes:
+    return (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+
+
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
-    write_canonical_json(temporary, payload)
+    temporary.unlink(missing_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    descriptor = os.open(temporary, flags, 0o666)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(_canonical_json_bytes(payload))
     os.replace(temporary, path)
+
+
+def _canonical_json_sha256(payload: dict[str, object]) -> str:
+    return hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
 
 
 def _selection_for_evaluation(
@@ -162,12 +177,17 @@ def _selection_for_evaluation(
     code_manifest_path: Path,
     output: Path,
     resume: bool,
-) -> tuple[VerifiedSelectionPublication, dict[str, object] | None, str | None]:
-    """Verify selection semantics once, then validate its durable receipt cheaply."""
+) -> tuple[VerifiedSelectionPublication, dict[str, object] | None, str | None, bool]:
+    """Load selection trust evidence without inferring semantics from path names."""
     if resume:
         receipt_path = output / "selection-verification.json"
-        committed_batches = tuple(output.glob("rate-*/batch-*"))
-        if not receipt_path.exists() and not committed_batches:
+        if receipt_path.is_symlink():
+            raise ValueError("selection verification receipt must not be a symlink")
+        if not receipt_path.exists():
+            if any(entry.name.startswith("rate-") for entry in output.iterdir()):
+                raise ValueError(
+                    "selection verification receipt is missing after evaluation rate artifacts"
+                )
             verified = verify_selection_publication(
                 selection_path,
                 config_path=config_path,
@@ -181,6 +201,7 @@ def _selection_for_evaluation(
                     code_manifest_path=code_manifest_path,
                 ),
                 None,
+                True,
             )
         verified, receipt_sha256 = verify_selection_verification_receipt(
             receipt_path,
@@ -188,15 +209,7 @@ def _selection_for_evaluation(
             config_path=config_path,
             code_manifest_path=code_manifest_path,
         )
-        if not committed_batches:
-            replayed = verify_selection_publication(
-                selection_path,
-                config_path=config_path,
-                code_manifest_path=code_manifest_path,
-            )
-            if replayed != verified:
-                raise ValueError("selection receipt disagrees with semantic replay")
-        return verified, None, receipt_sha256
+        return verified, None, receipt_sha256, False
     verified = verify_selection_publication(
         selection_path,
         config_path=config_path,
@@ -210,6 +223,7 @@ def _selection_for_evaluation(
             code_manifest_path=code_manifest_path,
         ),
         None,
+        True,
     )
 
 
@@ -972,17 +986,30 @@ def _scan_batches(
     _require_plain_directory(rate_dir, label=f"evaluation rate {rate_index} directory")
     staging_directories = sorted(rate_dir.glob(".batch-*.tmp"))
     for staging in staging_directories:
-        staging_index = staging.name.removeprefix(".batch-").removesuffix(".tmp")
         if (
-            len(staging_index) != 5
-            or not staging_index.isdecimal()
+            not _indexed_artifact_name(
+                staging.name,
+                prefix=".batch-",
+                suffix=".tmp",
+            )
             or staging.is_symlink()
             or not staging.is_dir()
         ):
             raise ValueError(f"rate {rate_index} has a malformed batch staging artifact")
     if staging_directories and not allow_staging:
         raise ValueError(f"rate {rate_index} has an unfinished batch staging artifact")
-    batch_directories = sorted(rate_dir.glob("batch-*"))
+    batch_directories = list(rate_dir.glob("batch-*"))
+    if any(
+        not _indexed_artifact_name(directory.name, prefix="batch-")
+        for directory in batch_directories
+    ):
+        raise ValueError(f"rate {rate_index} evaluation batch indices are not consecutive")
+    batch_directories.sort(key=lambda directory: int(directory.name.removeprefix("batch-")))
+    if staging_directories and (
+        len(staging_directories) != 1
+        or staging_directories[0].name != f".batch-{len(batch_directories):05d}.tmp"
+    ):
+        raise ValueError(f"rate {rate_index} has an invalid batch staging lifecycle")
     records: list[_VerifiedBatch] = []
     expected_start = 0
     for batch_index, directory in enumerate(batch_directories):
@@ -1009,6 +1036,122 @@ def _scan_batches(
     return records
 
 
+def _indexed_artifact_name(name: str, *, prefix: str, suffix: str = "") -> bool:
+    if not name.startswith(prefix) or (suffix and not name.endswith(suffix)):
+        return False
+    stop = -len(suffix) if suffix else None
+    index = name[len(prefix) : stop]
+    return (
+        len(index) >= 5
+        and index.isdecimal()
+        and index == f"{int(index):05d}"
+    )
+
+
+def _scan_all_batches(
+    output: Path,
+    *,
+    rates: tuple[float, ...],
+    expected_indices: dict[int, np.ndarray],
+    source_sha256: dict[str, object],
+    allow_staging: bool = False,
+) -> dict[int, list[_VerifiedBatch]]:
+    """Reject undeclared filesystem entries, then recover fully verified batches."""
+    _require_plain_directory(output, label="evaluation output")
+    expected_rate_names = {f"rate-{index:03d}" for index in range(len(rates))}
+    allowed_root_files = {
+        "selection-verification.json",
+        ".selection-verification.json.tmp",
+        "progress.json",
+        ".progress.json.tmp",
+        "manifest.json",
+        ".manifest.json.tmp",
+    }
+    for entry in output.iterdir():
+        if entry.name in expected_rate_names:
+            if entry.is_symlink() or not entry.is_dir():
+                raise ValueError(f"unexpected evaluation rate artifact: {entry}")
+        elif entry.name in allowed_root_files:
+            if entry.is_symlink() or not entry.is_file():
+                raise ValueError(f"unexpected evaluation output artifact: {entry}")
+        else:
+            raise ValueError(f"unexpected evaluation output artifact: {entry}")
+
+    staging_artifacts: list[tuple[int, Path]] = []
+    has_derived_summary = False
+    for rate_index in range(len(rates)):
+        rate_dir = output / f"rate-{rate_index:03d}"
+        if not rate_dir.exists():
+            continue
+        for entry in rate_dir.iterdir():
+            if entry.name in {"summary.json", ".summary.json.tmp"}:
+                if entry.is_symlink() or not entry.is_file():
+                    raise ValueError(f"unexpected evaluation rate artifact: {entry}")
+                has_derived_summary |= entry.name == "summary.json"
+            elif _indexed_artifact_name(entry.name, prefix="batch-") or _indexed_artifact_name(
+                entry.name, prefix=".batch-", suffix=".tmp"
+            ):
+                if entry.is_symlink() or not entry.is_dir():
+                    raise ValueError(f"unexpected evaluation batch artifact: {entry}")
+                if entry.name.startswith(".batch-"):
+                    staging_artifacts.append((rate_index, entry))
+            else:
+                raise ValueError(f"unexpected evaluation rate artifact: {entry}")
+    if len(staging_artifacts) > 1:
+        raise ValueError("evaluation has an invalid batch staging lifecycle")
+    if staging_artifacts and (
+        (output / "manifest.json").is_file() or has_derived_summary
+    ):
+        raise ValueError("evaluation has an invalid batch staging lifecycle")
+
+    return {
+        rate_index: _scan_batches(
+            output,
+            rate_index=rate_index,
+            rate=rate,
+            expected_indices=expected_indices[rate_index],
+            source_sha256=source_sha256,
+            allow_staging=allow_staging,
+        )
+        for rate_index, rate in enumerate(rates)
+    }
+
+
+def _verify_selection_semantics(
+    selection: VerifiedSelectionPublication,
+    *,
+    records: dict[int, list[_VerifiedBatch]],
+    selection_receipt_sha256: str | None,
+    already_verified: bool,
+    selection_path: Path,
+    config_path: Path,
+    code_manifest_path: Path,
+) -> None:
+    """Replay selection unless a verified batch binds the durable receipt."""
+    if already_verified:
+        return
+    if selection_receipt_sha256 is None:
+        raise AssertionError("selection receipt digest is required at the replay boundary")
+    anchor = next((record for rate_records in records.values() for record in rate_records), None)
+    if anchor is not None:
+        sources = anchor.manifest.get("source_sha256")
+        if (
+            not isinstance(sources, dict)
+            or sources.get("selection_verification") != selection_receipt_sha256
+        ):
+            raise ValueError(
+                "verified evaluation batch does not bind the selection verification receipt"
+            )
+        return
+    replayed = verify_selection_publication(
+        selection_path,
+        config_path=config_path,
+        code_manifest_path=code_manifest_path,
+    )
+    if replayed != selection:
+        raise ValueError("selection receipt disagrees with semantic replay")
+
+
 def _discard_batch_staging(output: Path, *, rate_count: int) -> None:
     """Delete only validated local staging directories after resume verification."""
     _require_plain_directory(output, label="evaluation output")
@@ -1021,10 +1164,12 @@ def _discard_batch_staging(output: Path, *, rate_count: int) -> None:
             continue
         _require_plain_directory(rate_dir, label=f"evaluation rate {rate_index} directory")
         for staging in sorted(rate_dir.glob(".batch-*.tmp")):
-            staging_index = staging.name.removeprefix(".batch-").removesuffix(".tmp")
             if (
-                len(staging_index) != 5
-                or not staging_index.isdecimal()
+                not _indexed_artifact_name(
+                    staging.name,
+                    prefix=".batch-",
+                    suffix=".tmp",
+                )
                 or staging.is_symlink()
                 or not staging.is_dir()
             ):
@@ -1096,6 +1241,40 @@ def _load_rate_outcomes(
     return {
         key: np.concatenate(values) if values else np.empty(0) for key, values in batches.items()
     }
+
+
+def _verify_staging_lifecycle(
+    output: Path,
+    *,
+    records: dict[int, list[_VerifiedBatch]],
+    config: CampaignConfig,
+) -> None:
+    staging = [
+        (rate_index, path)
+        for rate_index in sorted(records)
+        for path in (output / f"rate-{rate_index:03d}").glob(".batch-*.tmp")
+    ]
+    if not staging:
+        return
+    if len(staging) != 1:
+        raise ValueError("evaluation has an invalid batch staging lifecycle")
+    first_unfinished: int | None = None
+    for rate_index in sorted(records):
+        counts = _aggregate_counts(records[rate_index])
+        if (
+            test_stop_reason(
+                counts["failures"],
+                shots=int(counts["shots"]),
+                target_failures=config.target_failures,
+                shot_cap=config.max_test_shots_per_point,
+                mode=config.test_stopping_mode,
+            )
+            is None
+        ):
+            first_unfinished = rate_index
+            break
+    if first_unfinished is None or staging[0][0] != first_unfinished:
+        raise ValueError("evaluation batch staging is not at the first unfinished rate")
 
 
 def _decoder_summary(outcomes: dict[str, np.ndarray], decoder: str) -> dict[str, object]:
@@ -1810,13 +1989,20 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
     if not args.out.exists() and args.resume:
         raise FileNotFoundError("evaluation resume output does not exist")
     new_output = not args.out.exists()
-    selection, selection_receipt, selection_receipt_sha256 = _selection_for_evaluation(
+    (
+        selection,
+        selection_receipt,
+        selection_receipt_sha256,
+        selection_semantics_verified,
+    ) = _selection_for_evaluation(
         selection_path=args.selection,
         config_path=args.config,
         code_manifest_path=code_manifest_path,
         output=args.out,
         resume=args.resume,
     )
+    if selection_receipt is not None:
+        selection_receipt_sha256 = _canonical_json_sha256(selection_receipt)
     rates = selection.rates
     test_shards = load_verified_shards(
         args.test,
@@ -1863,12 +2049,6 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         }
         for method in _HYBRIDS
     }
-    if new_output:
-        args.out.mkdir(parents=True)
-    if selection_receipt is not None:
-        receipt_path = args.out / "selection-verification.json"
-        _write_json_atomic(receipt_path, selection_receipt)
-        selection_receipt_sha256 = sha256_file(receipt_path)
     if selection_receipt_sha256 is None:
         raise AssertionError("evaluation selection verification receipt was not resolved")
     source_sha256.update(
@@ -1890,6 +2070,36 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
 
     if new_output:
         records = {index: [] for index in range(len(rates))}
+    else:
+        records = _scan_all_batches(
+            args.out,
+            rates=rates,
+            expected_indices=rate_indices,
+            source_sha256=source_sha256,
+            allow_staging=args.resume,
+        )
+    for rate_records in records.values():
+        _verify_batch_trajectory(rate_records, config=config)
+    if not new_output:
+        _verify_staging_lifecycle(args.out, records=records, config=config)
+    _verify_selection_semantics(
+        selection,
+        records=records,
+        selection_receipt_sha256=selection_receipt_sha256,
+        already_verified=selection_semantics_verified,
+        selection_path=args.selection,
+        config_path=args.config,
+        code_manifest_path=code_manifest_path,
+    )
+
+    if new_output:
+        args.out.mkdir(parents=True)
+    if selection_receipt is not None:
+        receipt_path = args.out / "selection-verification.json"
+        _write_json_atomic(receipt_path, selection_receipt)
+        if sha256_file(receipt_path) != selection_receipt_sha256:
+            raise AssertionError("selection verification receipt serialization changed")
+    if new_output:
         _write_progress(
             args.out,
             source_sha256=source_sha256,
@@ -1897,19 +2107,6 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
             rate_records=records,
             status="in_progress",
         )
-    records = {
-        index: _scan_batches(
-            args.out,
-            rate_index=index,
-            rate=rate,
-            expected_indices=rate_indices[index],
-            source_sha256=source_sha256,
-            allow_staging=args.resume,
-        )
-        for index, rate in enumerate(rates)
-    }
-    for rate_records in records.values():
-        _verify_batch_trajectory(rate_records, config=config)
     if args.resume:
         progress_path = args.out / "progress.json"
         if not progress_path.exists() and not any(records.values()):

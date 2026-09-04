@@ -6,9 +6,15 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 from scipy import sparse
 
 from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.campaign import evaluation as evaluation_module
+from qldpc_fno.campaign.selection import (
+    VerifiedSelectionPublication,
+    selection_verification_receipt,
+)
 from qldpc_fno.campaign.shards import select_noise_points
 
 
@@ -284,6 +290,75 @@ def test_reduced_real_code_campaign_data_flow_with_dynamic_extension(tmp_path: P
     assert "block_errors disagree with verified pilot outcomes" in (
         rejected_coordinated_selection.stderr
     )
+    selection_path.write_bytes(selection_bytes)
+    pilot_manifest_path.write_bytes(pilot_manifest_bytes)
+    receipt_laundered_selection = json.loads(selection_bytes)
+    receipt_laundered_row = receipt_laundered_selection["pilot_rows"][0]
+    receipt_laundered_row["converged"] = (
+        0 if receipt_laundered_row["converged"] else receipt_laundered_row["shots"]
+    )
+    write_canonical_json(selection_path, receipt_laundered_selection)
+    receipt_laundered_manifest = json.loads(pilot_manifest_bytes)
+    receipt_laundered_manifest["selection_sha256"] = sha256_file(selection_path)
+    write_canonical_json(pilot_manifest_path, receipt_laundered_manifest)
+    false_selection = VerifiedSelectionPublication(
+        evidence_role=receipt_laundered_selection["evidence_role"],
+        manifest_sha256=sha256_file(pilot_manifest_path),
+        rates=tuple(receipt_laundered_selection["selected_noise_points"]),
+        selection_mode=receipt_laundered_selection["selection_mode"],
+        selection_sha256=sha256_file(selection_path),
+    )
+    false_receipt = selection_verification_receipt(
+        false_selection,
+        config_path=config_path,
+        code_manifest_path=code_dir / "code.json",
+    )
+    for rogue_kind in ("unexpected-rate", "file", "symlink", "empty-dir"):
+        evaluation = campaign_dir / f"false-pilot-{rogue_kind}/evaluation"
+        evaluation.mkdir(parents=True)
+        receipt_path = evaluation / "selection-verification.json"
+        write_canonical_json(receipt_path, false_receipt)
+        if rogue_kind == "unexpected-rate":
+            rogue = evaluation / "rate-999/batch-marker"
+            rogue.mkdir(parents=True)
+        else:
+            rate_dir = evaluation / "rate-000"
+            rate_dir.mkdir()
+            rogue = rate_dir / "batch-00000"
+            if rogue_kind == "file":
+                rogue.write_text("not a verified batch\n")
+            elif rogue_kind == "symlink":
+                target = campaign_dir / f"false-pilot-{rogue_kind}-target"
+                target.mkdir()
+                rogue.symlink_to(target, target_is_directory=True)
+            else:
+                rogue.mkdir()
+        structurally_verified, receipt, receipt_sha256, semantics_verified = (
+            evaluation_module._selection_for_evaluation(
+                selection_path=selection_path,
+                config_path=config_path,
+                code_manifest_path=code_dir / "code.json",
+                output=evaluation,
+                resume=True,
+            )
+        )
+        assert structurally_verified == false_selection
+        assert receipt is None
+        assert semantics_verified is False
+        with pytest.raises(
+            ValueError,
+            match="unexpected evaluation|incomplete evaluation batch",
+        ):
+            evaluation_module._scan_all_batches(
+                evaluation,
+                rates=false_selection.rates,
+                expected_indices={
+                    index: np.arange(1, dtype=np.int64)
+                    for index in range(len(false_selection.rates))
+                },
+                source_sha256={"selection_verification": receipt_sha256},
+                allow_staging=True,
+            )
     selection_path.write_bytes(selection_bytes)
     pilot_manifest_path.write_bytes(pilot_manifest_bytes)
 

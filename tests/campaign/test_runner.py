@@ -858,48 +858,74 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
     rate_summary = {
         "comparison_status": {"soft_prior": "inconclusive", "residual": "harm_detected"},
         "decoders": {
-            name: {
-                "block_error_rate": 0.125,
-                "block_error_rate_95ci_high": 0.47,
-                "block_error_rate_95ci_low": 0.02,
-                "block_errors": 1,
-                "latency_seconds": {"p50": 0.01, "p95": 0.02},
-                "shots": 8,
-                "syndrome_valid_rate": 1.0,
-            }
-            for name in ("baseline", "soft_prior", "residual")
+            "baseline": {
+                "block_error_rate": 0.111,
+                "block_error_rate_95ci_high": 0.211,
+                "block_error_rate_95ci_low": 0.011,
+                "block_errors": 101,
+                "latency_seconds": {"p50": 0.311, "p95": 0.411},
+                "shots": 801,
+                "syndrome_valid_rate": 0.911,
+            },
+            "soft_prior": {
+                "block_error_rate": 0.122,
+                "block_error_rate_95ci_high": 0.222,
+                "block_error_rate_95ci_low": 0.022,
+                "block_errors": 102,
+                "latency_seconds": {"p50": 0.322, "p95": 0.422},
+                "shots": 802,
+                "syndrome_valid_rate": 0.922,
+            },
+            "residual": {
+                "block_error_rate": 0.133,
+                "block_error_rate_95ci_high": 0.233,
+                "block_error_rate_95ci_low": 0.033,
+                "block_errors": 103,
+                "latency_seconds": {"p50": 0.333, "p95": 0.433},
+                "shots": 803,
+                "syndrome_valid_rate": 0.933,
+            },
         },
         "error_rate": 0.01,
         "diagnostics": {
-            "soft_prior_end_to_end_latency_seconds": {"p50": 0.02, "p95": 0.03},
-            "residual_end_to_end_latency_seconds": {"p50": 0.03, "p95": 0.04},
+            "soft_prior_end_to_end_latency_seconds": {"p50": 0.344, "p95": 0.444},
+            "residual_end_to_end_latency_seconds": {"p50": 0.355, "p95": 0.455},
         },
         "paired": {
             "soft_prior": {
-                "baseline_only_failure": 1,
-                "both_fail": 1,
-                "both_succeed": 4,
-                "hybrid_only_failure": 2,
-                "discordant_pairs": 3,
-                "block_error_delta": 0.01,
-                "mcnemar_exact_pvalue_benefit": 0.314159,
-                "mcnemar_exact_pvalue_harm": 0.271828,
-                "mcnemar_exact_pvalue_two_sided": 1.0,
-                "hybrid_harm_share_given_discordance": 2 / 3,
-                "hybrid_harm_share_given_discordance_95ci_low": 0.09429932405024608,
-                "hybrid_harm_share_given_discordance_95ci_high": 0.9915962413403874,
-            }
+                "baseline_only_failure": 11,
+                "both_fail": 14,
+                "both_succeed": 13,
+                "hybrid_only_failure": 12,
+                "discordant_pairs": 23,
+                "block_error_delta": 0.101,
+                "mcnemar_exact_pvalue_benefit": 0.401,
+                "mcnemar_exact_pvalue_harm": 0.301,
+                "mcnemar_exact_pvalue_two_sided": 0.201,
+                "hybrid_harm_share_given_discordance": 0.501,
+                "hybrid_harm_share_given_discordance_95ci_low": 0.601,
+                "hybrid_harm_share_given_discordance_95ci_high": 0.701,
+            },
+            "residual": {
+                "baseline_only_failure": 21,
+                "both_fail": 25,
+                "both_succeed": 24,
+                "hybrid_only_failure": 22,
+                "discordant_pairs": 43,
+                "block_error_delta": 0.102,
+                "mcnemar_exact_pvalue_benefit": 0.402,
+                "mcnemar_exact_pvalue_harm": 0.302,
+                "mcnemar_exact_pvalue_two_sided": 0.202,
+                "hybrid_harm_share_given_discordance": 0.502,
+                "hybrid_harm_share_given_discordance_95ci_low": 0.602,
+                "hybrid_harm_share_given_discordance_95ci_high": 0.702,
+            },
         },
         "shots": 8,
         "source_sha256": {"test_manifest": "held-out"},
         "status": "complete",
         "stop_reason": "shot_cap",
     }
-    paired_metrics = rate_summary["paired"]
-    assert isinstance(paired_metrics, dict)
-    soft_prior_metrics = paired_metrics["soft_prior"]
-    assert isinstance(soft_prior_metrics, dict)
-    paired_metrics["residual"] = dict(soft_prior_metrics)
     write_canonical_json(evaluation / "rate-000/summary.json", rate_summary)
     write_canonical_json(
         evaluation / "manifest.json",
@@ -964,35 +990,36 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
     assert "Both fail" in markdown
     assert "exact harm p-value" in markdown
     assert "exact benefit p-value" in markdown
-    for numeric_sentinel in (
-        "0.125",
-        "0.47",
-        "0.01",
-        "0.314159",
-        "0.271828",
-        "0.09429932405024608",
-        "0.9915962413403874",
-    ):
-        assert numeric_sentinel in markdown
-    paired_row = next(
-        line
+    decoder_rows = {
+        line.split(" | ")[0].removeprefix("| "): line.strip("|").split(" | ")
         for line in markdown.splitlines()
-        if line.startswith("| soft_prior | inconclusive |")
+        if line.startswith(("| baseline |", "| soft_prior |", "| residual |"))
+        and "BP-LSD" not in line
+        and "end-to-end" not in line
+        and not line.startswith(("| soft_prior | inconclusive |", "| residual | harm_detected |"))
+    }
+    assert decoder_rows == {
+        "baseline": [" baseline", "801", "101", "0.111", "[0.011, 0.211]", "0.911 "],
+        "soft_prior": [" soft_prior", "802", "102", "0.122", "[0.022, 0.222]", "0.922 "],
+        "residual": [" residual", "803", "103", "0.133", "[0.033, 0.233]", "0.933 "],
+    }
+    paired_row = next(
+        line for line in markdown.splitlines() if line.startswith("| soft_prior | inconclusive |")
     )
     assert paired_row.strip("|").split(" | ") == [
         " soft_prior",
         "inconclusive",
-        "0.01",
-        "1",
-        "2",
-        "4",
-        "1",
-        "3",
-        "1.0",
-        "0.271828",
-        "0.314159",
-        "0.6666666666666666",
-        "[0.09429932405024608, 0.9915962413403874] ",
+        "0.101",
+        "11",
+        "12",
+        "13",
+        "14",
+        "23",
+        "0.201",
+        "0.301",
+        "0.401",
+        "0.501",
+        "[0.601, 0.701] ",
     ]
     residual_row = next(
         line
@@ -1002,18 +1029,28 @@ def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_eviden
     assert residual_row.strip("|").split(" | ") == [
         " residual",
         "harm_detected",
-        "0.01",
-        "1",
-        "2",
-        "4",
-        "1",
-        "3",
-        "1.0",
-        "0.271828",
-        "0.314159",
-        "0.6666666666666666",
-        "[0.09429932405024608, 0.9915962413403874] ",
+        "0.102",
+        "21",
+        "22",
+        "24",
+        "25",
+        "43",
+        "0.202",
+        "0.302",
+        "0.402",
+        "0.502",
+        "[0.602, 0.702] ",
     ]
+    timing_rows = {
+        line.split(" | ")[0].removeprefix("| "): line.strip("|").split(" | ")
+        for line in markdown.splitlines()
+        if "| BP-LSD |" in line or "| end-to-end |" in line
+    }
+    assert timing_rows == {
+        "baseline": [" baseline", "BP-LSD", "0.311", "0.411 "],
+        "soft_prior": [" soft_prior", "end-to-end", "0.344", "0.444 "],
+        "residual": [" residual", "end-to-end", "0.355", "0.455 "],
+    }
     for forbidden in ("accuracy-compatible", "noninferior", "equivalent", "paired 95% interval"):
         assert forbidden not in markdown.lower()
     assert "Syndrome-valid rate" in markdown
