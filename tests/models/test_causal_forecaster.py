@@ -14,6 +14,8 @@ from qldpc_fno.models.causal_forecaster import (
     PrefixShuffleIdentity,
     build_forecaster,
     deterministic_prefix_permutation,
+    parameter_accounting,
+    stored_real_scalar_parameter_count,
     trainable_parameter_count,
 )
 from qldpc_fno.temporal.causality import (
@@ -92,6 +94,24 @@ def test_predict_then_update_excludes_current_syndrome(
 
 
 @pytest.mark.parametrize(("spatial", "temporal"), ALL_CELLS)
+def test_warmed_state_prediction_excludes_current_syndrome(
+    config: CausalExperimentConfig, spatial: str, temporal: str
+) -> None:
+    torch.manual_seed(10)
+    model = build_forecaster(spatial=spatial, temporal=temporal, config=config).eval()
+    state = model.initial_state(batch_size=2)
+    _, state = model.predict_then_update(state, torch.full((2, 21, 45), 0.75))
+    first = torch.randn(2, 21, 45)
+    second = torch.randn(2, 21, 45) * 11
+
+    q_first, state_first = model.predict_then_update(state, first)
+    q_second, state_second = model.predict_then_update(state, second)
+
+    torch.testing.assert_close(q_first, q_second, rtol=0, atol=0)
+    assert not torch.equal(state_first.tensor, state_second.tensor)
+
+
+@pytest.mark.parametrize(("spatial", "temporal"), ALL_CELLS)
 def test_round_zero_uses_stationary_base_probability(
     config: CausalExperimentConfig, spatial: str, temporal: str
 ) -> None:
@@ -146,6 +166,36 @@ def test_batch_replay_equals_separate_sequences_and_reset_is_fresh(
     assert fresh.completed_samples == 0
     assert torch.count_nonzero(fresh.tensor) == 0
     assert not any(name.startswith("_cached") for name, _ in model.named_buffers())
+
+
+@pytest.mark.parametrize(("spatial", "temporal"), ALL_CELLS)
+def test_forty_round_sequence_equals_streaming_and_does_not_mutate_input_states(
+    config: CausalExperimentConfig, spatial: str, temporal: str
+) -> None:
+    torch.manual_seed(23)
+    model = build_forecaster(spatial=spatial, temporal=temporal, config=config).eval()
+    syndromes = torch.randn(2, 40, 21, 45)
+    sequence = model.predict_sequence(syndromes)
+    state = model.initial_state(batch_size=2)
+    streaming: list[torch.Tensor] = []
+
+    for round_index in range(40):
+        input_before = state.tensor.clone()
+        input_count = state.completed_samples
+        q_t, next_state = model.predict_then_update(state, syndromes[:, round_index])
+        torch.testing.assert_close(state.tensor, input_before, rtol=0, atol=0)
+        assert state.completed_samples == input_count
+        streaming.append(q_t)
+        state = next_state
+
+    torch.testing.assert_close(
+        sequence.probabilities,
+        torch.stack(streaming, dim=1),
+        rtol=2e-5,
+        atol=2e-6,
+    )
+    torch.testing.assert_close(sequence.final_state.tensor, state.tensor)
+    assert sequence.final_state.completed_samples == state.completed_samples == 40
 
 
 def test_fir_prefix_shuffle_is_deterministic_and_prefix_only() -> None:
@@ -207,10 +257,34 @@ def test_exact_real_scalar_parameter_counts(config: CausalExperimentConfig) -> N
         ("fno", "gru"): 56_826,
     }
     observed = {
-        cell: trainable_parameter_count(build_forecaster(spatial=cell[0], temporal=cell[1], config=config))
+        cell: stored_real_scalar_parameter_count(
+            build_forecaster(spatial=cell[0], temporal=cell[1], config=config)
+        )
         for cell in ALL_CELLS
     }
     assert observed == expected
+    assert all(
+        trainable_parameter_count(
+            build_forecaster(spatial=spatial, temporal=temporal, config=config)
+        )
+        == expected[(spatial, temporal)]
+        for spatial, temporal in ALL_CELLS
+    )
+
+
+@pytest.mark.parametrize(("spatial", "temporal"), ALL_CELLS)
+def test_parameter_accounting_separates_stored_and_effective_fourier_degrees(
+    config: CausalExperimentConfig, spatial: str, temporal: str
+) -> None:
+    model = build_forecaster(spatial=spatial, temporal=temporal, config=config)
+    accounting = parameter_accounting(model)
+
+    assert accounting.stored_real_scalars == stored_real_scalar_parameter_count(model)
+    expected_inert = 2 * 32 * 32 if spatial == "fno" else 0
+    assert accounting.inert_imaginary_dc_scalars == expected_inert
+    assert accounting.effective_functional_scalars == (
+        accounting.stored_real_scalars - expected_inert
+    )
 
 
 @pytest.mark.parametrize(("spatial", "temporal"), ALL_CELLS)

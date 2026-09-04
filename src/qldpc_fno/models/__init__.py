@@ -3,6 +3,8 @@
 from qldpc_fno.models.causal_forecaster import (
     CausalChannelForecaster,
     build_forecaster,
+    parameter_accounting,
+    stored_real_scalar_parameter_count,
     trainable_parameter_count,
 )
 from qldpc_fno.models.fno1d import RingFNO, RingFNOEncoder, SpectralConv1d
@@ -16,5 +18,7 @@ __all__ = [
     "SpectralConv1d",
     "build_forecaster",
     "legs_transition",
+    "parameter_accounting",
+    "stored_real_scalar_parameter_count",
     "trainable_parameter_count",
 ]

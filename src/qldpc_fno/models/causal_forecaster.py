@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from qldpc_fno.models.fno1d import RingFNOEncoder
+from qldpc_fno.models.fno1d import RingFNOEncoder, SpectralConv1d
 from qldpc_fno.models.hippo import HiPPOLegSMemory
 from qldpc_fno.temporal.causality import ObservedHistory
 from qldpc_fno.temporal.config import CausalExperimentConfig
@@ -70,6 +70,19 @@ class SequenceForecast:
     probabilities: torch.Tensor
     scored_mask: torch.Tensor
     final_state: ForecasterState
+
+
+@dataclass(frozen=True)
+class ParameterAccounting:
+    """Stored and structurally active real-scalar parameter accounting.
+
+    This is an implementation accounting, not a claim that parameter counts
+    measure statistical capacity or make architectures equally expressive.
+    """
+
+    stored_real_scalars: int
+    effective_functional_scalars: int
+    inert_imaginary_dc_scalars: int
 
 
 def deterministic_prefix_permutation(
@@ -387,11 +400,33 @@ def build_forecaster(
     )
 
 
-def trainable_parameter_count(module: nn.Module) -> int:
-    """Count independent real trainable scalars (complex values count twice)."""
+def stored_real_scalar_parameter_count(module: nn.Module) -> int:
+    """Count stored trainable real scalars (each complex value contributes two)."""
 
     return sum(
         parameter.numel() * (2 if parameter.is_complex() else 1)
         for parameter in module.parameters()
         if parameter.requires_grad
     )
+
+
+def parameter_accounting(module: nn.Module) -> ParameterAccounting:
+    """Report stored scalars and known inert imaginary Fourier-DC degrees."""
+
+    stored = stored_real_scalar_parameter_count(module)
+    inert_dc = sum(
+        spectral.weight.shape[0] * spectral.weight.shape[1]
+        for spectral in module.modules()
+        if isinstance(spectral, SpectralConv1d) and spectral.weight.requires_grad
+    )
+    return ParameterAccounting(
+        stored_real_scalars=stored,
+        effective_functional_scalars=stored - inert_dc,
+        inert_imaginary_dc_scalars=inert_dc,
+    )
+
+
+def trainable_parameter_count(module: nn.Module) -> int:
+    """Compatibility alias for :func:`stored_real_scalar_parameter_count`."""
+
+    return stored_real_scalar_parameter_count(module)
