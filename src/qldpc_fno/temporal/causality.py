@@ -9,17 +9,22 @@ from typing import Protocol
 import numpy as np
 
 
-def _immutable_copy(values: np.ndarray, *, name: str, dimensions: int) -> np.ndarray:
+def _immutable_copy(
+    values: np.ndarray,
+    *,
+    name: str,
+    minimum_dimensions: int,
+) -> np.ndarray:
     result = np.array(values, copy=True)
-    if result.ndim != dimensions:
-        raise ValueError(f"{name} must have {dimensions} dimensions")
+    if result.ndim < minimum_dimensions:
+        raise ValueError(f"{name} must have at least {minimum_dimensions} dimensions")
     result.setflags(write=False)
     return result
 
 
 @dataclass(frozen=True)
 class ObservedHistory:
-    """The only object exposed to a forecaster during the mutation audit."""
+    """Strict syndrome prefix with rounds on axis 0 and geometry preserved."""
 
     syndromes: np.ndarray
 
@@ -27,13 +32,17 @@ class ObservedHistory:
         object.__setattr__(
             self,
             "syndromes",
-            _immutable_copy(self.syndromes, name="syndromes", dimensions=2),
+            _immutable_copy(
+                self.syndromes,
+                name="syndromes",
+                minimum_dimensions=2,
+            ),
         )
 
 
 @dataclass(frozen=True)
 class CausalAuditSequence:
-    """Full test-only record, including fields forbidden to the forecaster."""
+    """Full test-only record with rounds on axis 0 and forbidden supervision."""
 
     syndromes: np.ndarray
     forecast_round: int
@@ -42,7 +51,11 @@ class CausalAuditSequence:
     diagnostics: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
-        syndromes = _immutable_copy(self.syndromes, name="syndromes", dimensions=2)
+        syndromes = _immutable_copy(
+            self.syndromes,
+            name="syndromes",
+            minimum_dimensions=2,
+        )
         object.__setattr__(self, "syndromes", syndromes)
         if type(self.forecast_round) is not int or not 0 < self.forecast_round < syndromes.shape[0]:
             raise ValueError("forecast_round must have nonempty past and current/future rounds")
@@ -50,7 +63,7 @@ class CausalAuditSequence:
             errors = _immutable_copy(
                 self.physical_errors,
                 name="physical_errors",
-                dimensions=2,
+                minimum_dimensions=2,
             )
             if errors.shape[0] != syndromes.shape[0]:
                 raise ValueError("physical_errors must have the same round count as syndromes")
@@ -59,7 +72,7 @@ class CausalAuditSequence:
             logicals = _immutable_copy(
                 self.logical_outcomes,
                 name="logical_outcomes",
-                dimensions=1,
+                minimum_dimensions=1,
             )
             if logicals.shape[0] != syndromes.shape[0]:
                 raise ValueError("logical_outcomes must have the same round count as syndromes")

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from qldpc_fno.codes.lifted_product import build_self_lifted_product
+from qldpc_fno.codes.seeds import PAPER_LP_3_7_16
 from qldpc_fno.temporal.causality import (
     CausalAuditSequence,
     ObservedHistory,
     audit_structural_prefix_causality,
 )
+from qldpc_fno.temporal.config import CausalExperimentConfig
+from qldpc_fno.temporal.generator import generate_latent_sequence, sample_sequence
 
 
 class StatefulPrefixForecaster:
@@ -137,3 +142,87 @@ def test_structural_audit_documents_external_privileged_state_limitation() -> No
     assert (
         "cannot detect forecaster-captured external privileged state" in documentation
     )
+
+
+def test_generated_canonical_sequence_passes_end_to_end_structural_audit() -> None:
+    config = CausalExperimentConfig.from_json(
+        Path("configs/causal_fno_hippo_reduced.json")
+    )
+    latent = generate_latent_sequence(
+        config,
+        regime="joint_in_basis",
+        role="train",
+        sequence_index=0,
+    )
+    observed, supervision, diagnostics = sample_sequence(
+        latent,
+        bernoulli_seed=latent.seeds.bernoulli,
+        code=build_self_lifted_product(PAPER_LP_3_7_16),
+    )
+    diagnostic_fields = {
+        field.name: getattr(diagnostics, field.name) for field in fields(diagnostics)
+    }
+    sequence = CausalAuditSequence(
+        syndromes=observed.syndromes,
+        forecast_round=config.rounds.burn_in,
+        physical_errors=supervision.errors,
+        logical_outcomes=supervision.logical_flips,
+        diagnostics=diagnostic_fields,
+    )
+    changed_syndromes = observed.syndromes.copy()
+    changed_syndromes[config.rounds.burn_in :] ^= 1
+    mutations = {
+        "current_and_future_syndromes": replace(
+            sequence,
+            syndromes=changed_syndromes,
+        ),
+        "physical_errors": replace(
+            sequence,
+            physical_errors=1 - supervision.errors,
+        ),
+        "logical_outcomes": replace(
+            sequence,
+            logical_outcomes=1 - supervision.logical_flips,
+        ),
+        "diagnostics": replace(
+            sequence,
+            diagnostics={**diagnostic_fields, "probabilities": 1 - diagnostics.probabilities},
+        ),
+    }
+
+    forecaster = StatefulPrefixForecaster()
+    audit = audit_structural_prefix_causality(forecaster, sequence, mutations)
+
+    assert audit.passed
+    assert forecaster.calls[0].syndromes.shape == (
+        config.rounds.burn_in,
+        21,
+        45,
+    )
+    assert np.array_equal(
+        forecaster.calls[0].syndromes,
+        observed.syndromes[: config.rounds.burn_in],
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("physical_errors", np.zeros((5, 58, 45), dtype=np.uint8)),
+        ("logical_outcomes", np.zeros((5, 744), dtype=np.uint8)),
+    ],
+)
+def test_canonical_supervision_requires_matching_round_axis(
+    field_name: str,
+    value: np.ndarray,
+) -> None:
+    arguments = {
+        "syndromes": np.zeros((6, 21, 45), dtype=np.uint8),
+        "forecast_round": 3,
+        "physical_errors": np.zeros((6, 58, 45), dtype=np.uint8),
+        "logical_outcomes": np.zeros((6, 744), dtype=np.uint8),
+    }
+    arguments[field_name] = value
+
+    with pytest.raises(ValueError, match="same round count"):
+        CausalAuditSequence(**arguments)  # type: ignore[arg-type]
