@@ -337,6 +337,49 @@ def test_fixed_paired_evaluation_is_atomic_resumable_and_provenance_strict(
     assert first_batch["outcomes_sha256"] == sha256_file(first_outcomes)
     assert not list(evaluation.rglob("*.tmp"))
 
+    laundered_deadline = campaign / "evaluation-laundered-deadline"
+    shutil.copytree(evaluation, laundered_deadline)
+    finalized_under_cap = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=laundered_deadline,
+        extra=("--resume", "--deadline-monotonic", 0),
+    )
+    assert finalized_under_cap.returncode == 0, finalized_under_cap.stderr
+    laundered_manifest_path = laundered_deadline / "manifest.json"
+    laundered_manifest = json.loads(laundered_manifest_path.read_text())
+    assert laundered_manifest["status"] == "partial_deadline"
+    assert laundered_manifest["rates"]["0"]["status"] == "partial_deadline"
+    assert laundered_manifest["rates"]["0"]["shots"] == 1
+    laundered_manifest["status"] = "complete"
+    write_canonical_json(laundered_manifest_path, laundered_manifest)
+    laundered_batches = {
+        path: path.read_bytes()
+        for path in sorted(laundered_deadline.glob("rate-*/batch-*/manifest.json"))
+    }
+    rejected_laundering = _evaluate(
+        config=config,
+        code=code,
+        selection=selection,
+        test=test,
+        model=model,
+        calibration=calibration,
+        out=laundered_deadline,
+        extra=("--resume",),
+    )
+    assert rejected_laundering.returncode != 0
+    assert "complete evaluation requires every rate to be complete" in (
+        rejected_laundering.stderr
+    )
+    assert sorted(laundered_deadline.glob("rate-*/batch-*/manifest.json")) == list(
+        laundered_batches
+    )
+    assert all(path.read_bytes() == payload for path, payload in laundered_batches.items())
+
     immediate_deadline = campaign / "evaluation-immediate-deadline"
     deadline = _evaluate(
         config=config,

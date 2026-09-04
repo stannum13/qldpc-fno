@@ -1118,6 +1118,36 @@ def _verify_existing_progress(
                 raise ValueError("evaluation progress batch-manifest provenance mismatch")
 
 
+def _rate_finalization_semantics(
+    counts: dict[str, object],
+    *,
+    campaign_status: str,
+    config: CampaignConfig,
+) -> tuple[str, str, bool]:
+    scientific_reason = test_stop_reason(
+        counts["failures"],
+        shots=int(counts["shots"]),
+        target_failures=config.target_failures,
+        shot_cap=config.max_test_shots_per_point,
+        mode=config.test_stopping_mode,
+    )
+    if scientific_reason is None:
+        if campaign_status == "complete":
+            raise ValueError("complete evaluation requires every rate to be complete")
+        rate_status = "partial_deadline"
+        stop_reason = "campaign_deadline"
+    else:
+        rate_status = "complete"
+        stop_reason = scientific_reason
+    fixed_sample = (
+        config.test_stopping_mode == "fixed"
+        and rate_status == "complete"
+        and stop_reason == "shot_cap"
+        and int(counts["shots"]) == config.max_test_shots_per_point
+    )
+    return rate_status, stop_reason, fixed_sample
+
+
 def _verify_final_manifest(
     output: Path,
     *,
@@ -1174,10 +1204,23 @@ def _verify_final_manifest(
             or summary.get("stop_reason") != record.get("stop_reason")
         ):
             raise ValueError("completed evaluation rate summary provenance mismatch")
-        decoded_shots = int(_aggregate_counts(rate_records[rate_index])["shots"])
+        counts = _aggregate_counts(rate_records[rate_index])
+        decoded_shots = int(counts["shots"])
         recorded_shots = record.get("shots")
         if type(recorded_shots) is not int or recorded_shots < 0:
             raise ValueError("completed evaluation rate shot count is invalid")
+        expected_rate_status, expected_stop_reason, fixed_sample = (
+            _rate_finalization_semantics(
+                counts,
+                campaign_status=status,
+                config=config,
+            )
+        )
+        if (
+            record.get("status") != expected_rate_status
+            or record.get("stop_reason") != expected_stop_reason
+        ):
+            raise ValueError("completed evaluation rate stopping semantics are invalid")
         if (
             config.test_stopping_mode == "fixed"
             and record.get("status") == "complete"
@@ -1215,12 +1258,6 @@ def _verify_final_manifest(
                     raise ValueError("completed evaluation exact paired fields are malformed")
                 if paired[method] != expected_paired[method]:
                     raise ValueError("completed evaluation paired summary disagrees with outcomes")
-            fixed_sample = (
-                config.test_stopping_mode == "fixed"
-                and record.get("status") == "complete"
-                and record.get("stop_reason") == "shot_cap"
-                and recorded_shots == config.max_test_shots_per_point
-            )
             expected_comparison = {
                 method: paired_comparison_status(
                     expected_paired[method],
@@ -1241,7 +1278,6 @@ def _finalize(
     output: Path,
     *,
     status: str,
-    reason_for_unfinished: str,
     source_sha256: dict[str, object],
     rates: tuple[float, ...],
     records: dict[int, list[tuple[Path, dict[str, object]]]],
@@ -1251,20 +1287,10 @@ def _finalize(
     rate_results: dict[str, object] = {}
     for rate_index, rate in enumerate(rates):
         counts = _aggregate_counts(records[rate_index])
-        scientific_reason = test_stop_reason(
-            counts["failures"],
-            shots=int(counts["shots"]),
-            target_failures=config.target_failures,
-            shot_cap=config.max_test_shots_per_point,
-            mode=config.test_stopping_mode,
-        )
-        stop_reason = scientific_reason or reason_for_unfinished
-        rate_status = "complete" if scientific_reason is not None else status
-        fixed_sample = (
-            config.test_stopping_mode == "fixed"
-            and rate_status == "complete"
-            and stop_reason == "shot_cap"
-            and int(counts["shots"]) == config.max_test_shots_per_point
+        rate_status, stop_reason, fixed_sample = _rate_finalization_semantics(
+            counts,
+            campaign_status=status,
+            config=config,
         )
         summary_path, summary = _write_rate_summary(
             output,
@@ -1523,7 +1549,6 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
         _finalize(
             args.out,
             status="partial_deadline",
-            reason_for_unfinished="campaign_deadline",
             source_sha256=source_sha256,
             rates=rates,
             records=records,
@@ -1534,7 +1559,6 @@ def evaluate_hybrid_campaign(args: EvaluationRequest) -> None:
     _finalize(
         args.out,
         status="complete",
-        reason_for_unfinished="",
         source_sha256=source_sha256,
         rates=rates,
         records=records,
