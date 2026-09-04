@@ -54,8 +54,10 @@ def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
     write_canonical_json(
         path,
         {
+            "evidence_role": "selection_only_not_held_out",
             "pilot_rows": [],
             "selected_noise_points": [0.003, 0.005],
+            "selection_mode": "pilot",
             "source_sha256": {
                 "code_manifest": sha256_file(code_manifest),
                 "config": sha256_file(config),

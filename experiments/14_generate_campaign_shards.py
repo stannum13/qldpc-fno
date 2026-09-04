@@ -48,10 +48,20 @@ def main() -> None:
         raise ValueError("campaign configuration SHA-256 mismatch in selection provenance")
     if selection_sources.get("code_manifest") != code_manifest_sha256:
         raise ValueError("code manifest SHA-256 mismatch in selection provenance")
-    rates = selection["selected_noise_points"]
-    if not isinstance(rates, list) or not rates:
+    if selection.get("selection_mode") != config.selection_mode:
+        raise ValueError("selection mode does not match campaign configuration")
+    evidence_roles = {
+        "fixed": "predeclared_selection_not_evidence",
+        "pilot": "selection_only_not_held_out",
+    }
+    if selection.get("evidence_role") != evidence_roles[config.selection_mode]:
+        raise ValueError("selection evidence role does not match campaign configuration")
+    raw_rates = selection.get("selected_noise_points")
+    if not isinstance(raw_rates, list) or not raw_rates:
         raise ValueError("selection must contain non-empty selected_noise_points")
-    rates = sorted(float(rate) for rate in rates)
+    if config.selection_mode == "fixed" and tuple(raw_rates) != config.noise_grid:
+        raise ValueError("fixed selection rates do not match configured noise_grid")
+    rates = sorted(float(rate) for rate in raw_rates)
 
     code_metadata = json.loads(code_manifest_path.read_text())
     hx_path = args.code / "hx.npz"

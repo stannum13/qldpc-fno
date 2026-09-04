@@ -88,12 +88,56 @@ def _write_flow_config(path: Path) -> None:
     )
 
 
-def _write_selection(path: Path, *, config: Path, code_manifest: Path) -> None:
+def _write_fixed_config(path: Path) -> None:
+    write_canonical_json(
+        path,
+        {
+            "campaign_seed": 20260901,
+            "noise_grid": [0.0375],
+            "selection_mode": "fixed",
+            "pilot_shots_per_point": 1,
+            "train_shots_cap": 8,
+            "calibration_shots_cap": 8,
+            "calibration_decode_shots_cap": 8,
+            "calibration_shortlist_per_method": 1,
+            "test_batch_shots": 1,
+            "max_test_shots_per_point": 8,
+            "target_failures": 1,
+            "test_stopping_mode": "adaptive",
+            "training_epochs": 1,
+            "training_batch_size": 1,
+            "training_learning_rate": 0.001,
+            "training_seed": 1701,
+            "checkpoint_every_epochs": 1,
+            "cloud_cpu": 1,
+            "cloud_memory": "1Gi",
+            "cloud_timeout_seconds": 3600,
+            "checkpoint_grace_seconds": 2700,
+        },
+    )
+
+
+def _write_selection(
+    path: Path,
+    *,
+    config: Path,
+    code_manifest: Path,
+    selected_noise_points: list[float] | None = None,
+    selection_mode: str = "pilot",
+) -> None:
+    evidence_role = {
+        "fixed": "predeclared_selection_not_evidence",
+        "pilot": "selection_only_not_held_out",
+    }[selection_mode]
     write_canonical_json(
         path,
         {
             "pilot_rows": [],
-            "selected_noise_points": [0.003, 0.005],
+            "selected_noise_points": (
+                [0.003, 0.005] if selected_noise_points is None else selected_noise_points
+            ),
+            "selection_mode": selection_mode,
+            "evidence_role": evidence_role,
             "source_sha256": {
                 "code_manifest": sha256_file(code_manifest),
                 "config": sha256_file(config),
@@ -164,6 +208,8 @@ def test_reduced_real_code_campaign_data_flow_with_dynamic_extension(tmp_path: P
 
     selection_path = pilot_dir / "selection.json"
     selection = json.loads(selection_path.read_text())
+    assert selection["selection_mode"] == "pilot"
+    assert selection["evidence_role"] == "selection_only_not_held_out"
     assert len(selection["pilot_rows"]) > 1
     assert selection["pilot_rows"][1]["error_rate"] == 0.0045
     assert json.loads((pilot_dir / "manifest.json").read_text())["complete"] is True
@@ -190,6 +236,126 @@ def test_reduced_real_code_campaign_data_flow_with_dynamic_extension(tmp_path: P
     assert role_shots["train"] == 16
     assert role_shots["calibration"] == 16
     assert role_shots["test"] == len(selection["selected_noise_points"])
+
+
+def test_fixed_selection_cli_publishes_predeclared_rate_without_sampling(tmp_path: Path) -> None:
+    code_dir = tmp_path / "code"
+    config_path = tmp_path / "campaign.json"
+    pilot_dir = tmp_path / "campaign" / "pilot"
+    _write_fixed_config(config_path)
+    subprocess.run(
+        [sys.executable, "experiments/01_build_lp_codes.py", "--out", str(code_dir)],
+        check=True,
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "experiments/13_pilot_noise_grid.py",
+            "--config",
+            str(config_path),
+            "--code",
+            str(code_dir),
+            "--out",
+            str(pilot_dir),
+        ],
+        check=True,
+    )
+
+    selection = json.loads((pilot_dir / "selection.json").read_text())
+    manifest = json.loads((pilot_dir / "manifest.json").read_text())
+    assert selection["selection_mode"] == "fixed"
+    assert selection["selected_noise_points"] == [0.0375]
+    assert selection["pilot_rows"] == []
+    assert selection["evidence_role"] == "predeclared_selection_not_evidence"
+    assert manifest["shards"] == {}
+    assert not list(pilot_dir.glob("rate-*"))
+
+
+def test_fixed_selection_cli_rejects_tampering_after_publication(tmp_path: Path) -> None:
+    code_dir = tmp_path / "code"
+    config_path = tmp_path / "campaign.json"
+    pilot_dir = tmp_path / "campaign" / "pilot"
+    _write_fixed_config(config_path)
+    subprocess.run(
+        [sys.executable, "experiments/01_build_lp_codes.py", "--out", str(code_dir)],
+        check=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "experiments/13_pilot_noise_grid.py",
+            "--config",
+            str(config_path),
+            "--code",
+            str(code_dir),
+            "--out",
+            str(pilot_dir),
+        ],
+        check=True,
+    )
+    selection_path = pilot_dir / "selection.json"
+    selection = json.loads(selection_path.read_text())
+    selection["selected_noise_points"] = [0.008]
+    selection_path.write_text(json.dumps(selection))
+
+    result = _run_shard_cli(
+        config=config_path,
+        code=code_dir,
+        selection=selection_path,
+        output=tmp_path / "train",
+    )
+
+    assert result.returncode != 0
+    assert "selection SHA-256 mismatch" in result.stderr
+
+
+def test_fixed_selection_cli_rejects_selection_mode_mismatch(tmp_path: Path) -> None:
+    code_dir = tmp_path / "code"
+    config_path = tmp_path / "campaign.json"
+    pilot_dir = tmp_path / "pilot"
+    pilot_dir.mkdir()
+    selection_path = pilot_dir / "selection.json"
+    _write_noncanonical_code(code_dir)
+    _write_fixed_config(config_path)
+    _write_selection(selection_path, config=config_path, code_manifest=code_dir / "code.json")
+
+    result = _run_shard_cli(
+        config=config_path,
+        code=code_dir,
+        selection=selection_path,
+        output=tmp_path / "train",
+    )
+
+    assert result.returncode != 0
+    assert "selection mode does not match campaign configuration" in result.stderr
+
+
+def test_fixed_selection_cli_rejects_rate_mismatch(tmp_path: Path) -> None:
+    code_dir = tmp_path / "code"
+    config_path = tmp_path / "campaign.json"
+    pilot_dir = tmp_path / "pilot"
+    pilot_dir.mkdir()
+    selection_path = pilot_dir / "selection.json"
+    _write_noncanonical_code(code_dir)
+    _write_fixed_config(config_path)
+    _write_selection(
+        selection_path,
+        config=config_path,
+        code_manifest=code_dir / "code.json",
+        selected_noise_points=[0.008],
+        selection_mode="fixed",
+    )
+
+    result = _run_shard_cli(
+        config=config_path,
+        code=code_dir,
+        selection=selection_path,
+        output=tmp_path / "train",
+    )
+
+    assert result.returncode != 0
+    assert "fixed selection rates do not match configured noise_grid" in result.stderr
 
 
 def test_pilot_cli_rejects_noncanonical_code(tmp_path: Path) -> None:

@@ -39,55 +39,66 @@ def main() -> None:
     hx = sparse.load_npz(hx_path).tocsr()
     hz = sparse.load_npz(hz_path).tocsr()
     validate_campaign_code(code_metadata, hx, hz)
-    logical_x = logical_x_basis(hx, hz)
-    if logical_x.shape != (744, 2610):
-        raise ValueError("campaign logical X matrix dimensions must be (744, 2610)")
 
     code_manifest_sha256 = sha256_file(code_manifest_path)
     config_sha256 = sha256_file(args.config)
     with atomic_role_directory(args.out, role="pilot") as staging:
         shard_manifest_paths: list[Path] = []
 
-        def evaluate(rate: float, rate_index: int) -> dict[str, object]:
-            dem = build_z_error_dem(hx, logical_x, error_rate=rate)
-            manifests, dets, obs = sample_pilot_point_shards(
-                dem=dem,
-                rate=rate,
-                rate_index=rate_index,
-                shots=config.pilot_shots_per_point,
-                campaign_seed=config.campaign_seed,
-                staging=staging,
-                source_code_sha256=code_manifest_sha256,
-                source_artifact_sha256={"config": config_sha256},
-            )
-            shard_manifest_paths.extend(
-                staging / str(manifest["path"]) / "samples.json" for manifest in manifests
-            )
+        if config.selection_mode == "fixed":
+            rows: list[dict[str, object]] = []
+            selected = list(config.noise_grid)
+            evidence_role = "predeclared_selection_not_evidence"
+        else:
+            logical_x = logical_x_basis(hx, hz)
+            if logical_x.shape != (744, 2610):
+                raise ValueError("campaign logical X matrix dimensions must be (744, 2610)")
 
-            result = decode_bplsd_batch(hx, dets, logical_x, error_rate=rate)
-            score = score_observable_predictions(
-                obs,
-                result.predicted_observables,
-                syndrome_valid=result.syndrome_valid,
-            )
-            return {
-                **score,
-                "converged": int(np.count_nonzero(result.converged)),
-                "convergence_rate": float(np.mean(result.converged)),
-                "latency_mean_seconds": float(np.mean(result.latency_seconds)),
-                "latency_seconds": float(np.sum(result.latency_seconds)),
-                "seeds": [manifest["seed"] for manifest in manifests],
-                "syndrome_valid": int(np.count_nonzero(result.syndrome_valid)),
-                "syndrome_valid_rate": float(np.mean(result.syndrome_valid)),
-            }
+            def evaluate(rate: float, rate_index: int) -> dict[str, object]:
+                dem = build_z_error_dem(hx, logical_x, error_rate=rate)
+                manifests, dets, obs = sample_pilot_point_shards(
+                    dem=dem,
+                    rate=rate,
+                    rate_index=rate_index,
+                    shots=config.pilot_shots_per_point,
+                    campaign_seed=config.campaign_seed,
+                    staging=staging,
+                    source_code_sha256=code_manifest_sha256,
+                    source_artifact_sha256={"config": config_sha256},
+                )
+                shard_manifest_paths.extend(
+                    staging / str(manifest["path"]) / "samples.json" for manifest in manifests
+                )
 
-        rows = run_pilot_grid(config.noise_grid, evaluate)
+                result = decode_bplsd_batch(hx, dets, logical_x, error_rate=rate)
+                score = score_observable_predictions(
+                    obs,
+                    result.predicted_observables,
+                    syndrome_valid=result.syndrome_valid,
+                )
+                return {
+                    **score,
+                    "converged": int(np.count_nonzero(result.converged)),
+                    "convergence_rate": float(np.mean(result.converged)),
+                    "latency_mean_seconds": float(np.mean(result.latency_seconds)),
+                    "latency_seconds": float(np.sum(result.latency_seconds)),
+                    "seeds": [manifest["seed"] for manifest in manifests],
+                    "syndrome_valid": int(np.count_nonzero(result.syndrome_valid)),
+                    "syndrome_valid_rate": float(np.mean(result.syndrome_valid)),
+                }
+
+            rows = run_pilot_grid(config.noise_grid, evaluate)
+            selected = list(select_noise_points(rows))
+            evidence_role = "selection_only_not_held_out"
+
         selection_path = staging / "selection.json"
         write_canonical_json(
             selection_path,
             {
+                "evidence_role": evidence_role,
                 "pilot_rows": rows,
-                "selected_noise_points": list(select_noise_points(rows)),
+                "selected_noise_points": selected,
+                "selection_mode": config.selection_mode,
                 "source_sha256": {
                     "code_manifest": code_manifest_sha256,
                     "config": config_sha256,

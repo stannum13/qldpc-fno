@@ -647,8 +647,10 @@ def test_summary_keeps_selection_and_calibration_out_of_held_out_evidence(
     (evaluation / "rate-000").mkdir(parents=True)
 
     selection = {
+        "evidence_role": "selection_only_not_held_out",
         "pilot_rows": [{"block_errors": 0, "error_rate": 0.01, "shots": 8}],
         "selected_noise_points": [0.01],
+        "selection_mode": "pilot",
         "source_sha256": {},
     }
     (pilot / "selection.json").write_text(json.dumps(selection))
@@ -845,7 +847,9 @@ def test_scientific_chain_requires_exact_selected_rate_coordinates(
     for directory in ("pilot", "model", "calibration", "evaluation"):
         (campaign / directory).mkdir(parents=True)
     selection = {
+        "evidence_role": "selection_only_not_held_out",
         "selected_noise_points": [0.01],
+        "selection_mode": "pilot",
         "source_sha256": {
             "code_manifest": sha256_file(code / "code.json"),
             "config": sha256_file(config),

@@ -134,9 +134,20 @@ def _verify_selection(
         raise ValueError("selection configuration provenance mismatch")
     if sources.get("code_manifest") != sha256_file(code_manifest_path):
         raise ValueError("selection code provenance mismatch")
+    config = CampaignConfig.from_json(config_path)
+    if selection.get("selection_mode") != config.selection_mode:
+        raise ValueError("selection mode does not match campaign configuration")
+    evidence_roles = {
+        "fixed": "predeclared_selection_not_evidence",
+        "pilot": "selection_only_not_held_out",
+    }
+    if selection.get("evidence_role") != evidence_roles[config.selection_mode]:
+        raise ValueError("selection evidence role does not match campaign configuration")
     raw_rates = selection.get("selected_noise_points")
     if not isinstance(raw_rates, list) or not raw_rates:
         raise ValueError("selection must contain non-empty selected_noise_points")
+    if config.selection_mode == "fixed" and tuple(raw_rates) != config.noise_grid:
+        raise ValueError("fixed selection rates do not match configured noise_grid")
     if any(type(rate) not in (int, float) or not math.isfinite(rate) for rate in raw_rates):
         raise ValueError("selected noise points must be finite numbers")
     rates = tuple(float(rate) for rate in raw_rates)
