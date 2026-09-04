@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from itertools import repeat
+from itertools import chain, repeat
 from time import perf_counter
 
 import numpy as np
@@ -19,6 +19,8 @@ class DecodeBatchResult:
     syndrome_valid: np.ndarray
     converged: np.ndarray
     iterations: np.ndarray
+    setup_latency_seconds: np.ndarray
+    decode_latency_seconds: np.ndarray
     latency_seconds: np.ndarray
 
 
@@ -80,7 +82,7 @@ def _decode_rows(
     hx_csr: sparse.csr_matrix,
     syndrome_array: np.ndarray,
     logical_csr: sparse.csr_matrix,
-    decoders: Iterable[BpLsdDecoder],
+    decoder_rows: Iterable[tuple[BpLsdDecoder, float]],
 ) -> DecodeBatchResult:
     shots = syndrome_array.shape[0]
     corrections = np.zeros((shots, hx_csr.shape[1]), dtype=np.uint8)
@@ -88,17 +90,41 @@ def _decode_rows(
     valid = np.zeros(shots, dtype=np.bool_)
     converged = np.zeros(shots, dtype=np.bool_)
     iterations = np.zeros(shots, dtype=np.int64)
-    latency = np.zeros(shots, dtype=np.float64)
-    for shot, (syndrome, decoder) in enumerate(zip(syndrome_array, decoders, strict=True)):
+    setup_latency = np.zeros(shots, dtype=np.float64)
+    decode_latency = np.zeros(shots, dtype=np.float64)
+    for shot, (syndrome, decoder_row) in enumerate(
+        zip(syndrome_array, decoder_rows, strict=True)
+    ):
+        decoder, setup_latency[shot] = decoder_row
         started = perf_counter()
         correction = np.asarray(decoder.decode(syndrome), dtype=np.uint8)
-        latency[shot] = perf_counter() - started
+        decode_latency[shot] = perf_counter() - started
         corrections[shot] = correction
         valid[shot] = np.array_equal(np.asarray(hx_csr @ correction).ravel() % 2, syndrome)
         predicted[shot] = np.asarray(logical_csr @ correction).ravel() % 2
         converged[shot] = bool(decoder.converge)
         iterations[shot] = int(decoder.iter)
-    return DecodeBatchResult(corrections, predicted, valid, converged, iterations, latency)
+    latency = setup_latency + decode_latency
+    return DecodeBatchResult(
+        corrections,
+        predicted,
+        valid,
+        converged,
+        iterations,
+        setup_latency,
+        decode_latency,
+        latency,
+    )
+
+
+def _timed_decoder(
+    hx: sparse.spmatrix,
+    error_channel: np.ndarray,
+    config: BPLSDConfig,
+) -> tuple[BpLsdDecoder, float]:
+    started = perf_counter()
+    decoder = _new_decoder(hx, error_channel, config)
+    return decoder, perf_counter() - started
 
 
 def decode_bplsd_batch(
@@ -113,17 +139,23 @@ def decode_bplsd_batch(
     hx_csr, syndrome_array, logical_csr = _prepare_inputs(hx, syndromes, logical_x)
     if not 0.0 < error_rate < 0.5:
         raise ValueError("error_rate must be strictly between 0 and 0.5")
+    if syndrome_array.shape[0] == 0:
+        return _decode_rows(hx_csr, syndrome_array, logical_csr, ())
 
-    decoder = _new_decoder(
+    decoder, setup_latency = _timed_decoder(
         hx_csr,
         np.full(hx_csr.shape[1], error_rate, dtype=np.float64),
         config,
+    )
+    decoder_rows = chain(
+        ((decoder, setup_latency),),
+        repeat((decoder, 0.0), max(syndrome_array.shape[0] - 1, 0)),
     )
     return _decode_rows(
         hx_csr,
         syndrome_array,
         logical_csr,
-        repeat(decoder, syndrome_array.shape[0]),
+        decoder_rows,
     )
 
 
@@ -148,5 +180,5 @@ def decode_bplsd_prior_batch(
     if not np.all((channels > 0.0) & (channels < 0.5)):
         raise ValueError("error_channels values must be strictly between 0 and 0.5")
 
-    decoders = (_new_decoder(hx_csr, row.copy(), config) for row in channels)
-    return _decode_rows(hx_csr, syndrome_array, logical_csr, decoders)
+    decoder_rows = (_timed_decoder(hx_csr, row.copy(), config) for row in channels)
+    return _decode_rows(hx_csr, syndrome_array, logical_csr, decoder_rows)

@@ -5,6 +5,7 @@ import pytest
 from scipy import sparse
 
 import qldpc_fno.decoders.bplsd as bplsd_module
+from qldpc_fno import decoders
 from qldpc_fno.decoders.bplsd import decode_bplsd_batch
 
 
@@ -17,7 +18,13 @@ def test_bp_lsd_corrections_match_syndrome() -> None:
     assert result.predicted_observables.shape == (2, 1)
     assert result.syndrome_valid.tolist() == [True, True]
     assert result.iterations.shape == (2,)
+    assert result.setup_latency_seconds.shape == (2,)
+    assert result.decode_latency_seconds.shape == (2,)
     assert result.latency_seconds.shape == (2,)
+    assert np.array_equal(
+        result.latency_seconds,
+        result.setup_latency_seconds + result.decode_latency_seconds,
+    )
 
 
 def test_bp_lsd_rejects_wrong_syndrome_width() -> None:
@@ -45,6 +52,11 @@ def test_bplsd_config_is_frozen_and_pins_campaign_parameters() -> None:
     )
     with pytest.raises(FrozenInstanceError):
         config.max_iter = 5  # type: ignore[misc]
+
+
+def test_public_decoder_package_exports_prior_api() -> None:
+    assert decoders.BPLSDConfig is bplsd_module.BPLSDConfig
+    assert decoders.decode_bplsd_prior_batch is bplsd_module.decode_bplsd_prior_batch
 
 
 @pytest.mark.parametrize(
@@ -143,3 +155,73 @@ def test_distinct_prior_rows_construct_independent_pinned_decoders(monkeypatch) 
     assert result.corrections.tolist() == [[0, 0], [1, 0]]
     assert result.predicted_observables.tolist() == [[0], [1]]
     assert result.syndrome_valid.tolist() == [True, True]
+
+
+def test_prior_batch_total_latency_includes_each_decoder_setup(monkeypatch) -> None:
+    class FakeDecoder:
+        def __init__(self, hx, *, error_channel, **kwargs) -> None:
+            del hx, error_channel, kwargs
+            self.converge = True
+            self.iter = 1
+
+        def decode(self, syndrome: np.ndarray) -> np.ndarray:
+            return np.array([syndrome[0], 0], dtype=np.uint8)
+
+    timestamps = iter([0.0, 2.0, 3.0, 5.0, 10.0, 11.0, 12.0, 16.0])
+    monkeypatch.setattr(bplsd_module, "BpLsdDecoder", FakeDecoder)
+    monkeypatch.setattr(bplsd_module, "perf_counter", lambda: next(timestamps))
+    hx = sparse.csr_matrix([[1, 0]], dtype=np.uint8)
+    logical_x = sparse.csr_matrix([[1, 1]], dtype=np.uint8)
+    syndromes = np.array([[0], [1]], dtype=np.uint8)
+
+    result = bplsd_module.decode_bplsd_prior_batch(
+        hx,
+        syndromes,
+        logical_x,
+        error_channels=np.array([[0.01, 0.02], [0.11, 0.12]], dtype=np.float64),
+    )
+
+    assert result.setup_latency_seconds.tolist() == [2.0, 1.0]
+    assert result.decode_latency_seconds.tolist() == [2.0, 4.0]
+    assert result.latency_seconds.tolist() == [4.0, 5.0]
+
+
+def test_scalar_batch_allocates_shared_setup_latency_to_first_shot(monkeypatch) -> None:
+    class FakeDecoder:
+        def __init__(self, hx, *, error_channel, **kwargs) -> None:
+            del hx, error_channel, kwargs
+            self.converge = True
+            self.iter = 1
+
+        def decode(self, syndrome: np.ndarray) -> np.ndarray:
+            return np.array([syndrome[0], 0], dtype=np.uint8)
+
+    timestamps = iter([0.0, 2.0, 3.0, 5.0, 10.0, 14.0])
+    monkeypatch.setattr(bplsd_module, "BpLsdDecoder", FakeDecoder)
+    monkeypatch.setattr(bplsd_module, "perf_counter", lambda: next(timestamps))
+    hx = sparse.csr_matrix([[1, 0]], dtype=np.uint8)
+    logical_x = sparse.csr_matrix([[1, 1]], dtype=np.uint8)
+    syndromes = np.array([[0], [1]], dtype=np.uint8)
+
+    result = decode_bplsd_batch(hx, syndromes, logical_x, error_rate=0.05)
+
+    assert result.setup_latency_seconds.tolist() == [2.0, 0.0]
+    assert result.decode_latency_seconds.tolist() == [2.0, 4.0]
+    assert result.latency_seconds.tolist() == [4.0, 4.0]
+
+
+def test_empty_scalar_batch_retains_empty_per_shot_latency_contract() -> None:
+    hx = sparse.csr_matrix([[1, 0]], dtype=np.uint8)
+    logical_x = sparse.csr_matrix([[1, 1]], dtype=np.uint8)
+
+    result = decode_bplsd_batch(
+        hx,
+        np.empty((0, 1), dtype=np.uint8),
+        logical_x,
+        error_rate=0.05,
+    )
+
+    assert result.corrections.shape == (0, 2)
+    assert result.setup_latency_seconds.shape == (0,)
+    assert result.decode_latency_seconds.shape == (0,)
+    assert result.latency_seconds.shape == (0,)
