@@ -90,9 +90,12 @@ def test_role_relabeling_preserves_provenance_identity_and_overlap_is_rejected()
     validation = fixture.with_role("validation")
 
     assert train.sequence_ids == validation.sequence_ids == fixture.sequence_ids
-    model = build_forecaster(spatial="cnn", temporal="fir", config=config)
-    with pytest.raises(ValueError, match="membership must be disjoint"):
-        train_causal_forecaster(model, train=train, validation=validation, config=config)
+    with pytest.raises(ValueError, match="membership must be pairwise disjoint"):
+        validate_role_partition(
+            train,
+            validation,
+            _independent_role_batch(fixture, "calibration", 99),
+        )
 
 
 def test_scientific_batches_require_explicit_content_hash_identities() -> None:
@@ -122,12 +125,17 @@ def test_discovery_training_rejects_role_leakage_and_test_access() -> None:
     train = _independent_role_batch(fixture, "train", 1)
     validation = _independent_role_batch(fixture, "validation", 2)
     calibration = _independent_role_batch(fixture, "calibration", 3)
+    partition = validate_role_partition(train, validation, calibration)
     model = build_forecaster(spatial="cnn", temporal="fir", config=config)
 
     with pytest.raises(ValueError, match="training batch must have role 'train'"):
-        train_causal_forecaster(model, train=validation, validation=train, config=config)
+        train_causal_forecaster(
+            model, train=validation, validation=train, config=config, partition=partition
+        )
     with pytest.raises(ValueError, match="validation batch must have role 'validation'"):
-        train_causal_forecaster(model, train=train, validation=calibration, config=config)
+        train_causal_forecaster(
+            model, train=train, validation=calibration, config=config, partition=partition
+        )
     with pytest.raises(ValueError, match="test role is forbidden"):
         SequenceRoleBatch(
             role="test",
@@ -147,11 +155,19 @@ def test_validation_checkpoint_chooses_earliest_tied_step() -> None:
         config,
         optimizer=replace(config.optimizer, learning_rate=1e-45, max_epochs=3),
     )
+    train = _independent_role_batch(fixture, "train", 11)
+    validation = _independent_role_batch(fixture, "validation", 12)
+    partition = validate_role_partition(
+        train,
+        validation,
+        _independent_role_batch(fixture, "calibration", 13),
+    )
     result = train_causal_forecaster(
         model,
-        train=_independent_role_batch(fixture, "train", 11),
-        validation=_independent_role_batch(fixture, "validation", 12),
+        train=train,
+        validation=validation,
         config=fast_config,
+        partition=partition,
     )
 
     assert result.best_epoch == 0
@@ -169,11 +185,25 @@ def test_temperature_uses_calibration_role_only() -> None:
     validation = _independent_role_batch(fixture, "validation", 20)
     calibration = _independent_role_batch(fixture, "calibration", 21)
     partition = validate_role_partition(train, validation, calibration)
+    training_result = train_causal_forecaster(
+        build_forecaster(spatial="cnn", temporal="fir", config=_config()),
+        train=train,
+        validation=validation,
+        config=replace(_config(), optimizer=replace(_config().optimizer, max_epochs=1)),
+        partition=partition,
+    )
 
-    temperature = fit_calibration_temperature(logits, calibration, partition=partition)
+    temperature = fit_calibration_temperature(
+        logits, calibration, partition=partition, training_result=training_result
+    )
     assert temperature > 0.0
     with pytest.raises(ValueError, match="calibration batch must have role 'calibration'"):
-        fit_calibration_temperature(logits, fixture.with_role("validation"), partition=partition)
+        fit_calibration_temperature(
+            logits,
+            fixture.with_role("validation"),
+            partition=partition,
+            training_result=training_result,
+        )
 
 
 def test_role_partition_rejects_relabelled_training_membership_as_calibration() -> None:
@@ -186,6 +216,24 @@ def test_role_partition_rejects_relabelled_training_membership_as_calibration() 
         validate_role_partition(train, validation, relabelled_train)
 
 
+def test_valid_partition_cannot_be_replayed_with_calibration_membership_as_train() -> None:
+    config = _config()
+    fixture = build_overfit_fixture(config)
+    train = _independent_role_batch(fixture, "train", 71)
+    validation = _independent_role_batch(fixture, "validation", 72)
+    calibration = _independent_role_batch(fixture, "calibration", 73)
+    partition = validate_role_partition(train, validation, calibration)
+
+    with pytest.raises(ValueError, match="training membership does not match"):
+        train_causal_forecaster(
+            build_forecaster(spatial="cnn", temporal="fir", config=config),
+            train=calibration.with_role("train"),
+            validation=validation,
+            config=config,
+            partition=partition,
+        )
+
+
 def test_calibration_rejects_batch_outside_validated_partition() -> None:
     fixture = build_overfit_fixture(_config())
     train = _independent_role_batch(fixture, "train", 61)
@@ -193,12 +241,44 @@ def test_calibration_rejects_batch_outside_validated_partition() -> None:
     calibration = _independent_role_batch(fixture, "calibration", 63)
     other_calibration = _independent_role_batch(fixture, "calibration", 64)
     partition = validate_role_partition(train, validation, calibration)
+    training_result = train_causal_forecaster(
+        build_forecaster(spatial="cnn", temporal="fir", config=_config()),
+        train=train,
+        validation=validation,
+        config=replace(_config(), optimizer=replace(_config().optimizer, max_epochs=1)),
+        partition=partition,
+    )
 
     with pytest.raises(ValueError, match="validated partition"):
         fit_calibration_temperature(
             torch.zeros_like(other_calibration.targets),
             other_calibration,
             partition=partition,
+            training_result=training_result,
+        )
+
+
+def test_calibration_rejects_training_result_bound_to_another_partition() -> None:
+    config = _config()
+    fixture = build_overfit_fixture(config)
+    train = _independent_role_batch(fixture, "train", 81)
+    validation = _independent_role_batch(fixture, "validation", 82)
+    calibration = _independent_role_batch(fixture, "calibration", 83)
+    partition = validate_role_partition(train, validation, calibration)
+    result = train_causal_forecaster(
+        build_forecaster(spatial="cnn", temporal="fir", config=config),
+        train=train,
+        validation=validation,
+        config=replace(config, optimizer=replace(config.optimizer, max_epochs=1)),
+        partition=partition,
+    )
+
+    with pytest.raises(ValueError, match="training result does not match"):
+        fit_calibration_temperature(
+            torch.zeros_like(calibration.targets),
+            calibration,
+            partition=partition,
+            training_result=replace(result, partition_digest="0" * 64),
         )
 
 
@@ -207,15 +287,24 @@ def test_temperature_detaches_model_logits_and_leaves_model_state_untouched() ->
     fixture = build_overfit_fixture(config)
     calibration = _independent_role_batch(fixture, "calibration", 31)
     partition = validate_role_partition(
-        _independent_role_batch(fixture, "train", 29),
-        _independent_role_batch(fixture, "validation", 30),
+        (train := _independent_role_batch(fixture, "train", 29)),
+        (validation := _independent_role_batch(fixture, "validation", 30)),
         calibration,
+    )
+    training_result = train_causal_forecaster(
+        build_forecaster(spatial="cnn", temporal="fir", config=config),
+        train=train,
+        validation=validation,
+        config=replace(config, optimizer=replace(config.optimizer, max_epochs=1)),
+        partition=partition,
     )
     model = build_forecaster(spatial="cnn", temporal="fir", config=config)
     logits = model.readout(torch.ones(2 * 24, model.width, 45)).reshape(2, 24, 58, 45)
     parameters_before = {name: value.detach().clone() for name, value in model.named_parameters()}
 
-    temperature = fit_calibration_temperature(logits, calibration, partition=partition)
+    temperature = fit_calibration_temperature(
+        logits, calibration, partition=partition, training_result=training_result
+    )
 
     assert temperature > 0.0
     assert logits.requires_grad
@@ -231,15 +320,28 @@ def test_temperature_rejects_nonfinite_logits(bad: float) -> None:
     fixture = build_overfit_fixture(_config())
     calibration = _independent_role_batch(fixture, "calibration", 41)
     partition = validate_role_partition(
-        _independent_role_batch(fixture, "train", 39),
-        _independent_role_batch(fixture, "validation", 40),
+        (train := _independent_role_batch(fixture, "train", 39)),
+        (validation := _independent_role_batch(fixture, "validation", 40)),
         calibration,
+    )
+    config = _config()
+    training_result = train_causal_forecaster(
+        build_forecaster(spatial="cnn", temporal="fir", config=config),
+        train=train,
+        validation=validation,
+        config=replace(config, optimizer=replace(config.optimizer, max_epochs=1)),
+        partition=partition,
     )
     logits = torch.zeros_like(calibration.targets)
     logits[0, 0, 0, 0] = bad
 
     with pytest.raises(ValueError, match="finite"):
-        fit_calibration_temperature(logits, calibration, partition=partition)
+        fit_calibration_temperature(
+            logits,
+            calibration,
+            partition=partition,
+            training_result=training_result,
+        )
 
 
 @pytest.mark.parametrize(

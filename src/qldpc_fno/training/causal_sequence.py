@@ -86,6 +86,7 @@ class CausalTrainingResult:
     best_validation_nll: float
     training_nll_history: tuple[float, ...]
     validation_nll_history: tuple[float, ...]
+    partition_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +96,7 @@ class RolePartition:
     train_sequence_ids: frozenset[str]
     validation_sequence_ids: frozenset[str]
     calibration_sequence_ids: frozenset[str]
+    digest: str
     _validation_token: object
 
     def __post_init__(self) -> None:
@@ -116,10 +118,18 @@ def validate_role_partition(
     identities = [set(batch.sequence_ids) for batch, _ in expected]
     if any(identities[left] & identities[right] for left in range(3) for right in range(left)):
         raise ValueError("train, validation, and calibration membership must be pairwise disjoint")
+    digest_payload = "\n".join(
+        f"{role}:{identity}"
+        for role, role_identities in zip(
+            ("train", "validation", "calibration"), identities, strict=True
+        )
+        for identity in sorted(role_identities)
+    )
     return RolePartition(
         train_sequence_ids=frozenset(identities[0]),
         validation_sequence_ids=frozenset(identities[1]),
         calibration_sequence_ids=frozenset(identities[2]),
+        digest=hashlib.sha256(digest_payload.encode()).hexdigest(),
         _validation_token=_PARTITION_VALIDATION_TOKEN,
     )
 
@@ -306,6 +316,7 @@ def train_causal_forecaster(
     train: SequenceRoleBatch,
     validation: SequenceRoleBatch,
     config: CausalExperimentConfig,
+    partition: RolePartition,
 ) -> CausalTrainingResult:
     """Train complete sequences and select the earliest validation-NLL winner."""
 
@@ -313,6 +324,10 @@ def train_causal_forecaster(
         raise ValueError("training batch must have role 'train'")
     if validation.role != "validation":
         raise ValueError("validation batch must have role 'validation'")
+    if frozenset(train.sequence_ids) != partition.train_sequence_ids:
+        raise ValueError("training membership does not match the validated partition")
+    if frozenset(validation.sequence_ids) != partition.validation_sequence_ids:
+        raise ValueError("validation membership does not match the validated partition")
     if set(train.sequence_ids) & set(validation.sequence_ids):
         raise ValueError("training and validation sequence membership must be disjoint")
     _initialize_for_training(
@@ -365,6 +380,7 @@ def train_causal_forecaster(
         best_validation_nll=best_nll,
         training_nll_history=tuple(train_history),
         validation_nll_history=tuple(validation_history),
+        partition_digest=partition.digest,
     )
 
 
@@ -373,6 +389,7 @@ def fit_calibration_temperature(
     calibration: SequenceRoleBatch,
     *,
     partition: RolePartition,
+    training_result: CausalTrainingResult,
 ) -> float:
     """Fit one positive scalar temperature using calibration labels only."""
 
@@ -380,6 +397,8 @@ def fit_calibration_temperature(
         raise ValueError("calibration batch must have role 'calibration'")
     if frozenset(calibration.sequence_ids) != partition.calibration_sequence_ids:
         raise ValueError("calibration batch does not match the validated partition")
+    if training_result.partition_digest != partition.digest:
+        raise ValueError("training result does not match the validated partition")
     if logits.shape != calibration.targets.shape:
         raise ValueError("calibration logits and targets must have equal shapes")
     if not logits.is_floating_point() or not torch.all(torch.isfinite(logits)):
