@@ -599,20 +599,23 @@ def _summary_markdown(results: dict[str, object]) -> str:
     else:
         lines.extend(
             [
-                "| p | shots | state | stop reason | accuracy-compatible hybrids |",
+                "| p | shots | state | stop reason | paired comparison status |",
                 "|---:|---:|---|---|---|",
             ]
         )
         for row in held_out:
-            compatible = row.get("accuracy_compatible", {})
-            names = (
-                ", ".join(name for name, value in compatible.items() if value)
-                if isinstance(compatible, dict)
-                else ""
+            comparison_status = row.get("comparison_status", {})
+            statuses = (
+                "; ".join(
+                    f"{method}: {comparison_status.get(method, 'unavailable')}"
+                    for method in ("soft_prior", "residual")
+                )
+                if isinstance(comparison_status, dict)
+                else "unavailable"
             )
             lines.append(
                 f"| {row.get('error_rate')} | {row.get('shots')} | {row.get('status')} | "
-                f"{row.get('stop_reason')} | {names or 'none'} |"
+                f"{row.get('stop_reason')} | {statuses} |"
             )
         for row in held_out:
             lines.extend(
@@ -647,21 +650,55 @@ def _summary_markdown(results: dict[str, object]) -> str:
                     "",
                     "Paired block-error delta (hybrid minus baseline):",
                     "",
-                    "| Hybrid | Delta | Paired 95% interval |",
-                    "|---|---:|---|",
+                    (
+                        "Each hybrid row reports discordant pairs, the exact two-sided McNemar "
+                        "p-value, and the 95% Clopper-Pearson interval for hybrid-harm share "
+                        "conditional on discordance."
+                    ),
+                    "",
+                    (
+                        "| Hybrid | Paired comparison status | Delta | Baseline-only failures | "
+                        "Hybrid-only failures | Discordant pairs | exact McNemar two-sided "
+                        "p-value | Hybrid-harm share conditional on discordance | 95% "
+                        "Clopper-Pearson interval conditional on discordance |"
+                    ),
+                    "|---|---|---:|---:|---:|---:|---:|---:|---|",
                 ]
             )
             paired = row.get("paired", {})
+            comparison_status = row.get("comparison_status", {})
+            if not isinstance(comparison_status, dict):
+                comparison_status = {}
             if isinstance(paired, dict):
                 for method in ("soft_prior", "residual"):
                     metrics = paired.get(method, {})
                     if not isinstance(metrics, dict):
                         continue
                     interval = (
-                        f"[{metrics.get('block_error_delta_95ci_low')}, "
-                        f"{metrics.get('block_error_delta_95ci_high')}]"
+                        "["
+                        f"{metrics.get('hybrid_harm_share_given_discordance_95ci_low')}, "
+                        f"{metrics.get('hybrid_harm_share_given_discordance_95ci_high')}"
+                        "]"
                     )
-                    lines.append(f"| {method} | {metrics.get('block_error_delta')} | {interval} |")
+                    lines.append(
+                        f"| {method} | {comparison_status.get(method, 'unavailable')} | "
+                        f"{metrics.get('block_error_delta')} | "
+                        f"{metrics.get('baseline_only_failure')} | "
+                        f"{metrics.get('hybrid_only_failure')} | "
+                        f"{metrics.get('discordant_pairs')} | "
+                        f"{metrics.get('mcnemar_exact_pvalue_two_sided')} | "
+                        f"{metrics.get('hybrid_harm_share_given_discordance')} | {interval} |"
+                    )
+            if "not_fixed_sample" in comparison_status.values():
+                lines.extend(
+                    [
+                        "",
+                        (
+                            "Paired inference is diagnostic because this result is adaptive, "
+                            "incomplete, or both."
+                        ),
+                    ]
+                )
             lines.extend(
                 [
                     "",

@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 usage() {
-  echo "usage: bash scripts/run_accuracy_campaign.sh [--resume]" >&2
+  echo "usage: bash scripts/run_accuracy_campaign.sh [--resume] [--disconfirm]" >&2
   echo "" >&2
   echo "CAMPAIGN_OUTPUT selects a fresh local artifact directory." >&2
   echo "CAMPAIGN_REDUCED=1 enables test-only, non-scientific size overrides:" >&2
@@ -15,28 +15,50 @@ usage() {
 }
 
 resume=0
-if (( $# > 1 )); then
-  usage
-  exit 2
-fi
-if (( $# == 1 )); then
-  if [[ "$1" != "--resume" ]]; then
-    usage
-    exit 2
-  fi
-  resume=1
-fi
+disconfirm=0
+while (( $# )); do
+  case "$1" in
+    --resume)
+      if (( resume )); then
+        usage
+        exit 2
+      fi
+      resume=1
+      ;;
+    --disconfirm)
+      if (( disconfirm )); then
+        usage
+        exit 2
+      fi
+      disconfirm=1
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 if [[ -n "${CAMPAIGN_CONFIG:-}" ]]; then
   echo "CAMPAIGN_CONFIG is not supported; canonical mode is pinned to the committed config" >&2
   exit 2
 fi
-canonical_config="$repo_root/configs/accuracy_campaign.json"
-output="${CAMPAIGN_OUTPUT:-artifacts/accuracy-campaign}"
 reduced="${CAMPAIGN_REDUCED:-0}"
 if [[ "$reduced" != "0" && "$reduced" != "1" ]]; then
   echo "CAMPAIGN_REDUCED must be 0 or 1" >&2
   exit 2
+fi
+if (( disconfirm )) && [[ "$reduced" == "1" ]]; then
+  echo "--disconfirm cannot be combined with CAMPAIGN_REDUCED=1" >&2
+  exit 2
+fi
+if (( disconfirm )); then
+  canonical_config="$repo_root/configs/accuracy_disconfirm_p0375.json"
+  output="${CAMPAIGN_OUTPUT:-artifacts/accuracy-disconfirm-p0375}"
+else
+  canonical_config="$repo_root/configs/accuracy_campaign.json"
+  output="${CAMPAIGN_OUTPUT:-artifacts/accuracy-campaign}"
 fi
 if [[ ! -f "$canonical_config" || -L "$canonical_config" ]]; then
   echo "committed campaign configuration is unavailable: $canonical_config" >&2
@@ -89,8 +111,8 @@ if [[ "$stage_execution_guard" != "0" && "$stage_execution_guard" != "1" ]]; the
   echo "CAMPAIGN_FAIL_ON_STAGE_EXECUTION must be 0 or 1" >&2
   exit 2
 fi
-if [[ "$stage_execution_guard" == "1" && "$reduced" != "1" ]]; then
-  echo "stage execution guard is available only for reduced integration tests" >&2
+if [[ "$stage_execution_guard" == "1" && "$reduced" != "1" && "$disconfirm" != "1" ]]; then
+  echo "stage execution guard is available only for reduced or disconfirm integration tests" >&2
   exit 2
 fi
 if [[ "$stop_after_inputs" != "0" && "$stop_after_inputs" != "1" ]]; then

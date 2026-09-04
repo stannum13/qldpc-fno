@@ -632,7 +632,7 @@ def test_pilot_adapter_does_not_trust_manifest_presence_alone(tmp_path: Path) ->
         raise AssertionError("pilot manifest presence bypassed content verification")
 
 
-def test_summary_keeps_selection_and_calibration_out_of_held_out_evidence(
+def test_summary_markdown_keeps_selection_and_calibration_out_of_held_out_evidence(
     tmp_path: Path,
 ) -> None:
     campaign = tmp_path / "campaign"
@@ -672,7 +672,7 @@ def test_summary_keeps_selection_and_calibration_out_of_held_out_evidence(
         },
     )
     rate_summary = {
-        "accuracy_compatible": {"soft_prior": True, "residual": False},
+        "comparison_status": {"soft_prior": "inconclusive", "residual": "harm_detected"},
         "decoders": {
             name: {
                 "block_error_rate": 0.125,
@@ -691,12 +691,16 @@ def test_summary_keeps_selection_and_calibration_out_of_held_out_evidence(
             "residual_end_to_end_latency_seconds": {"p50": 0.03, "p95": 0.04},
         },
         "paired": {
-            method: {
-                "block_error_delta": -0.125,
-                "block_error_delta_95ci_high": 0.0,
-                "block_error_delta_95ci_low": -0.25,
+            "soft_prior": {
+                "baseline_only_failure": 1,
+                "hybrid_only_failure": 2,
+                "discordant_pairs": 3,
+                "block_error_delta": 0.01,
+                "mcnemar_exact_pvalue_two_sided": 1.0,
+                "hybrid_harm_share_given_discordance": 2 / 3,
+                "hybrid_harm_share_given_discordance_95ci_low": 0.09429932405024608,
+                "hybrid_harm_share_given_discordance_95ci_high": 0.9915962413403874,
             }
-            for method in ("soft_prior", "residual")
         },
         "shots": 8,
         "source_sha256": {"test_manifest": "held-out"},
@@ -756,6 +760,12 @@ def test_summary_keeps_selection_and_calibration_out_of_held_out_evidence(
     assert "Held-out test results" in markdown
     assert "95% Wilson interval" in markdown
     assert "Paired block-error delta" in markdown
+    assert "comparison status" in markdown
+    assert "discordant pairs" in markdown
+    assert "exact McNemar" in markdown
+    assert "conditional on discordance" in markdown
+    for forbidden in ("accuracy-compatible", "noninferior", "equivalent", "paired 95% interval"):
+        assert forbidden not in markdown.lower()
     assert "Syndrome-valid rate" in markdown
     assert "Timing diagnostics" in markdown
     assert "Calibration is not held-out evidence" in markdown
@@ -763,6 +773,34 @@ def test_summary_keeps_selection_and_calibration_out_of_held_out_evidence(
     assert "grid-hash" in markdown
     assert "model-hash" in markdown
     assert "campaign_deadline" in markdown
+
+
+def test_summary_markdown_labels_non_fixed_sample_inference_as_diagnostic() -> None:
+    markdown = _summary_markdown(
+        {
+            "completion_state": "partial_deadline",
+            "held_out_test_results": [
+                {
+                    "comparison_status": {
+                        "soft_prior": "not_fixed_sample",
+                        "residual": "not_fixed_sample",
+                    },
+                    "decoders": {},
+                    "diagnostics": {},
+                    "error_rate": 0.01,
+                    "paired": {},
+                    "shots": 8,
+                    "status": "partial_deadline",
+                    "stop_reason": "campaign_deadline",
+                }
+            ],
+        }
+    )
+
+    assert (
+        "Paired inference is diagnostic because this result is adaptive, incomplete, or both."
+        in markdown
+    )
 
 
 def test_complete_summary_rejects_missing_scientific_stages(tmp_path: Path) -> None:

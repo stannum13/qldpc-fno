@@ -47,6 +47,32 @@ def _run_campaign(
     )
 
 
+def _run_disconfirm_campaign(
+    output: Path,
+    *arguments: str,
+    environment_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("CAMPAIGN_")
+    }
+    environment.update(
+        {
+            "CAMPAIGN_FAIL_ON_STAGE_EXECUTION": "1",
+            "CAMPAIGN_OUTPUT": str(output),
+        }
+    )
+    if environment_overrides:
+        environment.update(environment_overrides)
+    return subprocess.run(
+        ["bash", "scripts/run_accuracy_campaign.sh", *arguments],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+        timeout=15 * 60,
+    )
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -120,7 +146,7 @@ def test_reduced_campaign_completes_refuses_overwrite_and_resumes_verified_stage
         for decoder in ("baseline", "soft_prior", "residual"):
             assert row["decoders"][decoder]["shots"] > 0
     assert "| Decoder | Shots | Failures |" in markdown
-    assert "| Hybrid | Delta | Paired 95% interval |" in markdown
+    assert "| Hybrid | Paired comparison status | Delta |" in markdown
     assert "Reproducibility and provenance" in markdown
     assert "NON-SCIENTIFIC REDUCED CAMPAIGN" in markdown
 
@@ -174,6 +200,86 @@ def test_canonical_campaign_rejects_configuration_override(tmp_path: Path) -> No
     assert result.returncode == 2
     assert "CAMPAIGN_CONFIG is not supported" in result.stderr
     assert not output.exists()
+
+
+def test_disconfirm_profile_publishes_only_the_committed_fixed_config_and_resumes(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "accuracy-disconfirm-p0375"
+
+    first = _run_disconfirm_campaign(output, "--disconfirm")
+
+    assert first.returncode == 2
+    assert "completed resume unexpectedly executed stage command" in first.stderr
+    store = LocalArtifactStore(output)
+    assert store.verify_completion("inputs") is True
+    resolved_inputs = tmp_path / "resolved-disconfirm-inputs"
+    materialize_completion(store, "inputs", resolved_inputs)
+    mode = json.loads((resolved_inputs / "run-mode.json").read_text())
+    config = json.loads((resolved_inputs / "config.json").read_text())
+    assert mode["canonical_config"] == "accuracy_disconfirm_p0375.json"
+    assert mode["canonical_config_sha256"] == mode["effective_config_sha256"]
+    assert mode["mode"] == "canonical"
+    assert mode["overrides"] == {}
+    assert config["selection_mode"] == "fixed"
+    assert config["test_stopping_mode"] == "fixed"
+
+    resume_first = _run_disconfirm_campaign(output, "--resume", "--disconfirm")
+    disconfirm_first = _run_disconfirm_campaign(output, "--disconfirm", "--resume")
+
+    for resumed in (resume_first, disconfirm_first):
+        assert resumed.returncode == 2
+        assert "completed resume unexpectedly executed stage command" in resumed.stderr
+        assert store.verify_completion("inputs") is True
+
+
+def test_disconfirm_profile_rejects_reduced_mode_arbitrary_config_and_unknown_arguments(
+    tmp_path: Path,
+) -> None:
+    reduced_output = tmp_path / "reduced-disconfirm"
+    reduced = _run_disconfirm_campaign(
+        reduced_output,
+        "--disconfirm",
+        environment_overrides={"CAMPAIGN_REDUCED": "1"},
+    )
+    assert reduced.returncode == 2
+    assert "--disconfirm cannot be combined with CAMPAIGN_REDUCED=1" in reduced.stderr
+    assert not reduced_output.exists()
+
+    arbitrary_output = tmp_path / "arbitrary-disconfirm"
+    arbitrary = _run_disconfirm_campaign(
+        arbitrary_output,
+        "--disconfirm",
+        environment_overrides={"CAMPAIGN_CONFIG": str(tmp_path / "alternate.json")},
+    )
+    assert arbitrary.returncode == 2
+    assert "CAMPAIGN_CONFIG is not supported" in arbitrary.stderr
+    assert not arbitrary_output.exists()
+
+    unknown_output = tmp_path / "unknown-argument"
+    unknown = _run_disconfirm_campaign(unknown_output, "--disconfirm", "--unknown")
+    assert unknown.returncode == 2
+    assert "usage:" in unknown.stderr
+    assert not unknown_output.exists()
+
+
+def test_disconfirm_profile_rejects_duplicate_arguments_and_canonical_guard(
+    tmp_path: Path,
+) -> None:
+    for index, arguments in enumerate(
+        (("--disconfirm", "--disconfirm"), ("--resume", "--resume"))
+    ):
+        output = tmp_path / f"duplicate-{index}"
+        duplicate = _run_disconfirm_campaign(output, *arguments)
+        assert duplicate.returncode == 2
+        assert "usage:" in duplicate.stderr
+        assert not output.exists()
+
+    canonical_output = tmp_path / "canonical-guard"
+    guarded = _run_disconfirm_campaign(canonical_output)
+    assert guarded.returncode == 2
+    assert "stage execution guard is available only" in guarded.stderr
+    assert not canonical_output.exists()
 
 
 def test_resume_rejects_established_corrupt_or_symlinked_inputs(tmp_path: Path) -> None:
