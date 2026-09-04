@@ -56,6 +56,38 @@ def test_config_round_trips_without_losing_schema_information() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("ell", 45.0),
+        ("ell", True),
+        ("n", 2610.0),
+        ("n", True),
+        ("k", 744.0),
+        ("k", True),
+        ("distance_upper_bound", 16.0),
+        ("distance_upper_bound", True),
+    ],
+)
+def test_config_rejects_non_integer_code_identity_fields(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    payload = _payload()
+    payload["code"][field] = value
+
+    with pytest.raises(ValueError, match=rf"{field} must be an integer"):
+        CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
+
+
+@pytest.mark.parametrize("name", [123, "lp_3_7_15"])
+def test_config_requires_exact_string_code_name(tmp_path: Path, name: object) -> None:
+    payload = _payload()
+    payload["code"]["name"] = name
+
+    with pytest.raises(ValueError, match="name must be 'lp_3_7_16'"):
+        CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
     ("mutate", "match"),
     [
         (lambda payload: payload.update({"surprise": 1}), "unknown fields"),

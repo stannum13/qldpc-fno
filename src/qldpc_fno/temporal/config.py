@@ -50,8 +50,13 @@ class CodeIdentity:
     distance_upper_bound: int
 
     def validate(self) -> None:
-        expected = ("lp_3_7_16", 45, 2610, 744, 16)
-        if (self.name, self.ell, self.n, self.k, self.distance_upper_bound) != expected:
+        if type(self.name) is not str or self.name != "lp_3_7_16":
+            raise ValueError("code name must be 'lp_3_7_16'")
+        _integer(self.ell, "ell")
+        _integer(self.n, "n")
+        _integer(self.k, "k")
+        _integer(self.distance_upper_bound, "distance_upper_bound")
+        if (self.ell, self.n, self.k, self.distance_upper_bound) != (45, 2610, 744, 16):
             raise ValueError("code must identify the canonical lp_3_7_16 geometry")
 
 
