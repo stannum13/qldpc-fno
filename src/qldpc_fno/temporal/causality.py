@@ -97,31 +97,64 @@ def _bit_identical(first: np.ndarray, second: np.ndarray) -> bool:
     return left.dtype == right.dtype and left.shape == right.shape and left.tobytes() == right.tobytes()
 
 
-def audit_forecaster_causality(
+def _values_identical(first: object, second: object) -> bool:
+    if isinstance(first, np.ndarray) or isinstance(second, np.ndarray):
+        try:
+            return _bit_identical(np.asarray(first), np.asarray(second))
+        except (TypeError, ValueError):
+            return False
+    if isinstance(first, Mapping) and isinstance(second, Mapping):
+        if set(first) != set(second):
+            return False
+        return all(_values_identical(first[key], second[key]) for key in first)
+    if first is None or second is None:
+        return first is second
+    try:
+        result = first == second
+    except (TypeError, ValueError):
+        return False
+    return bool(result) if isinstance(result, (bool, np.bool_)) else False
+
+
+def _records_identical(first: CausalAuditSequence, second: CausalAuditSequence) -> bool:
+    return (
+        first.forecast_round == second.forecast_round
+        and _values_identical(first.syndromes, second.syndromes)
+        and _values_identical(first.physical_errors, second.physical_errors)
+        and _values_identical(first.logical_outcomes, second.logical_outcomes)
+        and _values_identical(first.diagnostics, second.diagnostics)
+    )
+
+
+def audit_structural_prefix_causality(
     forecaster: ObservedPrefixForecaster,
     sequence: CausalAuditSequence,
     forbidden_mutations: Mapping[str, CausalAuditSequence],
 ) -> Audit:
-    """Verify forbidden-field mutations cannot alter a strict-prefix forecast.
+    """Structurally verify forbidden mutations cannot alter a strict-prefix forecast.
 
     Each supplied mutation must preserve the forecast round and observed syndrome
     prefix. Current/future syndromes and every supervision or diagnostic field are
-    excluded structurally from :class:`ObservedHistory`.
+    excluded structurally from :class:`ObservedHistory`. This boundary audit cannot
+    detect forecaster-captured external privileged state; concrete model audits must
+    recreate/reset the model and spy on its actual prediction path.
     """
     if not forbidden_mutations:
         raise ValueError("forbidden_mutations must contain at least one named mutation")
     baseline_history = _observed_history(sequence)
-    baseline = np.asarray(forecaster.forecast(baseline_history))
+    baseline = np.array(forecaster.forecast(baseline_history), copy=True)
     checks: list[MutationCheck] = []
     for name, mutation in forbidden_mutations.items():
         if not isinstance(name, str) or not name:
             raise ValueError("mutation names must be nonempty strings")
+        if _records_identical(sequence, mutation):
+            raise ValueError(f"mutation {name!r} is identical to the source record")
         if mutation.forecast_round != sequence.forecast_round:
             raise ValueError(f"mutation {name!r} changes forecast_round")
         mutation_history = _observed_history(mutation)
         if not _bit_identical(baseline_history.syndromes, mutation_history.syndromes):
             raise ValueError(f"mutation {name!r} changes the observed syndrome prefix")
-        forecast = np.asarray(forecaster.forecast(mutation_history))
+        forecast = np.array(forecaster.forecast(mutation_history), copy=True)
         checks.append(MutationCheck(name=name, bit_identical=_bit_identical(baseline, forecast)))
     result = tuple(checks)
     return Audit(

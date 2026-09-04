@@ -92,13 +92,20 @@ def paired_sequence_inference(
     mu0: float,
     seeds: Iterable[int],
     draws: int,
+    minimum_sequences: int = 64,
 ) -> dict[str, object]:
     """Run lower-tail paired inference on one mean difference per sequence.
 
     Wild-bootstrap draws are explicitly centered under ``mu0`` and studentized.
     Their p-values use the finite-sample ``(1 + count) / (draws + 1)`` correction.
     """
-    values = _sequence_values(differences, name="differences", minimum=2)
+    if type(minimum_sequences) is not int or minimum_sequences < 2:
+        raise ValueError("minimum_sequences must be an integer at least 2")
+    values = _sequence_values(
+        differences,
+        name="differences",
+        minimum=minimum_sequences,
+    )
     if isinstance(mu0, (bool, np.bool_)) or not isinstance(
         mu0, (int, float, np.integer, np.floating)
     ):
@@ -113,6 +120,7 @@ def paired_sequence_inference(
     standard_deviation = float(values.std(ddof=1))
     common = {
         "mean_difference": mean,
+        "minimum_sequences": minimum_sequences,
         "mu0": mu0,
         "n_sequences": int(values.size),
         "standard_deviation": standard_deviation,

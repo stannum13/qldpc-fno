@@ -27,6 +27,7 @@ def test_paired_sequence_inference_uses_lower_tail_t_test() -> None:
 
     statistic = differences.mean() / (differences.std(ddof=1) / np.sqrt(differences.size))
     assert result["status"] == "ok"
+    assert result["minimum_sequences"] == 64
     assert result["n_sequences"] == 64
     assert result["t_statistic"] == pytest.approx(statistic)
     assert result["paired_t_pvalue_lower"] == pytest.approx(
@@ -109,6 +110,43 @@ def test_wild_bootstrap_declares_exhausted_valid_draws(monkeypatch: pytest.Monke
     ]
 
 
+def test_reduced_method_test_must_explicitly_lower_minimum_sequences() -> None:
+    result = paired_sequence_inference(
+        np.array([-0.1, 0.05]),
+        mu0=0.0,
+        seeds=(2,),
+        draws=10,
+        minimum_sequences=2,
+    )
+
+    assert result["n_sequences"] == 2
+    assert result["minimum_sequences"] == 2
+
+
+def test_paired_inference_defaults_to_sixty_four_independent_sequences() -> None:
+    with pytest.raises(ValueError, match="at least 64 independent"):
+        paired_sequence_inference(
+            np.zeros(63),
+            mu0=0.0,
+            seeds=(1,),
+            draws=10,
+        )
+
+
+@pytest.mark.parametrize("minimum_sequences", [True, 1, 1.5, 65.0])
+def test_paired_inference_rejects_invalid_minimum_sequences(
+    minimum_sequences: object,
+) -> None:
+    with pytest.raises(ValueError, match="minimum_sequences must be an integer at least 2"):
+        paired_sequence_inference(
+            np.zeros(64),
+            mu0=0.0,
+            seeds=(1,),
+            draws=10,
+            minimum_sequences=minimum_sequences,  # type: ignore[arg-type]
+        )
+
+
 def test_cluster_percentile_interval_is_whole_sequence_and_deterministic() -> None:
     values = np.array([0.1, 0.2, 0.4, 0.8])
     first = cluster_percentile_interval(values, seed=20260905, draws=500)
@@ -121,7 +159,7 @@ def test_cluster_percentile_interval_is_whole_sequence_and_deterministic() -> No
     assert first["interval_low"] <= first["estimate"] <= first["interval_high"]
 
 
-def test_duplicating_rounds_does_not_change_inferential_unit_count() -> None:
+def test_bootstrap_of_sequence_means_keeps_three_units_after_round_duplication() -> None:
     per_sequence_rounds = np.array([[0.0, 1.0], [1.0, 1.0], [0.0, 0.0]])
     duplicated_rounds = np.repeat(per_sequence_rounds, 5, axis=1)
     original_means = per_sequence_rounds.mean(axis=1)

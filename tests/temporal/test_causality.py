@@ -8,7 +8,7 @@ import pytest
 from qldpc_fno.temporal.causality import (
     CausalAuditSequence,
     ObservedHistory,
-    audit_forecaster_causality,
+    audit_structural_prefix_causality,
 )
 
 
@@ -45,7 +45,7 @@ def test_forbidden_current_future_and_supervision_mutations_leave_forecast_ident
     }
     forecaster = StatefulPrefixForecaster()
 
-    audit = audit_forecaster_causality(forecaster, sequence, mutations)
+    audit = audit_structural_prefix_causality(forecaster, sequence, mutations)
 
     assert audit.passed
     assert audit.forecast_round == 3
@@ -67,7 +67,7 @@ def test_mutating_observed_past_is_rejected_as_not_a_forbidden_field_audit() -> 
     changed[0] ^= 1
 
     with pytest.raises(ValueError, match="observed syndrome prefix"):
-        audit_forecaster_causality(
+        audit_structural_prefix_causality(
             StatefulPrefixForecaster(),
             sequence,
             {"past_syndrome": replace(sequence, syndromes=changed)},
@@ -84,7 +84,7 @@ def test_audit_detects_forecaster_state_that_changes_repeated_fixed_prefix_outpu
             return history.syndromes[-1].astype(np.int64) + self.offset
 
     sequence = _sequence()
-    audit = audit_forecaster_causality(
+    audit = audit_structural_prefix_causality(
         LeakyStatefulForecaster(),
         sequence,
         {"logical": replace(sequence, logical_outcomes=1 - sequence.logical_outcomes)},
@@ -96,4 +96,44 @@ def test_audit_detects_forecaster_state_that_changes_repeated_fixed_prefix_outpu
 
 def test_audit_requires_at_least_one_named_mutation() -> None:
     with pytest.raises(ValueError, match="at least one"):
-        audit_forecaster_causality(StatefulPrefixForecaster(), _sequence(), {})
+        audit_structural_prefix_causality(StatefulPrefixForecaster(), _sequence(), {})
+
+
+def test_identical_mutation_record_is_rejected_as_vacuous() -> None:
+    sequence = _sequence()
+
+    with pytest.raises(ValueError, match="identical to the source record"):
+        audit_structural_prefix_causality(
+            StatefulPrefixForecaster(),
+            sequence,
+            {"unchanged": replace(sequence)},
+        )
+
+
+def test_reused_forecast_buffer_cannot_retroactively_change_baseline_snapshot() -> None:
+    class ReusedBufferForecaster:
+        def __init__(self) -> None:
+            self.buffer = np.zeros(4, dtype=np.int64)
+            self.calls = 0
+
+        def forecast(self, history: ObservedHistory) -> np.ndarray:
+            self.calls += 1
+            self.buffer.fill(self.calls)
+            return self.buffer
+
+    sequence = _sequence()
+    audit = audit_structural_prefix_causality(
+        ReusedBufferForecaster(),
+        sequence,
+        {"logical": replace(sequence, logical_outcomes=1 - sequence.logical_outcomes)},
+    )
+
+    assert not audit.passed
+    assert audit.checks[0].bit_identical is False
+
+
+def test_structural_audit_documents_external_privileged_state_limitation() -> None:
+    documentation = " ".join((audit_structural_prefix_causality.__doc__ or "").split())
+    assert (
+        "cannot detect forecaster-captured external privileged state" in documentation
+    )
