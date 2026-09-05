@@ -308,55 +308,29 @@ def _checks_manifest(checks: DisjointChecks) -> dict[str, object]:
 
 
 def _fisher_manifest(report: object, config: IdentifiabilityConfig) -> dict[str, object]:
+    """Serialize the complete precheck record without inventing any values."""
     if isinstance(report, Mapping):
-        status = report.get("status")
-        failures = report.get("failure_reasons", ())
-        maximum_error = report.get("maximum_derivative_error", 0.0)
-        numbers = {
-            name: report.get(name, 0.0)
-            for name in (
-                "minimum_information",
-                "median_information",
-                "maximum_information",
-                "cramer_rao_minimum",
-                "cramer_rao_median",
-                "cramer_rao_maximum",
-            )
-        }
+        value = dict(report)
     else:
-        status = getattr(report, "status", None)
-        failures = getattr(report, "failure_reasons", ())
-        maximum_error = getattr(report, "maximum_derivative_error", None)
-        numbers = {
-            name: getattr(report, name, None)
-            for name in (
-                "minimum_information",
-                "median_information",
-                "maximum_information",
-                "cramer_rao_minimum",
-                "cramer_rao_median",
-                "cramer_rao_maximum",
-            )
+        provenance = getattr(report, "provenance", None)
+        value = {
+            "status": getattr(report, "status", None),
+            "provenance": {
+                "domain": getattr(provenance, "domain", None),
+                "seed": getattr(provenance, "seed", None),
+                "law": getattr(provenance, "law", None),
+                "draws": getattr(provenance, "draws", None),
+            },
+            "minimum_information": getattr(report, "minimum_information", None),
+            "median_information": getattr(report, "median_information", None),
+            "maximum_information": getattr(report, "maximum_information", None),
+            "cramer_rao_minimum": getattr(report, "cramer_rao_minimum", None),
+            "cramer_rao_median": getattr(report, "cramer_rao_median", None),
+            "cramer_rao_maximum": getattr(report, "cramer_rao_maximum", None),
+            "maximum_derivative_error": getattr(report, "maximum_derivative_error", None),
+            "failure_reasons": list(getattr(report, "failure_reasons", ())),
         }
-    if status not in {"passed", "precheck_failed"}:
-        raise ValueError("Fisher precheck must return an explicit passed or precheck_failed status")
-    numeric = {**numbers, "maximum_derivative_error": maximum_error}
-    if any(type(value) not in (int, float) or not np.isfinite(value) for value in numeric.values()):
-        raise ValueError("Fisher precheck report contains nonfinite summary values")
-    if not isinstance(failures, (tuple, list)) or any(not isinstance(item, str) for item in failures):
-        raise ValueError("Fisher precheck failure reasons are invalid")
-    return {
-        "status": status,
-        "provenance": {
-            "domain": config.seeds.fisher_domain,
-            "seed": config.seeds.fisher,
-            "law": config.fisher.draw_law,
-            "draws": config.fisher.draws,
-        },
-        **{name: float(value) for name, value in numeric.items() if name != "maximum_derivative_error"},
-        "maximum_derivative_error": float(maximum_error),
-        "failure_reasons": list(failures),
-    }
+    return _validate_fisher(value, config)
 
 
 def _sequence_relative(role: str, regime: str, index: int) -> Path:
@@ -715,6 +689,22 @@ def _verify(
     code = dependencies.code_factory()
     code_manifest = _code_manifest(code, dependencies, config)
     checks = greedy_disjoint_rows(code.hx)
+    fisher = _fisher_manifest(dependencies.fisher_precheck(config, checks), config)
+    test_requested = "test" in roles
+    binding: dict[str, object] | None = None
+    # This must run before opening the test completion marker or test payloads.
+    if test_requested:
+        if approval_path is None or development_record is None:
+            raise ValueError("test-role verification requires manual approval and development record")
+        if fisher["status"] != "passed":
+            raise ValueError("test-role verification requires a passed current Fisher precheck")
+        binding = _validate_development_record(
+            development_record,
+            approval_path,
+            config_path=config_path,
+            dependencies=dependencies,
+            evidence=evidence,
+        )
     root = _validate_manifest(
         _load_root(output_dir / "manifest.json"),
         config=config,
@@ -723,19 +713,12 @@ def _verify(
         code_manifest=code_manifest,
         checks=checks,
     )
+    if root["fisher_precheck"] != fisher:
+        raise ValueError("Fisher precheck report does not exactly match independent replay")
     if root["config"]["sha256"] != sha256_file(config_path):
         raise ValueError("completion manifest exact config-file hash does not match")
-    test_requested = "test" in roles
     if test_requested:
-        if approval_path is None or development_record is None:
-            raise ValueError("test-role verification requires manual approval and development record")
-        binding = _validate_development_record(
-            development_record,
-            approval_path,
-            config_path=config_path,
-            dependencies=dependencies,
-            evidence=evidence,
-        )
+        assert binding is not None
         if root["approval"] != binding or root["development_record"] != {
             "sha256": binding["development_record_sha256"],
             "identity_sha256": binding["development_identity_sha256"],
@@ -784,13 +767,25 @@ def generate_campaign(
         raise ValueError("test-role generation requires both manual approval and development record")
     if not test_requested and (approval_path is not None or development_record is not None):
         raise ValueError("approval and development record are only valid for test-role generation")
-    binding = (
-        _validate_development_record(
-            development_record, approval_path, config_path=config_path, dependencies=deps, evidence=evidence
+    code = deps.code_factory()
+    code_manifest = _code_manifest(code, deps, config)
+    checks = greedy_disjoint_rows(code.hx)
+    if deps.require_canonical_code and (len(checks.supports), int(checks.weights.sum())) != (135, 1350):
+        raise ValueError("canonical retained rows no longer match preregistered count and coverage")
+    fisher = _fisher_manifest(deps.fisher_precheck(config, checks), config)
+    binding: dict[str, object] | None = None
+    if test_requested:
+        # Do not read or create test output until both Fisher gates and the
+        # independently replayed development record are valid.
+        if fisher["status"] != "passed":
+            raise ValueError("test-role generation requires a passed current Fisher precheck")
+        binding = _validate_development_record(
+            development_record,
+            approval_path,
+            config_path=config_path,
+            dependencies=deps,
+            evidence=evidence,
         )
-        if test_requested
-        else None
-    )
     if output_dir.exists():
         if not (output_dir / "manifest.json").is_file():
             raise FileExistsError("refuse to overwrite incomplete sequence publication")
@@ -807,12 +802,6 @@ def generate_campaign(
         except (TypeError, ValueError) as error:
             raise FileExistsError("refuse to overwrite completed differing or corrupted publication") from error
         return existing
-    code = deps.code_factory()
-    code_manifest = _code_manifest(code, deps, config)
-    checks = greedy_disjoint_rows(code.hx)
-    if deps.require_canonical_code and (len(checks.supports), int(checks.weights.sum())) != (135, 1350):
-        raise ValueError("canonical retained rows no longer match preregistered count and coverage")
-    fisher = _fisher_manifest(deps.fisher_precheck(config, checks), config)
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-staging-", dir=output_dir.parent))
     try:
@@ -849,19 +838,23 @@ def generate_campaign(
         root["content_sha256"] = _digest(_content_input(root))
         # The root manifest is the sole completion marker and is written last.
         _write_atomic(staging / "manifest.json", _canonical_json(root))
+        # Replay every staged payload before the staging directory becomes a
+        # visible completed artifact. A nondeterministic factory therefore
+        # cannot leave a final manifest behind.
+        verified = _verify(
+            config_path=config_path,
+            output_dir=staging,
+            roles=selected_roles,
+            dependencies=deps,
+            evidence=evidence,
+            approval_path=approval_path,
+            development_record=development_record,
+        )
         os.replace(staging, output_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return _verify(
-        config_path=config_path,
-        output_dir=output_dir,
-        roles=selected_roles,
-        dependencies=deps,
-        evidence=evidence,
-        approval_path=approval_path,
-        development_record=development_record,
-    )
+    return verified
 
 
 def verify_campaign(

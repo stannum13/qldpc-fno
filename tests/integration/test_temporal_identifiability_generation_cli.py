@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -89,9 +90,29 @@ def _fast_sequence(config, *, regime: str, role: str, sequence_index: int, code)
     )
 
 
+def _fisher(config, checks, *, status: str = "passed", minimum: float = 1.25):
+    del checks
+    return {
+        "status": status,
+        "provenance": {
+            "domain": config.seeds.fisher_domain,
+            "seed": config.seeds.fisher,
+            "law": config.fisher.draw_law,
+            "draws": config.fisher.draws,
+        },
+        "minimum_information": minimum,
+        "median_information": 2.5,
+        "maximum_information": 3.75,
+        "cramer_rao_minimum": 0.8,
+        "cramer_rao_median": 0.4,
+        "cramer_rao_maximum": 0.2,
+        "maximum_derivative_error": 0.0,
+        "failure_reasons": [],
+    }
+
+
 def _passed_fisher(config, checks):
-    del config, checks
-    return {"status": "passed", "maximum_derivative_error": 0.0}
+    return _fisher(config, checks)
 
 
 def _dependencies(commit: str = "a" * 40, *, fisher=_passed_fisher):
@@ -257,7 +278,9 @@ def test_test_role_firewall_binds_approval_record_and_fisher_gate(tmp_path: Path
         module,
         failed_development,
         "train,validation,calibration",
-        dependencies=_dependencies(fisher=lambda config, checks: {"status": "precheck_failed"}),
+        dependencies=_dependencies(
+            fisher=lambda config, checks: _fisher(config, checks, status="precheck_failed")
+        ),
     )
     failed_approval = _approval(failed_development)
     with pytest.raises(ValueError, match="Fisher"):
@@ -298,3 +321,237 @@ def test_dirty_source_blocks_test_role_before_any_output_is_opened(tmp_path: Pat
             record=development,
         )
     assert not output.exists()
+
+
+def test_nondeterministic_regeneration_is_rejected_before_publication(tmp_path: Path) -> None:
+    module = _cli_module()
+    calls = 0
+
+    def nondeterministic(config, *, regime: str, role: str, sequence_index: int, code):
+        nonlocal calls
+        calls += 1
+        sequence = _fast_sequence(
+            config, regime=regime, role=role, sequence_index=sequence_index, code=code
+        )
+        arrays = sequence_store._sequence_arrays(sequence)
+        arrays["global_log_odds"] = np.array(arrays["global_log_odds"], copy=True)
+        arrays["global_log_odds"][0] = float(calls)
+        identity = replace(
+            sequence.identity,
+            content_sha256=sequence_store._sequence_content_sha256(
+                regime=regime,
+                role=role,
+                sequence_index=sequence_index,
+                latent_seed=sequence.identity.latent_seed,
+                bernoulli_seed=sequence.identity.bernoulli_seed,
+                arrays=arrays,
+            ),
+        )
+        return replace(
+            sequence,
+            identity=identity,
+            latent_oracle=LatentHistoryOracleInput(global_log_odds=arrays["global_log_odds"]),
+        )
+
+    dependencies = replace(_dependencies(), sequence_factory=nondeterministic)
+    output = tmp_path / "nondeterministic"
+    with pytest.raises(ValueError, match="regeneration"):
+        _generate(module, output, "train", dependencies=dependencies)
+    assert not output.exists()
+
+
+def test_test_firewall_rejects_current_failed_fisher_before_any_test_payload(tmp_path: Path) -> None:
+    module = _cli_module()
+    development = tmp_path / "development"
+    _generate(module, development, "train,validation,calibration", dependencies=_dependencies())
+    approval = _approval(development)
+    generated: list[str] = []
+
+    def should_not_generate(*args, **kwargs):
+        if kwargs["role"] == "test":
+            generated.append("test payload")
+        return _fast_sequence(*args, **kwargs)
+
+    dependencies = replace(
+        _dependencies(fisher=lambda config, checks: _fisher(config, checks, status="precheck_failed")),
+        sequence_factory=should_not_generate,
+    )
+    output = tmp_path / "blocked-test"
+    with pytest.raises(ValueError, match="Fisher"):
+        _generate(module, output, "test", dependencies=dependencies, approval=approval, record=development)
+    assert generated == []
+    assert not output.exists()
+
+
+def test_test_verification_firewall_checks_approval_before_opening_test_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _cli_module()
+    dependencies = _dependencies()
+    development = tmp_path / "development"
+    _generate(module, development, "train,validation,calibration", dependencies=dependencies)
+    approval = _approval(development)
+    test_output = tmp_path / "test"
+    _generate(module, test_output, "test", dependencies=dependencies, approval=approval, record=development)
+    opened: list[Path] = []
+    original = sequence_store._load_root
+
+    def spy(path: Path):
+        opened.append(path)
+        return original(path)
+
+    monkeypatch.setattr(sequence_store, "_load_root", spy)
+    with pytest.raises(ValueError, match="approval"):
+        module.run(
+            ["verify", "--config", str(CONFIG_PATH), "--out", str(test_output), "--roles", "test"],
+            dependencies=dependencies,
+        )
+    assert test_output / "manifest.json" not in opened
+
+
+@pytest.mark.parametrize("gate", ("development", "source", "fisher"))
+def test_each_remaining_test_firewall_gate_runs_before_opening_test_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gate: str
+) -> None:
+    module = _cli_module()
+    dependencies = _dependencies()
+    development = tmp_path / "development"
+    _generate(module, development, "train,validation,calibration", dependencies=dependencies)
+    approval = _approval(development)
+    test_output = tmp_path / "test"
+    _generate(module, test_output, "test", dependencies=dependencies, approval=approval, record=development)
+    opened: list[Path] = []
+    original = sequence_store._load_root
+    monkeypatch.setattr(sequence_store, "_load_root", lambda path: (opened.append(path), original(path))[1])
+    record: Path | None = development
+    current_dependencies = dependencies
+    if gate == "development":
+        record = None
+    elif gate == "source":
+        current_dependencies = replace(
+            dependencies,
+            repository_evidence=lambda: (_ for _ in ()).throw(RuntimeError("clean source tree")),
+        )
+    else:
+        current_dependencies = replace(
+            dependencies,
+            fisher_precheck=lambda config, checks: _fisher(config, checks, status="precheck_failed"),
+        )
+    with pytest.raises((RuntimeError, ValueError)):
+        module.run(
+            [
+                "verify",
+                "--config",
+                str(CONFIG_PATH),
+                "--out",
+                str(test_output),
+                "--roles",
+                "test",
+                "--approval",
+                str(approval),
+                *( ("--development-record", str(record)) if record is not None else () ),
+            ],
+            dependencies=current_dependencies,
+        )
+    assert test_output / "manifest.json" not in opened
+
+
+def test_development_verification_reruns_and_exactly_compares_fisher_report(tmp_path: Path) -> None:
+    module = _cli_module()
+    dependencies = _dependencies()
+    output = tmp_path / "development"
+    _generate(module, output, "train", dependencies=dependencies)
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["fisher_precheck"]["minimum_information"] = 9.0
+    manifest["identity_sha256"] = sequence_store._digest(sequence_store._identity_input(manifest))
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="Fisher"):
+        module.run(
+            ["verify", "--config", str(CONFIG_PATH), "--out", str(output), "--roles", "train"],
+            dependencies=dependencies,
+        )
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "source_extra",
+        "config_extra",
+        "code_extra",
+        "retained_support_extra",
+        "sequence_seed_tamper",
+        "array_extra",
+        "fisher_status_tamper",
+        "fisher_provenance_tamper",
+        "fisher_summary_tamper",
+    ),
+)
+def test_manifest_rejects_rehashed_nested_schema_and_bound_field_tampering(
+    tmp_path: Path, case: str
+) -> None:
+    module = _cli_module()
+    dependencies = _dependencies()
+    output = tmp_path / case
+    _generate(module, output, "train", dependencies=dependencies)
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if case == "source_extra":
+        manifest["source"]["extra"] = True
+    elif case == "config_extra":
+        manifest["config"]["extra"] = True
+    elif case == "code_extra":
+        manifest["code"]["extra"] = True
+    elif case == "retained_support_extra":
+        manifest["retained_checks"]["supports"].append([])
+        manifest["retained_checks"]["content_sha256"] = sequence_store._digest(
+            {key: value for key, value in manifest["retained_checks"].items() if key != "content_sha256"}
+        )
+    elif case == "sequence_seed_tamper":
+        manifest["sequences"][0]["seeds"]["filter"] += 1
+    elif case == "array_extra":
+        manifest["sequences"][0]["arrays"]["extra"] = {}
+    elif case == "fisher_status_tamper":
+        manifest["fisher_precheck"]["status"] = "precheck_failed"
+    elif case == "fisher_provenance_tamper":
+        manifest["fisher_precheck"]["provenance"]["seed"] += 1
+    else:
+        manifest["fisher_precheck"]["minimum_information"] = 9.0
+    manifest["identity_sha256"] = sequence_store._digest(sequence_store._identity_input(manifest))
+    manifest["content_sha256"] = sequence_store._digest(sequence_store._content_input(manifest))
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises((TypeError, ValueError)):
+        module.run(
+            ["verify", "--config", str(CONFIG_PATH), "--out", str(output), "--roles", "train"],
+            dependencies=dependencies,
+        )
+
+
+@pytest.mark.parametrize("kind", ("missing", "undeclared", "payload_hash", "array_hash"))
+def test_manifest_rejects_missing_undeclared_and_rehashed_payload_bindings(
+    tmp_path: Path, kind: str
+) -> None:
+    module = _cli_module()
+    dependencies = _dependencies()
+    output = tmp_path / kind
+    _generate(module, output, "train", dependencies=dependencies)
+    payload = next(output.glob("train/*/*.npz"))
+    if kind == "missing":
+        payload.unlink()
+    elif kind == "undeclared":
+        (output / "unexpected.bin").write_bytes(b"unexpected")
+    else:
+        manifest_path = output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        if kind == "payload_hash":
+            manifest["sequences"][0]["payload_sha256"] = "0" * 64
+        else:
+            manifest["sequences"][0]["arrays"]["errors"]["sha256"] = "0" * 64
+        manifest["identity_sha256"] = sequence_store._digest(sequence_store._identity_input(manifest))
+        manifest["content_sha256"] = sequence_store._digest(sequence_store._content_input(manifest))
+        manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        module.run(
+            ["verify", "--config", str(CONFIG_PATH), "--out", str(output), "--roles", "train"],
+            dependencies=dependencies,
+        )
