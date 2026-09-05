@@ -275,6 +275,7 @@ def test_tiny_full_screen_replays_evidence_and_is_scientifically_deterministic(
     original_predictor_payloads = {
         path: path.read_bytes() for path in (predictor_metadata_path, *predictor_dir.glob("*.npy"))
     }
+    original_results = (first / "results.json").read_bytes()
     metadata = json.loads(predictor_metadata_path.read_text())
     arrays = {path.stem: np.load(path, allow_pickle=False) for path in predictor_dir.glob("*.npy")}
     first_state_key = next(
@@ -288,6 +289,51 @@ def test_tiny_full_screen_replays_evidence_and_is_scientifically_deterministic(
         json.loads(predictor_metadata_path.read_text()),
         {path.stem: np.load(path, allow_pickle=False) for path in predictor_dir.glob("*.npy")},
     )
+    substituted_config = replace(
+        config,
+        optimizer=replace(config.optimizer, training_seed=1801),
+    )
+    substituted = replace(
+        restored,
+        config=substituted_config,
+        config_digest=evaluation_module._json_digest(substituted_config.to_dict()),
+        artifact_digest="",
+    )
+    object.__setattr__(
+        substituted,
+        "artifact_digest",
+        evaluation_module._frozen_arm_integrity(substituted),
+    )
+    substituted_metadata, substituted_arrays = evaluation_module.export_frozen_predictor(
+        substituted
+    )
+    write_canonical_json(predictor_metadata_path, substituted_metadata)
+    for name, values in substituted_arrays.items():
+        with (predictor_dir / f"{name}.npy").open("wb") as handle:
+            np.save(handle, values, allow_pickle=False)
+    substituted_results = json.loads(original_results)
+    substituted_results["regimes"]["joint_in_basis"]["arms"]["fno_hippo"]["hashes"][
+        "provenance"
+    ] = evaluation_module._arm_provenance_digest(substituted)
+    write_canonical_json(first / "results.json", substituted_results)
+    substituted_manifest = json.loads(json.dumps(first_manifest))
+    substituted_manifest["payloads"][str(predictor_metadata_path.relative_to(first))] = sha256_file(
+        predictor_metadata_path
+    )
+    substituted_manifest["payloads"]["results.json"] = sha256_file(first / "results.json")
+    write_canonical_json(first / "manifest.json", substituted_manifest)
+    with pytest.raises(ValueError, match="locked experiment configuration"):
+        verify_screen_result(
+            first,
+            config_path=config_path,
+            sequence_dir=sequences,
+            _repository=repository,
+        )
+    for path, payload in original_predictor_payloads.items():
+        path.write_bytes(payload)
+    (first / "results.json").write_bytes(original_results)
+    write_canonical_json(first / "manifest.json", first_manifest)
+
     forged_state = tuple(
         evaluation_module._FrozenTensor.from_tensor(
             row["name"], torch.from_numpy(np.asarray(arrays[row["key"]]).copy())

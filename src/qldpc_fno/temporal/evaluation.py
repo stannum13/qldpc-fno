@@ -779,9 +779,12 @@ def _required_metadata(metadata: Mapping[str, object], fields: set[str]) -> None
 
 
 def restore_frozen_predictor(
-    metadata: Mapping[str, object], arrays: Mapping[str, np.ndarray]
+    metadata: Mapping[str, object],
+    arrays: Mapping[str, np.ndarray],
+    *,
+    expected_config: CausalExperimentConfig | None = None,
 ) -> FrozenArm | FrozenBaseline:
-    """Restore and integrity-check an exact frozen predictor from safe evidence."""
+    """Restore a frozen predictor, optionally binding learned arms to a locked config."""
 
     common = {
         "kind",
@@ -976,6 +979,14 @@ def restore_frozen_predictor(
     else:
         raise ValueError("frozen predictor kind is invalid")
     _validate_arm_integrity(arm)
+    if type(arm) is FrozenArm and expected_config is not None:
+        expected_config.validate()
+        expected_digest = _json_digest(expected_config.to_dict())
+        if (
+            arm.config.to_dict() != expected_config.to_dict()
+            or arm.config_digest != expected_digest
+        ):
+            raise ValueError("learned predictor disagrees with locked experiment configuration")
     return arm
 
 

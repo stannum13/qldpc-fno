@@ -398,6 +398,33 @@ def test_freeze_learned_arm_binds_provenance_and_snapshots_state() -> None:
     restored = evaluation_module.restore_frozen_predictor(metadata, arrays)
     assert type(restored) is type(arm)
     assert restored.artifact_digest == arm.artifact_digest
+    substituted_config = replace(
+        config,
+        generator=replace(
+            config.generator,
+            base_probability=config.generator.base_probability + 0.001,
+        ),
+    )
+    substituted = replace(
+        arm,
+        config=substituted_config,
+        config_digest=evaluation_module._json_digest(substituted_config.to_dict()),
+        artifact_digest="",
+    )
+    object.__setattr__(
+        substituted,
+        "artifact_digest",
+        evaluation_module._frozen_arm_integrity(substituted),
+    )
+    substituted_metadata, substituted_arrays = evaluation_module.export_frozen_predictor(
+        substituted
+    )
+    with pytest.raises(ValueError, match="locked experiment configuration"):
+        evaluation_module.restore_frozen_predictor(
+            substituted_metadata,
+            substituted_arrays,
+            expected_config=config,
+        )
     tampered_arrays = dict(arrays)
     first_key = next(iter(tampered_arrays))
     tampered_arrays[first_key] = np.array(tampered_arrays[first_key], copy=True)

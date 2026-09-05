@@ -1107,13 +1107,15 @@ def _write_regime_evidence(target: Path, evidence: _RegimeEvidence) -> None:
             _write_npy(arm_dir / "trace" / f"{name}.npy", values)
 
 
-def _load_frozen_evidence(arm_dir: Path) -> FrozenArm | FrozenBaseline:
+def _load_frozen_evidence(
+    arm_dir: Path, *, expected_config: CausalExperimentConfig
+) -> FrozenArm | FrozenBaseline:
     metadata = _load_json(arm_dir / "predictor.json")
     array_dir = arm_dir / "predictor"
     arrays = {
         path.stem: np.load(path, allow_pickle=False) for path in sorted(array_dir.glob("*.npy"))
     }
-    return restore_frozen_predictor(metadata, arrays)
+    return restore_frozen_predictor(metadata, arrays, expected_config=expected_config)
 
 
 def _verify_trace(arm_dir: Path, arm: ArmEvaluation) -> None:
@@ -1205,7 +1207,11 @@ def _replay_screen_result(
             partition=partition,
         )
         predictors = tuple(
-            _load_frozen_evidence(output_dir / "evidence" / regime / name) for name in _ARM_NAMES
+            _load_frozen_evidence(
+                output_dir / "evidence" / regime / name,
+                expected_config=config,
+            )
+            for name in _ARM_NAMES
         )
         for name in _BASELINE_NAMES:
             loaded = next(predictor for predictor in predictors if predictor.name == name)
