@@ -8,6 +8,7 @@ an alternate or reduced experiment mode.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -38,7 +39,11 @@ from qldpc_fno.identifiability.observation import (
     run_fisher_precheck,
 )
 from qldpc_fno.identifiability.seeds import identifiability_seed
-from qldpc_fno.identifiability.types import GeneratedSequence
+from qldpc_fno.identifiability.types import (
+    DevelopmentPartitions,
+    GeneratedSequence,
+    SequenceIdentity,
+)
 
 _SCHEMA_VERSION = 1
 _ARTIFACT_KIND = "temporal_identifiability_role_sequences"
@@ -98,6 +103,52 @@ _FISHER_FIELDS = frozenset(
 )
 _COMMIT = re.compile(r"[0-9a-f]{40}").fullmatch
 _SHA256 = re.compile(r"[0-9a-f]{64}").fullmatch
+_RUN_APPROVAL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "decision",
+        "reviewer",
+        "reviewed_at",
+        "source_commit",
+        "source_tree_sha256",
+        "config_sha256",
+        "code_sha256",
+        "retained_checks_sha256",
+        "development_record_sha256",
+        "development_identity_sha256",
+        "bundle_integrity_sha256",
+        "bundle_metadata_sha256",
+        "bundle_arrays_sha256",
+    }
+)
+_RUN_ROOT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "artifact_kind",
+        "complete",
+        "status",
+        "mode",
+        "claim",
+        "source",
+        "config",
+        "code",
+        "retained_checks",
+        "sequences",
+        "fisher_precheck",
+        "development_record",
+        "approval",
+        "bundle",
+        "completed_stages",
+        "evidence",
+        "inference",
+        "decision",
+        "decoder",
+        "runtime",
+        "identity_sha256",
+        "content_sha256",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +169,7 @@ class SequenceStoreDependencies:
     repository_evidence: Callable[[], RepositoryEvidence] | None = None
     logical_x_factory: Callable[[sparse.spmatrix, sparse.spmatrix], sparse.spmatrix] = logical_x_basis
     require_canonical_code: bool = True
+    read_run_bundle: Callable[[Path, object], object] | None = None
 
 
 def _canonical_json(value: Mapping[str, object]) -> bytes:
@@ -445,6 +497,54 @@ def _approval_binding(approval_path: Path, development_record: Path) -> dict[str
         approval = json.loads(approval_path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("manual approval record is unreadable") from error
+    development = _load_root(development_record / "manifest.json")
+    if development.get("artifact_kind") == "temporal_identifiability_run":
+        value = _require_exact_fields(
+            approval,
+            _RUN_APPROVAL_FIELDS,
+            "manual approval record",
+        )
+        try:
+            bundle = development["bundle"]
+            source = development["source"]
+            config = development["config"]
+            retained = development["retained_checks"]
+            expected = {
+                "schema_version": 1,
+                "kind": "temporal_identifiability_manual_approval",
+                "decision": "APPROVE",
+                "reviewer": value["reviewer"],
+                "reviewed_at": value["reviewed_at"],
+                "source_commit": source["commit"],
+                "source_tree_sha256": source["tree_sha256"],
+                "config_sha256": config["path_sha256"],
+                "code_sha256": _digest(development["code"]),
+                "retained_checks_sha256": retained["content_sha256"],
+                "development_record_sha256": sha256_file(
+                    development_record / "manifest.json"
+                ),
+                "development_identity_sha256": development["identity_sha256"],
+                "bundle_integrity_sha256": bundle["integrity_sha256"],
+                "bundle_metadata_sha256": bundle["metadata_sha256"],
+                "bundle_arrays_sha256": bundle["arrays_sha256"],
+            }
+        except (KeyError, TypeError) as error:
+            raise ValueError("approved development run is incomplete") from error
+        if (
+            not isinstance(value["reviewer"], str)
+            or not value["reviewer"].strip()
+            or not isinstance(value["reviewed_at"], str)
+            or not value["reviewed_at"].strip()
+            or value != expected
+        ):
+            raise ValueError("manual approval does not bind the exact development run")
+        return {
+            "approval_sha256": sha256_file(approval_path),
+            "development_record_sha256": value["development_record_sha256"],
+            "development_identity_sha256": value["development_identity_sha256"],
+            "approver": value["reviewer"],
+            "approved_at": value["reviewed_at"],
+        }
     value = _require_exact_fields(
         approval,
         frozenset(
@@ -650,6 +750,135 @@ def _validate_payload(path: Path, row: Mapping[str, object]) -> None:
         raise ValueError("sequence payload is unreadable") from error
 
 
+def _run_development_partitions(root: Mapping[str, object]) -> DevelopmentPartitions:
+    evidence = root["evidence"]
+    if not isinstance(evidence, list):
+        raise TypeError("approved development run evidence is invalid")
+
+    def identity(row: Mapping[str, object]) -> SequenceIdentity:
+        seeds = row["seeds"]
+        if not isinstance(seeds, Mapping):
+            raise TypeError("approved development sequence seeds are invalid")
+        return SequenceIdentity(
+            regime=str(row["regime"]),
+            role=str(row["role"]),
+            sequence_index=int(row["sequence_index"]),
+            latent_seed=int(seeds["latent"]),
+            bernoulli_seed=int(seeds["bernoulli"]),
+            content_sha256=str(row["sequence_content_sha256"]),
+        )
+
+    return DevelopmentPartitions(
+        *(tuple(identity(row) for row in evidence if row["role"] == role) for role in _DEVELOPMENT_ROLES)
+    )
+
+
+def _validate_run_development_record(
+    development_record: Path,
+    *,
+    config_path: Path,
+    dependencies: SequenceStoreDependencies,
+    evidence: RepositoryEvidence,
+    binding: Mapping[str, object],
+) -> None:
+    from qldpc_fno.identifiability.baseline_bundle import (
+        BundleManifest,
+        read_verified_bundle,
+    )
+    from qldpc_fno.identifiability.screen import _validate_complete_root
+
+    config = load_identifiability_config(config_path)
+    root = _require_exact_fields(
+        _load_root(development_record / "manifest.json"),
+        _RUN_ROOT_FIELDS,
+        "development run manifest",
+    )
+    if (
+        root["schema_version"] != 1
+        or root["artifact_kind"] != "temporal_identifiability_run"
+        or root["complete"] is not True
+        or root["status"] != "complete"
+        or root["mode"] != "development"
+        or root["claim"] != "engineering_measurement_no_speed_claim"
+        or root["decision"] is not None
+        or root["decoder"] != "not_run_in_development"
+        or root["approval"] is not None
+        or root["development_record"] is not None
+    ):
+        raise ValueError("approved development run state is invalid")
+    source = _require_exact_fields(
+        root["source"], frozenset({"commit", "tree_sha256", "clean"}), "run source"
+    )
+    if source["commit"] != evidence.commit or source["clean"] is not True:
+        raise ValueError("approved development run source is not the current clean commit")
+    _require_sha(source["tree_sha256"], "run source tree hash")
+    config_binding = _require_exact_fields(
+        root["config"], frozenset({"path_sha256", "identity_sha256"}), "run config"
+    )
+    expected_config_identity = _digest(dataclasses.asdict(config))
+    if config_binding != {
+        "path_sha256": sha256_file(config_path),
+        "identity_sha256": expected_config_identity,
+    }:
+        raise ValueError("approved development run config is not current")
+    code = dependencies.code_factory()
+    if root["code"] != _code_manifest(code, dependencies, config):
+        raise ValueError("approved development run code identity is not current")
+    checks = greedy_disjoint_rows(code.hx)
+    _validate_checks(root["retained_checks"], checks)
+    fisher = _fisher_manifest(dependencies.fisher_precheck(config, checks), config)
+    if fisher["status"] != "passed" or root["fisher_precheck"] != fisher:
+        raise ValueError("approved development run Fisher evidence does not replay")
+    _validate_complete_root(
+        root,
+        output_dir=development_record,
+        expected_mode="development",
+        source_payload=source,
+        config_payload=config_binding,
+        code_payload=root["code"],
+        checks_payload=root["retained_checks"],
+        config=config,
+    )
+    if (
+        root["identity_sha256"] != binding["development_identity_sha256"]
+        or sha256_file(development_record / "manifest.json")
+        != binding["development_record_sha256"]
+    ):
+        raise ValueError("approved development binding does not match run")
+    bundle = _require_exact_fields(
+        root["bundle"],
+        frozenset(
+            {
+                "path",
+                "schema_version",
+                "metadata_sha256",
+                "arrays_sha256",
+                "integrity_sha256",
+                "array_names",
+            }
+        ),
+        "development run bundle",
+    )
+    if bundle["path"] != "estimator-bundle" or not isinstance(bundle["array_names"], list):
+        raise ValueError("development run bundle layout is invalid")
+    manifest = BundleManifest(
+        bundle["schema_version"],
+        _require_sha(bundle["metadata_sha256"], "bundle metadata hash"),
+        _require_sha(bundle["arrays_sha256"], "bundle arrays hash"),
+        _require_sha(bundle["integrity_sha256"], "bundle integrity hash"),
+        tuple(bundle["array_names"]),
+    )
+    reader = dependencies.read_run_bundle or read_verified_bundle
+    loaded = reader(development_record / "estimator-bundle", manifest)
+    if loaded.integrity_sha256 != manifest.integrity_sha256:
+        raise ValueError("approved development bundle refit disagrees with stored state")
+    if (
+        _digest(getattr(loaded, "config_payload", None)) != _digest(dataclasses.asdict(config))
+        or getattr(loaded, "partitions", None) != _run_development_partitions(root)
+    ):
+        raise ValueError("approved development bundle config or partitions do not match run")
+
+
 def _validate_development_record(
     development_record: Path,
     approval_path: Path,
@@ -659,6 +888,16 @@ def _validate_development_record(
     evidence: RepositoryEvidence,
 ) -> dict[str, object]:
     binding = _approval_binding(approval_path, development_record)
+    candidate = _load_root(development_record / "manifest.json")
+    if candidate.get("artifact_kind") == "temporal_identifiability_run":
+        _validate_run_development_record(
+            development_record,
+            config_path=config_path,
+            dependencies=dependencies,
+            evidence=evidence,
+            binding=binding,
+        )
+        return binding
     development = _verify(
         config_path=config_path,
         output_dir=development_record,

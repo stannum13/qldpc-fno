@@ -237,6 +237,18 @@ def test_arm_requires_effect_bound_and_holm_adjusted_pvalue() -> None:
     assert decision["winning_arms"] == ()
 
 
+def test_failed_control_for_a_nonwinning_arm_does_not_invalidate_a_valid_winner() -> None:
+    evidence = _evidence(
+        candidate_arms=("grid_bayes",),
+        control_failure=("ewma", "deranged_control"),
+    )
+
+    decision = decide_temporal_gate(evidence)
+
+    assert decision["outcome"] == "GO-TEMPORAL-IDENTIFIED"
+    assert decision["winning_arms"] == ("grid_bayes",)
+
+
 def _gain(mean: float, amplitude: float = 0.00012) -> np.ndarray:
     centered = np.linspace(-amplitude, amplitude, 64)
     return mean + centered
@@ -278,6 +290,31 @@ def test_evaluate_identifiability_applies_four_arm_holm_in_actual_go_path() -> N
     assert result["controls"]["convergence_passed"] is True
 
 
+def test_validation_grid_difference_governs_inference_not_test_resolution_noise() -> None:
+    deployable = {
+        "grid_bayes": _gain(0.0010),
+        "ewma": _gain(0.0001),
+        "logistic_ar32": _gain(0.0001),
+        "parity_moment_ar": _gain(0.0001),
+    }
+    controls = {arm: _gain(0.0, 0.00005) for arm in ARMS}
+
+    result = evaluate_identifiability(
+        latent_gain=_gain(0.0012),
+        deployable_gains=deployable,
+        stationary_gains=controls,
+        deranged_gains=controls,
+        doubled_grid_gain=deployable["grid_bayes"] + 0.001,
+        grid_convergence_difference=0.00001,
+        bootstrap_seed=823,
+        leakage_passed=True,
+    )
+
+    assert result["controls"]["convergence_difference"] == pytest.approx(0.00001)
+    assert result["controls"]["convergence_passed"] is True
+    assert result["decision"]["outcome"] == "GO-TEMPORAL-IDENTIFIED"
+
+
 def test_evaluate_identifiability_rejects_unpaired_sequence_counts() -> None:
     deployable = {arm: _gain(0.0010) for arm in ARMS}
     controls = {arm: _gain(0.0) for arm in ARMS}
@@ -315,9 +352,7 @@ def test_bler_interval_classification_has_exact_margin_boundaries(
 
 def test_conditional_decoder_arm_policy_is_pure_and_exact() -> None:
     non_go = decide_temporal_gate(_evidence(candidate_arms=()))
-    go = decide_temporal_gate(
-        _evidence(candidate_arms=("ewma", "parity_moment_ar"))
-    )
+    go = decide_temporal_gate(_evidence(candidate_arms=("ewma", "parity_moment_ar")))
     snapshot = dict(go)
 
     assert conditional_decoder_arms(non_go) == "not_run_by_design"

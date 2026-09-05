@@ -135,26 +135,45 @@ def decide_temporal_gate(evidence: Mapping[str, object]) -> dict[str, object]:
     if latent_status != "ok":
         invalid.append(f"latent:{latent_status}")
 
+    winning: list[str] = []
     for arm in DEPLOYABLE_HISTORY_ARMS:
         row = arms[arm]
         if not isinstance(row, Mapping):
             raise TypeError(f"{arm} evidence must be a mapping")
-        for component in ("gain", "stationary_control", "deranged_control"):
+        gain = row.get("gain")
+        if not isinstance(gain, Mapping):
+            raise TypeError(f"{arm} evidence must contain gain")
+        status = _inference_status(gain, label=f"{arm}:gain")
+        if status != "ok":
+            invalid.append(f"{arm}:gain:{status}")
+            continue
+        lower = _finite_result_number(gain, key="lower_95", label=f"{arm}:gain")
+        adjusted = row.get("holm_adjusted_pvalue")
+        if isinstance(adjusted, (bool, np.bool_)) or not isinstance(
+            adjusted, (int, float, np.integer, np.floating)
+        ):
+            raise TypeError(f"{arm} must contain a numeric Holm-adjusted p-value")
+        adjusted_value = float(adjusted)
+        if not math.isfinite(adjusted_value) or not 0.0 <= adjusted_value <= 1.0:
+            raise ValueError("Holm-adjusted p-values must lie in [0, 1]")
+        if lower > DELTA_NLL and adjusted_value <= HOLM_ALPHA:
+            winning.append(arm)
+
+    for arm in DEPLOYABLE_HISTORY_ARMS:
+        row = arms[arm]
+        assert isinstance(row, Mapping)
+        for component in ("stationary_control", "deranged_control"):
             result = row.get(component)
             if not isinstance(result, Mapping):
                 raise TypeError(f"{arm} evidence must contain {component}")
             status = _inference_status(result, label=f"{arm}:{component}")
             if status != "ok":
-                invalid.append(f"{arm}:{component}:{status}")
+                if arm in winning:
+                    invalid.append(f"{arm}:{component}:{status}")
                 continue
-            if component != "gain":
-                upper = _finite_result_number(
-                    result,
-                    key="upper_95",
-                    label=f"{arm}:{component}",
-                )
-                if upper > DELTA_NLL:
-                    invalid.append(f"{arm}:{component}")
+            upper = _finite_result_number(result, key="upper_95", label=f"{arm}:{component}")
+            if arm in winning and upper > DELTA_NLL:
+                invalid.append(f"{arm}:{component}")
 
     if invalid:
         return {
@@ -172,24 +191,6 @@ def decide_temporal_gate(evidence: Mapping[str, object]) -> dict[str, object]:
             "outcome": "STOP-NO-PRACTICAL-CAUSAL-HEADROOM",
             "winning_arms": (),
         }
-
-    winning: list[str] = []
-    for arm in DEPLOYABLE_HISTORY_ARMS:
-        row = arms[arm]
-        assert isinstance(row, Mapping)
-        gain = row["gain"]
-        assert isinstance(gain, Mapping)
-        lower = _finite_result_number(gain, key="lower_95", label=f"{arm}:gain")
-        adjusted = row.get("holm_adjusted_pvalue")
-        if isinstance(adjusted, (bool, np.bool_)) or not isinstance(
-            adjusted, (int, float, np.integer, np.floating)
-        ):
-            raise TypeError(f"{arm} must contain a numeric Holm-adjusted p-value")
-        adjusted_value = float(adjusted)
-        if not math.isfinite(adjusted_value) or not 0.0 <= adjusted_value <= 1.0:
-            raise ValueError("Holm-adjusted p-values must lie in [0, 1]")
-        if lower > DELTA_NLL and adjusted_value <= HOLM_ALPHA:
-            winning.append(arm)
 
     if not winning:
         return {
@@ -230,9 +231,10 @@ def evaluate_identifiability(
     deployable_gains: Mapping[str, np.ndarray],
     stationary_gains: Mapping[str, np.ndarray],
     deranged_gains: Mapping[str, np.ndarray],
-    doubled_grid_gain: np.ndarray,
+    doubled_grid_gain: np.ndarray | None,
     bootstrap_seed: int,
     leakage_passed: bool,
+    grid_convergence_difference: float | None = None,
 ) -> dict[str, object]:
     """Compute all fixed inference evidence and its actual temporal decision."""
     if type(bootstrap_seed) is not int or bootstrap_seed < 0:
@@ -243,8 +245,10 @@ def evaluate_identifiability(
     stationary = _exact_arm_mapping(stationary_gains, name="stationary_gains")
     deranged = _exact_arm_mapping(deranged_gains, name="deranged_gains")
     checked_latent = _confirmatory_values(latent_gain, name="latent_gain")
-    checked_doubled = _confirmatory_values(
-        doubled_grid_gain, name="doubled_grid_gain"
+    checked_doubled = (
+        None
+        if doubled_grid_gain is None
+        else _confirmatory_values(doubled_grid_gain, name="doubled_grid_gain")
     )
     checked_deployable = {
         arm: _confirmatory_values(
@@ -266,11 +270,12 @@ def evaluate_identifiability(
     }
     sequence_counts = {
         checked_latent.size,
-        checked_doubled.size,
         *(values.size for values in checked_deployable.values()),
         *(values.size for values in checked_stationary.values()),
         *(values.size for values in checked_deranged.values()),
     }
+    if checked_doubled is not None:
+        sequence_counts.add(checked_doubled.size)
     if len(sequence_counts) != 1:
         raise ValueError("all inference inputs must have identical paired sequence counts")
 
@@ -306,7 +311,20 @@ def evaluate_identifiability(
         arm_results[arm]["holm_adjusted_pvalue"] = adjusted[arm]
 
     nominal_grid = checked_deployable["grid_bayes"]
-    convergence_difference = abs(float(nominal_grid.mean() - checked_doubled.mean()))
+    if grid_convergence_difference is None:
+        if checked_doubled is None:
+            raise ValueError(
+                "doubled_grid_gain is required unless validation convergence is supplied"
+            )
+        convergence_difference = abs(float(nominal_grid.mean() - checked_doubled.mean()))
+    else:
+        if isinstance(grid_convergence_difference, (bool, np.bool_)) or not isinstance(
+            grid_convergence_difference, (int, float, np.integer, np.floating)
+        ):
+            raise TypeError("grid_convergence_difference must be numeric")
+        convergence_difference = float(grid_convergence_difference)
+        if not math.isfinite(convergence_difference) or convergence_difference < 0.0:
+            raise ValueError("grid_convergence_difference must be finite and non-negative")
     controls = {
         "convergence_difference": convergence_difference,
         "convergence_passed": convergence_difference < GRID_CONVERGENCE_TOLERANCE,
