@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pytest
 
@@ -195,6 +197,49 @@ def test_temperature_calibration_does_not_refit_forecaster_weights() -> None:
     assert np.array_equal(uncalibrated.weight, calibrated.weight)
     assert np.array_equal(uncalibrated.bias, calibrated.bias)
     assert calibrated.temperature != 1.0
+
+
+def test_logistic_fit_copies_read_only_mask_without_warning_or_result_change() -> None:
+    rng = np.random.default_rng(401)
+    syndromes = rng.integers(0, 2, size=(2, 4, 1, 5)).astype(np.float64)
+    targets = rng.integers(0, 2, size=(2, 4, 1, 5)).astype(np.float64)
+    writable_mask = _mask(2, 4)
+    read_only_mask = writable_mask.copy()
+    read_only_mask.setflags(write=False)
+    assert not read_only_mask.flags.writeable
+    kwargs = {
+        "lags": 2,
+        "kernel_size": 3,
+        "l2_grid": (1e-2,),
+        "max_iter": 5,
+        "calibrate": None,
+    }
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        observed = fit_logistic_ar(
+            syndromes,
+            targets,
+            syndromes,
+            targets,
+            train_mask=read_only_mask,
+            validation_mask=read_only_mask,
+            **kwargs,
+        )
+    expected = fit_logistic_ar(
+        syndromes,
+        targets,
+        syndromes,
+        targets,
+        train_mask=writable_mask,
+        validation_mask=writable_mask,
+        **kwargs,
+    )
+
+    assert not any("not writable" in str(item.message) for item in caught)
+    assert np.array_equal(observed.weight, expected.weight)
+    assert np.array_equal(observed.bias, expected.bias)
+    assert observed.l2 == expected.l2
 
 
 def test_validation_targets_select_hyperparameters_but_do_not_fit_weights() -> None:

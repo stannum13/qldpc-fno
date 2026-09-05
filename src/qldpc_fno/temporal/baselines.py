@@ -300,7 +300,7 @@ def _fit_mapping(
     output_channels = labels.shape[2]
     inputs = torch.as_tensor(values.reshape(-1, input_channels, ell), dtype=torch.float64)
     target_tensor = torch.as_tensor(labels.reshape(-1, output_channels, ell), dtype=torch.float64)
-    selected_tensor = torch.as_tensor(selected.reshape(-1, 1, 1)).expand_as(target_tensor)
+    selected_tensor = torch.as_tensor(selected.reshape(-1, 1, 1).copy()).expand_as(target_tensor)
     weight = torch.zeros(
         (output_channels, input_channels, kernel_size), dtype=torch.float64, requires_grad=True
     )
