@@ -27,9 +27,7 @@ def _config() -> CausalExperimentConfig:
     return CausalExperimentConfig.from_json(CONFIG_PATH)
 
 
-def _independent_role_batch(
-    fixture: SequenceRoleBatch, role: str, seed: int
-) -> SequenceRoleBatch:
+def _independent_role_batch(fixture: SequenceRoleBatch, role: str, seed: int) -> SequenceRoleBatch:
     identities = tuple(
         hashlib.sha256(f"fixture:{seed}:{index}".encode()).hexdigest()
         for index in range(fixture.syndromes.shape[0])
@@ -95,6 +93,7 @@ def test_role_relabeling_preserves_provenance_identity_and_overlap_is_rejected()
             train,
             validation,
             _independent_role_batch(fixture, "calibration", 99),
+            regime="joint_in_basis",
         )
 
 
@@ -108,6 +107,48 @@ def test_scientific_batches_require_explicit_content_hash_identities() -> None:
             targets=fixture.targets,
             scored_mask=fixture.scored_mask,
         )
+
+
+def test_role_partition_binds_canonical_regime_and_tensor_content() -> None:
+    fixture = build_overfit_fixture(_config())
+    train = _independent_role_batch(fixture, "train", 101)
+    validation = _independent_role_batch(fixture, "validation", 102)
+    calibration = _independent_role_batch(fixture, "calibration", 103)
+
+    with pytest.raises(ValueError, match="regime"):
+        validate_role_partition(train, validation, calibration, regime="made_up_regime")
+
+    partition = validate_role_partition(train, validation, calibration, regime="joint_in_basis")
+    substituted_train = replace(train, syndromes=1.0 - train.syndromes)
+    with pytest.raises(ValueError, match="content"):
+        train_causal_forecaster(
+            build_forecaster(spatial="cnn", temporal="fir", config=_config()),
+            train=substituted_train,
+            validation=validation,
+            config=replace(_config(), optimizer=replace(_config().optimizer, max_epochs=1)),
+            partition=partition,
+        )
+
+
+def test_training_result_carries_preoptimization_partition_evidence() -> None:
+    config = _config()
+    fixture = build_overfit_fixture(config)
+    train = _independent_role_batch(fixture, "train", 111)
+    validation = _independent_role_batch(fixture, "validation", 112)
+    calibration = _independent_role_batch(fixture, "calibration", 113)
+    partition = validate_role_partition(train, validation, calibration, regime="joint_in_basis")
+    result = train_causal_forecaster(
+        build_forecaster(spatial="cnn", temporal="fir", config=config),
+        train=train,
+        validation=validation,
+        config=replace(config, optimizer=replace(config.optimizer, max_epochs=1)),
+        partition=partition,
+    )
+
+    assert result.regime == partition.regime
+    assert result.train_content_digest == partition.train_content_digest
+    assert result.validation_content_digest == partition.validation_content_digest
+    assert result.calibration_content_digest == partition.calibration_content_digest
     with pytest.raises(ValueError, match="SHA-256"):
         SequenceRoleBatch(
             role="train",
@@ -125,7 +166,7 @@ def test_discovery_training_rejects_role_leakage_and_test_access() -> None:
     train = _independent_role_batch(fixture, "train", 1)
     validation = _independent_role_batch(fixture, "validation", 2)
     calibration = _independent_role_batch(fixture, "calibration", 3)
-    partition = validate_role_partition(train, validation, calibration)
+    partition = validate_role_partition(train, validation, calibration, regime="joint_in_basis")
     model = build_forecaster(spatial="cnn", temporal="fir", config=config)
 
     with pytest.raises(ValueError, match="training batch must have role 'train'"):
@@ -161,6 +202,7 @@ def test_validation_checkpoint_chooses_earliest_tied_step() -> None:
         train,
         validation,
         _independent_role_batch(fixture, "calibration", 13),
+        regime="joint_in_basis",
     )
     result = train_causal_forecaster(
         model,
@@ -184,7 +226,7 @@ def test_temperature_uses_calibration_role_only() -> None:
     train = _independent_role_batch(fixture, "train", 19)
     validation = _independent_role_batch(fixture, "validation", 20)
     calibration = _independent_role_batch(fixture, "calibration", 21)
-    partition = validate_role_partition(train, validation, calibration)
+    partition = validate_role_partition(train, validation, calibration, regime="joint_in_basis")
     training_result = train_causal_forecaster(
         build_forecaster(spatial="cnn", temporal="fir", config=_config()),
         train=train,
@@ -213,7 +255,7 @@ def test_role_partition_rejects_relabelled_training_membership_as_calibration() 
     relabelled_train = train.with_role("calibration")
 
     with pytest.raises(ValueError, match="pairwise disjoint"):
-        validate_role_partition(train, validation, relabelled_train)
+        validate_role_partition(train, validation, relabelled_train, regime="joint_in_basis")
 
 
 def test_valid_partition_cannot_be_replayed_with_calibration_membership_as_train() -> None:
@@ -222,7 +264,7 @@ def test_valid_partition_cannot_be_replayed_with_calibration_membership_as_train
     train = _independent_role_batch(fixture, "train", 71)
     validation = _independent_role_batch(fixture, "validation", 72)
     calibration = _independent_role_batch(fixture, "calibration", 73)
-    partition = validate_role_partition(train, validation, calibration)
+    partition = validate_role_partition(train, validation, calibration, regime="joint_in_basis")
 
     with pytest.raises(ValueError, match="training membership does not match"):
         train_causal_forecaster(
@@ -240,7 +282,7 @@ def test_calibration_rejects_batch_outside_validated_partition() -> None:
     validation = _independent_role_batch(fixture, "validation", 62)
     calibration = _independent_role_batch(fixture, "calibration", 63)
     other_calibration = _independent_role_batch(fixture, "calibration", 64)
-    partition = validate_role_partition(train, validation, calibration)
+    partition = validate_role_partition(train, validation, calibration, regime="joint_in_basis")
     training_result = train_causal_forecaster(
         build_forecaster(spatial="cnn", temporal="fir", config=_config()),
         train=train,
@@ -264,7 +306,7 @@ def test_calibration_rejects_training_result_bound_to_another_partition() -> Non
     train = _independent_role_batch(fixture, "train", 81)
     validation = _independent_role_batch(fixture, "validation", 82)
     calibration = _independent_role_batch(fixture, "calibration", 83)
-    partition = validate_role_partition(train, validation, calibration)
+    partition = validate_role_partition(train, validation, calibration, regime="joint_in_basis")
     result = train_causal_forecaster(
         build_forecaster(spatial="cnn", temporal="fir", config=config),
         train=train,
@@ -290,6 +332,7 @@ def test_temperature_detaches_model_logits_and_leaves_model_state_untouched() ->
         (train := _independent_role_batch(fixture, "train", 29)),
         (validation := _independent_role_batch(fixture, "validation", 30)),
         calibration,
+        regime="joint_in_basis",
     )
     training_result = train_causal_forecaster(
         build_forecaster(spatial="cnn", temporal="fir", config=config),
@@ -323,6 +366,7 @@ def test_temperature_rejects_nonfinite_logits(bad: float) -> None:
         (train := _independent_role_batch(fixture, "train", 39)),
         (validation := _independent_role_batch(fixture, "validation", 40)),
         calibration,
+        regime="joint_in_basis",
     )
     config = _config()
     training_result = train_causal_forecaster(
@@ -348,9 +392,7 @@ def test_temperature_rejects_nonfinite_logits(bad: float) -> None:
     ("spatial", "temporal"),
     [("cnn", "fir"), ("fno", "fir"), ("cnn", "hippo"), ("fno", "hippo")],
 )
-def test_every_primary_cell_overfits_same_fixture_and_budget(
-    spatial: str, temporal: str
-) -> None:
+def test_every_primary_cell_overfits_same_fixture_and_budget(spatial: str, temporal: str) -> None:
     config = _config()
     fixture = build_overfit_fixture(config)
     model = build_forecaster(spatial=spatial, temporal=temporal, config=config)

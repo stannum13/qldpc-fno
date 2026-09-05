@@ -13,12 +13,17 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
+from functools import lru_cache
 from types import MappingProxyType
 
 import numpy as np
 import torch
 from scipy import sparse
 
+from qldpc_fno.campaign.code_identity import sparse_binary_sha256
+from qldpc_fno.codes.gf2 import logical_x_basis
+from qldpc_fno.codes.lifted_product import build_self_lifted_product
+from qldpc_fno.codes.seeds import PAPER_LP_3_7_16
 from qldpc_fno.decoders.bplsd import BPLSDConfig, decode_bplsd_prior_batch
 from qldpc_fno.models.causal_forecaster import (
     CausalChannelForecaster,
@@ -42,6 +47,7 @@ from qldpc_fno.training.causal_sequence import (
     RolePartition,
     SequenceRoleBatch,
     fit_calibration_temperature,
+    sequence_role_batch_content_digest,
 )
 
 _FREEZE_TOKEN = object()
@@ -69,6 +75,26 @@ def _json_digest(value: object) -> str:
 
 BASELINE_FIT_POLICY_DIGEST = _json_digest(_BASELINE_POLICY)
 CANONICAL_BPLSD_CONFIG_DIGEST = _json_digest(asdict(CANONICAL_BPLSD_CONFIG))
+
+
+@lru_cache(maxsize=1)
+def _canonical_qec_hashes() -> tuple[str, str, str]:
+    code = build_self_lifted_product(PAPER_LP_3_7_16)
+    logical_x = logical_x_basis(code.hx, code.hz)
+    return (
+        sparse_binary_sha256(code.hx),
+        sparse_binary_sha256(code.hz),
+        sparse_binary_sha256(logical_x),
+    )
+
+
+def _validate_canonical_qec_geometry(
+    hx: sparse.spmatrix, hz: sparse.spmatrix, logical_x: sparse.spmatrix
+) -> tuple[str, str, str]:
+    observed = tuple(sparse_binary_sha256(matrix) for matrix in (hx, hz, logical_x))
+    if observed != _canonical_qec_hashes():
+        raise ValueError("evaluation requires canonical lp_3_7_16 Hx, Hz, and logical-X identity")
+    return observed
 
 
 def _validate_sequence_ids(sequence_ids: tuple[str, ...], sequence_count: int) -> None:
@@ -693,23 +719,6 @@ def _evaluation_batch_view_digest(batch: CausalEvaluationBatch) -> str:
     )
 
 
-def _partition_content_digest(
-    train: SequenceRoleBatch,
-    validation: SequenceRoleBatch,
-    calibration: SequenceRoleBatch,
-    *,
-    regime: str,
-) -> str:
-    return _json_digest(
-        {
-            "regime": regime,
-            "train": _sequence_batch_view_digest(train, regime=regime),
-            "validation": _sequence_batch_view_digest(validation, regime=regime),
-            "calibration": _sequence_batch_view_digest(calibration, regime=regime),
-        }
-    )
-
-
 def _forecast_split_from_batch(batch: SequenceRoleBatch) -> ForecastSplit:
     return ForecastSplit(
         role=batch.role,
@@ -834,7 +843,6 @@ def fit_select_observation_baselines(
     validation: SequenceRoleBatch,
     calibration: SequenceRoleBatch,
     partition: RolePartition,
-    regime: str,
 ) -> BaselineSelection:
     """Fit baselines from content-bound batches under one immutable policy."""
 
@@ -846,10 +854,20 @@ def fit_select_observation_baselines(
     for batch, role, identities in expected:
         if batch.role != role or frozenset(batch.sequence_ids) != identities:
             raise ValueError(f"{role} split membership does not match the supplied partition")
-    if not regime:
-        raise ValueError("baseline fitting requires a nonempty evaluation regime")
-    partition_content = _partition_content_digest(train, validation, calibration, regime=regime)
-    evaluation_content = _sequence_batch_view_digest(validation, regime=regime)
+    content_evidence = (
+        sequence_role_batch_content_digest(train),
+        sequence_role_batch_content_digest(validation),
+        sequence_role_batch_content_digest(calibration),
+    )
+    expected_content = (
+        partition.train_content_digest,
+        partition.validation_content_digest,
+        partition.calibration_content_digest,
+    )
+    if content_evidence != expected_content:
+        raise ValueError("baseline batch content does not match the validated partition")
+    partition_content = _json_digest(expected_content)
+    evaluation_content = _sequence_batch_view_digest(validation, regime=partition.regime)
     train = _forecast_split_from_batch(train)
     validation = _forecast_split_from_batch(validation)
     calibration = _forecast_split_from_batch(calibration)
@@ -922,7 +940,7 @@ def fit_select_observation_baselines(
             validation_ids=validation.sequence_ids,
             calibration=calibration,
             partition_content_digest=partition_content,
-            evaluation_regime=regime,
+            evaluation_regime=partition.regime,
             evaluation_content_digest=evaluation_content,
         )
         for name in ("stationary_field", "ewma", "logistic_ar")
@@ -938,7 +956,7 @@ def fit_select_observation_baselines(
         validation.sequence_ids,
         calibration.sequence_ids,
         "validation",
-        regime,
+        partition.regime,
         evaluation_content,
         "",
         _FREEZE_TOKEN,
@@ -957,7 +975,6 @@ def freeze_learned_arm(
     train: SequenceRoleBatch,
     validation: SequenceRoleBatch,
     calibration: SequenceRoleBatch,
-    regime: str,
 ) -> FrozenArm:
     """Snapshot a trained exact forecaster with its role and calibration provenance."""
 
@@ -976,10 +993,27 @@ def freeze_learned_arm(
     for batch, role, identities in expected:
         if batch.role != role or frozenset(batch.sequence_ids) != identities:
             raise ValueError(f"{role} membership does not match the supplied partition")
-    if not regime:
-        raise ValueError("learned arm freezing requires a nonempty evaluation regime")
-    partition_content = _partition_content_digest(train, validation, calibration, regime=regime)
-    evaluation_content = _sequence_batch_view_digest(validation, regime=regime)
+    content_evidence = (
+        sequence_role_batch_content_digest(train),
+        sequence_role_batch_content_digest(validation),
+        sequence_role_batch_content_digest(calibration),
+    )
+    expected_content = (
+        partition.train_content_digest,
+        partition.validation_content_digest,
+        partition.calibration_content_digest,
+    )
+    if content_evidence != expected_content:
+        raise ValueError("learned arm batch content does not match the validated partition")
+    if (
+        training_result.regime != partition.regime
+        or training_result.train_content_digest != partition.train_content_digest
+        or training_result.validation_content_digest != partition.validation_content_digest
+        or training_result.calibration_content_digest != partition.calibration_content_digest
+    ):
+        raise ValueError("training result content evidence does not match the supplied partition")
+    partition_content = _json_digest(expected_content)
+    evaluation_content = _sequence_batch_view_digest(validation, regime=partition.regime)
     model_hash = _state_dict_sha256(model.state_dict())
     result_hash = _state_dict_sha256(training_result.model_state_dict)
     if model_hash != result_hash:
@@ -1047,7 +1081,7 @@ def freeze_learned_arm(
         calibration_sequence_ids=tuple(calibration.sequence_ids),
         evaluation_sequence_ids=tuple(validation.sequence_ids),
         evaluation_role="validation",
-        evaluation_regime=regime,
+        evaluation_regime=partition.regime,
         evaluation_content_digest=evaluation_content,
         stored_parameters=accounting.stored_real_scalars,
         effective_parameters=accounting.effective_functional_scalars,
@@ -1088,6 +1122,9 @@ class ArmEvaluation:
     partition_digest: str
     partition_content_digest: str
     evaluation_content_digest: str
+    qec_hx_sha256: str
+    qec_hz_sha256: str
+    qec_logical_x_sha256: str
     provenance_digest: str
     per_round_outcomes: tuple[Mapping[str, object], ...]
     artifact_digest: str
@@ -1132,6 +1169,9 @@ def _arm_evaluation_integrity(arm: ArmEvaluation) -> str:
             "partition_digest": arm.partition_digest,
             "partition_content_digest": arm.partition_content_digest,
             "evaluation_content_digest": arm.evaluation_content_digest,
+            "qec_hx_sha256": arm.qec_hx_sha256,
+            "qec_hz_sha256": arm.qec_hz_sha256,
+            "qec_logical_x_sha256": arm.qec_logical_x_sha256,
             "provenance_digest": arm.provenance_digest,
             "per_round_outcomes": [dict(row) for row in arm.per_round_outcomes],
         }
@@ -1147,6 +1187,9 @@ class PairedCausalEvaluation:
     arms: Mapping[str, ArmEvaluation]
     partition_digest: str
     partition_content_digest: str
+    qec_hx_sha256: str
+    qec_hz_sha256: str
+    qec_logical_x_sha256: str
     decoder_config_digest: str
     _token: object
 
@@ -1217,6 +1260,7 @@ def evaluate_causal_arms(
     arms: tuple[FrozenArm | FrozenBaseline, ...],
     *,
     hx: sparse.spmatrix,
+    hz: sparse.spmatrix,
     logical_x: sparse.spmatrix,
 ) -> PairedCausalEvaluation:
     """Generate predictions internally and decode identical scored sequence-rounds."""
@@ -1245,6 +1289,7 @@ def evaluate_causal_arms(
     partition_contents = {arm.partition_content_digest for arm in arms}
     if len(partition_contents) != 1:
         raise ValueError("all frozen arms must derive from the same content-bound partition")
+    hx_hash, hz_hash, logical_x_hash = _validate_canonical_qec_geometry(hx, hz, logical_x)
     syndromes, errors, logical = _validate_qec_reconstruction(batch, hx=hx, logical_x=logical_x)
     selected_syndromes = syndromes[batch.scored_mask]
     selected_logical = logical[batch.scored_mask]
@@ -1346,6 +1391,9 @@ def evaluate_causal_arms(
             partition_digest=arm.partition_digest,
             partition_content_digest=arm.partition_content_digest,
             evaluation_content_digest=arm.evaluation_content_digest,
+            qec_hx_sha256=hx_hash,
+            qec_hz_sha256=hz_hash,
+            qec_logical_x_sha256=logical_x_hash,
             provenance_digest=_arm_provenance_digest(arm),
             per_round_outcomes=outcomes,
             artifact_digest="",
@@ -1365,6 +1413,9 @@ def evaluate_causal_arms(
         MappingProxyType(dict(evaluated)),
         next(iter(partitions)),
         next(iter(partition_contents)),
+        hx_hash,
+        hz_hash,
+        logical_x_hash,
         CANONICAL_BPLSD_CONFIG_DIGEST,
         _FREEZE_TOKEN,
     )
@@ -1514,14 +1565,6 @@ def reduced_factor_diagnostics(
     mismatch_losses = _validated_crossed_bler(
         basis_mismatch_arms, expected_regime="joint_basis_mismatch"
     )
-    in_reference = in_basis_arms["cnn_fir"]
-    mismatch_reference = basis_mismatch_arms["cnn_fir"]
-    if (
-        in_reference.partition_digest != mismatch_reference.partition_digest
-        or in_reference.evaluation_sequence_ids != mismatch_reference.evaluation_sequence_ids
-        or in_reference.sequence_membership != mismatch_reference.sequence_membership
-    ):
-        raise ValueError("in-basis and mismatch evaluations are not membership-aligned")
     in_basis = _interaction(in_losses)
     mismatch = _interaction(mismatch_losses)
     in_mean, mismatch_mean = float(in_basis.mean()), float(mismatch.mean())
@@ -1531,7 +1574,7 @@ def reduced_factor_diagnostics(
         in_mean,
         mismatch_mean,
         bool(in_mean < 0.0),
-        bool(mismatch_mean < 0.0),
+        bool(in_mean < 0.0 and mismatch_mean < 0.0),
     )
 
 

@@ -14,6 +14,7 @@ from torch import nn
 from qldpc_fno.models.causal_forecaster import CausalChannelForecaster
 from qldpc_fno.models.hippo import HiPPOLegSMemory
 from qldpc_fno.temporal.config import CausalExperimentConfig
+from qldpc_fno.temporal.seeds import REGIMES
 
 _ALLOWED_ROLES = frozenset({"train", "validation", "calibration", "overfit_fixture"})
 _PARTITION_VALIDATION_TOKEN = object()
@@ -55,9 +56,8 @@ class SequenceRoleBatch:
             raise ValueError("observed inputs and supervision must be physically separate")
         if not self.sequence_ids and self.role != "overfit_fixture":
             raise ValueError("scientific batches require explicit immutable sequence_ids")
-        if (
-            len(self.sequence_ids) != self.syndromes.shape[0]
-            or len(set(self.sequence_ids)) != len(self.sequence_ids)
+        if len(self.sequence_ids) != self.syndromes.shape[0] or len(set(self.sequence_ids)) != len(
+            self.sequence_ids
         ):
             raise ValueError("sequence_ids must uniquely identify every complete sequence")
         if any(re.fullmatch(r"[0-9a-f]{64}", identity) is None for identity in self.sequence_ids):
@@ -65,6 +65,31 @@ class SequenceRoleBatch:
 
     def with_role(self, role: str) -> SequenceRoleBatch:
         return replace(self, role=role)
+
+
+def _tensor_content_digest(value: torch.Tensor) -> str:
+    tensor = value.detach().cpu().contiguous()
+    digest = hashlib.sha256()
+    digest.update(str(tensor.dtype).encode())
+    digest.update(str(tuple(tensor.shape)).encode())
+    digest.update(tensor.view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
+
+
+def sequence_role_batch_content_digest(batch: SequenceRoleBatch) -> str:
+    digest = hashlib.sha256()
+    for item in (
+        batch.role,
+        str(batch.seed),
+        *batch.sequence_ids,
+        _tensor_content_digest(batch.syndromes),
+        _tensor_content_digest(batch.targets),
+        _tensor_content_digest(batch.scored_mask),
+    ):
+        encoded = item.encode()
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +112,10 @@ class CausalTrainingResult:
     training_nll_history: tuple[float, ...]
     validation_nll_history: tuple[float, ...]
     partition_digest: str
+    regime: str
+    train_content_digest: str
+    validation_content_digest: str
+    calibration_content_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +125,10 @@ class RolePartition:
     train_sequence_ids: frozenset[str]
     validation_sequence_ids: frozenset[str]
     calibration_sequence_ids: frozenset[str]
+    regime: str
+    train_content_digest: str
+    validation_content_digest: str
+    calibration_content_digest: str
     digest: str
     _validation_token: object
 
@@ -108,9 +141,13 @@ def validate_role_partition(
     train: SequenceRoleBatch,
     validation: SequenceRoleBatch,
     calibration: SequenceRoleBatch,
+    *,
+    regime: str,
 ) -> RolePartition:
-    """Validate exact roles and pairwise-disjoint immutable sequence identities."""
+    """Bind one canonical regime to disjoint identities and immutable tensor content."""
 
+    if regime not in REGIMES:
+        raise ValueError(f"unsupported temporal regime: {regime}")
     expected = ((train, "train"), (validation, "validation"), (calibration, "calibration"))
     for batch, role in expected:
         if batch.role != role:
@@ -118,17 +155,26 @@ def validate_role_partition(
     identities = [set(batch.sequence_ids) for batch, _ in expected]
     if any(identities[left] & identities[right] for left in range(3) for right in range(left)):
         raise ValueError("train, validation, and calibration membership must be pairwise disjoint")
+    content_digests = tuple(sequence_role_batch_content_digest(batch) for batch, _ in expected)
     digest_payload = "\n".join(
-        f"{role}:{identity}"
-        for role, role_identities in zip(
-            ("train", "validation", "calibration"), identities, strict=True
+        (
+            f"regime:{regime}",
+            *(
+                f"{role}:{digest}"
+                for role, digest in zip(
+                    ("train", "validation", "calibration"), content_digests, strict=True
+                )
+            ),
         )
-        for identity in sorted(role_identities)
     )
     return RolePartition(
         train_sequence_ids=frozenset(identities[0]),
         validation_sequence_ids=frozenset(identities[1]),
         calibration_sequence_ids=frozenset(identities[2]),
+        regime=regime,
+        train_content_digest=content_digests[0],
+        validation_content_digest=content_digests[1],
+        calibration_content_digest=content_digests[2],
         digest=hashlib.sha256(digest_payload.encode()).hexdigest(),
         _validation_token=_PARTITION_VALIDATION_TOKEN,
     )
@@ -168,9 +214,7 @@ def build_overfit_fixture(config: CausalExperimentConfig) -> SequenceRoleBatch:
     )
 
 
-def ideal_previous_channel_forecast(
-    batch: SequenceRoleBatch, *, temporal: str
-) -> torch.Tensor:
+def ideal_previous_channel_forecast(batch: SequenceRoleBatch, *, temporal: str) -> torch.Tensor:
     """Reference forecast proving the fixture is causal for each temporal contract."""
 
     if temporal not in {"fir", "hippo"}:
@@ -215,14 +259,10 @@ def binary_forecast_metrics(
     return ForecastMetrics(float(nll.detach()), float(accuracy.detach()))
 
 
-def _raw_sequence_logits(
-    model: CausalChannelForecaster, syndromes: torch.Tensor
-) -> torch.Tensor:
+def _raw_sequence_logits(model: CausalChannelForecaster, syndromes: torch.Tensor) -> torch.Tensor:
     """Replay the public causal transition while retaining raw sigmoid logits."""
 
-    state = model.initial_state(
-        syndromes.shape[0], device=syndromes.device, dtype=syndromes.dtype
-    )
+    state = model.initial_state(syndromes.shape[0], device=syndromes.device, dtype=syndromes.dtype)
     logits: list[torch.Tensor] = []
     for round_index in range(syndromes.shape[1]):
         hidden = model.temporal.predict(state)
@@ -231,9 +271,7 @@ def _raw_sequence_logits(
     return torch.stack(logits, dim=1)
 
 
-def _scored_nll(
-    model: CausalChannelForecaster, batch: SequenceRoleBatch
-) -> torch.Tensor:
+def _scored_nll(model: CausalChannelForecaster, batch: SequenceRoleBatch) -> torch.Tensor:
     logits = _raw_sequence_logits(model, batch.syndromes)
     return nn.functional.binary_cross_entropy_with_logits(
         logits[:, batch.scored_mask], batch.targets[:, batch.scored_mask]
@@ -328,6 +366,10 @@ def train_causal_forecaster(
         raise ValueError("training membership does not match the validated partition")
     if frozenset(validation.sequence_ids) != partition.validation_sequence_ids:
         raise ValueError("validation membership does not match the validated partition")
+    if sequence_role_batch_content_digest(train) != partition.train_content_digest:
+        raise ValueError("training batch content does not match the validated partition")
+    if sequence_role_batch_content_digest(validation) != partition.validation_content_digest:
+        raise ValueError("validation batch content does not match the validated partition")
     if set(train.sequence_ids) & set(validation.sequence_ids):
         raise ValueError("training and validation sequence membership must be disjoint")
     _initialize_for_training(
@@ -351,9 +393,7 @@ def train_causal_forecaster(
     shuffle_generator.manual_seed(config.optimizer.training_seed)
     for epoch in range(1, config.optimizer.max_epochs + 1):
         model.train()
-        permutation = torch.randperm(
-            train.syndromes.shape[0], generator=shuffle_generator
-        )
+        permutation = torch.randperm(train.syndromes.shape[0], generator=shuffle_generator)
         weighted_loss = 0.0
         for offset in range(0, permutation.numel(), config.optimizer.batch_size):
             indices = permutation[offset : offset + config.optimizer.batch_size]
@@ -381,6 +421,10 @@ def train_causal_forecaster(
         training_nll_history=tuple(train_history),
         validation_nll_history=tuple(validation_history),
         partition_digest=partition.digest,
+        regime=partition.regime,
+        train_content_digest=partition.train_content_digest,
+        validation_content_digest=partition.validation_content_digest,
+        calibration_content_digest=partition.calibration_content_digest,
     )
 
 
@@ -397,8 +441,17 @@ def fit_calibration_temperature(
         raise ValueError("calibration batch must have role 'calibration'")
     if frozenset(calibration.sequence_ids) != partition.calibration_sequence_ids:
         raise ValueError("calibration batch does not match the validated partition")
+    if sequence_role_batch_content_digest(calibration) != partition.calibration_content_digest:
+        raise ValueError("calibration batch content does not match the validated partition")
     if training_result.partition_digest != partition.digest:
         raise ValueError("training result does not match the validated partition")
+    if (
+        training_result.regime != partition.regime
+        or training_result.train_content_digest != partition.train_content_digest
+        or training_result.validation_content_digest != partition.validation_content_digest
+        or training_result.calibration_content_digest != partition.calibration_content_digest
+    ):
+        raise ValueError("training result content evidence does not match the validated partition")
     if logits.shape != calibration.targets.shape:
         raise ValueError("calibration logits and targets must have equal shapes")
     if not logits.is_floating_point() or not torch.all(torch.isfinite(logits)):
