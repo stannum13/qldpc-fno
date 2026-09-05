@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from scipy import sparse
 
+from qldpc_fno.campaign.code_identity import sparse_binary_sha256
 from qldpc_fno.codes.lifted_product import build_self_lifted_product
 from qldpc_fno.codes.seeds import PAPER_LP_3_7_16
 from qldpc_fno.identifiability.config import load_identifiability_config
@@ -138,6 +139,16 @@ def test_canonical_code_has_preregistered_disjoint_rows() -> None:
     assert len(np.unique(checks.covered_qubits)) == 1_350
 
 
+def test_config_hashes_bind_fresh_canonical_checks_and_retained_rows() -> None:
+    config = _config()
+    code = build_self_lifted_product(PAPER_LP_3_7_16)
+    checks = greedy_disjoint_rows(code.hx)
+
+    assert config.code.hx_sha256 == sparse_binary_sha256(code.hx)
+    assert config.code.hz_sha256 == sparse_binary_sha256(code.hz)
+    assert checks.matrix_sha256 == config.code.hx_sha256
+
+
 @pytest.mark.parametrize("weight", [2, 3])
 def test_parity_formula_matches_enumeration_of_physical_error_strings(weight: int) -> None:
     q = 0.137
@@ -242,6 +253,16 @@ def test_observation_model_matches_independent_float64_fixture() -> None:
 def test_fisher_precheck_records_the_preregistered_draw_provenance_and_gate_statistics() -> None:
     config = _config()
     report = run_fisher_precheck(config, _fixture_checks())
+    stationary_std = config.dynamics.innovation_std / np.sqrt(
+        1.0 - config.dynamics.ar_coefficient**2
+    )
+    reconstructed_states = np.clip(
+        np.random.default_rng(config.seeds.fisher).normal(
+            0.0, stationary_std, size=config.fisher.draws
+        ),
+        -config.dynamics.clip,
+        config.dynamics.clip,
+    )
 
     assert isinstance(report, FisherReport)
     assert report.status == "passed"
@@ -251,6 +272,7 @@ def test_fisher_precheck_records_the_preregistered_draw_provenance_and_gate_stat
     assert report.provenance.domain == config.seeds.fisher_domain
     assert report.provenance.law == "stationary_normal_then_clip"
     assert report.states.shape == (10_000,)
+    assert np.array_equal(report.states, reconstructed_states)
     assert report.information.shape == (10_000,)
     assert np.all(np.isfinite(report.information))
     assert np.all(report.information > 0.0)
@@ -301,3 +323,16 @@ def test_fisher_precheck_returns_typed_failure_for_tolerance_violation(
 
     assert report.status == "precheck_failed"
     assert any("tolerance" in reason for reason in report.failure_reasons)
+
+
+def test_fisher_precheck_returns_typed_failure_for_empty_retained_checks() -> None:
+    empty_checks = greedy_disjoint_rows(sparse.csr_matrix((0, 15), dtype=np.uint8))
+
+    report = run_fisher_precheck(_config(), empty_checks)
+
+    assert isinstance(report, FisherReport)
+    assert report.status == "precheck_failed"
+    assert report.precheck_failed is True
+    assert report.information.shape == (10_000,)
+    assert np.all(report.information == 0.0)
+    assert any("nonpositive" in reason for reason in report.failure_reasons)

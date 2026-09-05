@@ -236,28 +236,35 @@ def run_fisher_precheck(config: IdentifiabilityConfig, checks: DisjointChecks) -
         config.dynamics.clip,
     )
     weights = np.asarray(checks.weights, dtype=np.int64)
-    analytic = np.stack(
-        [_parity_derivative(states, int(weight), config) for weight in weights], axis=1
-    )
-    step = fisher.finite_difference_step
-    finite_difference = np.stack(
-        [
-            (
-                parity_one_probability(_scalar_probability(states + step, config), int(weight))
-                - parity_one_probability(_scalar_probability(states - step, config), int(weight))
-            )
-            / (2.0 * step)
-            for weight in weights
-        ],
-        axis=1,
-    )
-    probabilities = np.stack(
-        [
-            parity_one_probability(_scalar_probability(states, config), int(weight))
-            for weight in weights
-        ],
-        axis=1,
-    )
+    if len(weights):
+        analytic = np.stack(
+            [_parity_derivative(states, int(weight), config) for weight in weights], axis=1
+        )
+        step = fisher.finite_difference_step
+        finite_difference = np.stack(
+            [
+                (
+                    parity_one_probability(_scalar_probability(states + step, config), int(weight))
+                    - parity_one_probability(
+                        _scalar_probability(states - step, config), int(weight)
+                    )
+                )
+                / (2.0 * step)
+                for weight in weights
+            ],
+            axis=1,
+        )
+        probabilities = np.stack(
+            [
+                parity_one_probability(_scalar_probability(states, config), int(weight))
+                for weight in weights
+            ],
+            axis=1,
+        )
+    else:
+        analytic = np.empty((fisher.draws, 0), dtype=np.float64)
+        finite_difference = np.empty((fisher.draws, 0), dtype=np.float64)
+        probabilities = np.empty((fisher.draws, 0), dtype=np.float64)
     information = np.sum(analytic**2 / (probabilities * (1.0 - probabilities)), axis=1)
     derivative_error = np.abs(analytic - finite_difference)
     allowed_error = fisher.absolute_tolerance + fisher.relative_tolerance * np.abs(
@@ -299,6 +306,6 @@ def run_fisher_precheck(config: IdentifiabilityConfig, checks: DisjointChecks) -
         cramer_rao_minimum=float(cramer_rao[0]),
         cramer_rao_median=float(cramer_rao[1]),
         cramer_rao_maximum=float(cramer_rao[2]),
-        maximum_derivative_error=float(np.max(derivative_error)),
+        maximum_derivative_error=float(np.max(derivative_error)) if derivative_error.size else 0.0,
         failure_reasons=tuple(failures),
     )

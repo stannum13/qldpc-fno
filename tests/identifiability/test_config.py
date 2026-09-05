@@ -96,10 +96,10 @@ def test_canonical_config_freezes_the_preregistered_scientific_contract() -> Non
     assert config.code.name == "lp_3_7_16"
     assert (config.code.ell, config.code.n, config.code.k) == (45, 2610, 744)
     assert config.code.hx_sha256 == (
-        "fc685627e7a7139b6af9c12187879a02f19c46598fe99a9be816f58d4627ead8"
+        "a00406428b69eef7bed1470fa44d6dd3ebc2af3af40037fdc8fbb6eaf1260e3d"
     )
     assert config.code.hz_sha256 == (
-        "82b536419e91a3c877685d6ab347810878a46dfbff76373d5a02b160bb8d2ecb"
+        "6dcd5a3a9ea22a1be8e15ad112c367c4eaee2b429095b0fe296e5a5f9d01f7d6"
     )
 
     with pytest.raises(FrozenInstanceError):
