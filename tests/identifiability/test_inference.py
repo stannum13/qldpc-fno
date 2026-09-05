@@ -290,6 +290,33 @@ def test_evaluate_identifiability_applies_four_arm_holm_in_actual_go_path() -> N
     assert result["controls"]["convergence_passed"] is True
 
 
+def test_evaluate_identifiability_stops_when_one_gain_bootstrap_is_degenerate() -> None:
+    deployable = {
+        "grid_bayes": np.full(64, 0.001),
+        "ewma": _gain(0.0010),
+        "logistic_ar32": _gain(0.0001),
+        "parity_moment_ar": _gain(0.0001),
+    }
+    controls = {arm: _gain(0.0, 0.00005) for arm in ARMS}
+
+    result = evaluate_identifiability(
+        latent_gain=_gain(0.0012),
+        deployable_gains=deployable,
+        stationary_gains=controls,
+        deranged_gains=controls,
+        doubled_grid_gain=deployable["grid_bayes"] + 0.00001,
+        bootstrap_seed=823,
+        leakage_passed=True,
+    )
+
+    assert result["holm_adjusted_pvalues"] == dict.fromkeys(ARMS)
+    assert result["decision"]["outcome"] == "STOP-INVALID-CONTROL"
+    assert result["decision"]["invalid_controls"] == (
+        "grid_bayes:gain:degenerate_variance",
+    )
+    assert result["decision"]["winning_arms"] == ()
+
+
 def test_validation_grid_difference_governs_inference_not_test_resolution_noise() -> None:
     deployable = {
         "grid_bayes": _gain(0.0010),

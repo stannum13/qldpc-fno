@@ -135,7 +135,8 @@ def decide_temporal_gate(evidence: Mapping[str, object]) -> dict[str, object]:
     if latent_status != "ok":
         invalid.append(f"latent:{latent_status}")
 
-    winning: list[str] = []
+    gain_lowers: dict[str, float] = {}
+    gain_family_valid = True
     for arm in DEPLOYABLE_HISTORY_ARMS:
         row = arms[arm]
         if not isinstance(row, Mapping):
@@ -146,18 +147,27 @@ def decide_temporal_gate(evidence: Mapping[str, object]) -> dict[str, object]:
         status = _inference_status(gain, label=f"{arm}:gain")
         if status != "ok":
             invalid.append(f"{arm}:gain:{status}")
+            gain_family_valid = False
             continue
-        lower = _finite_result_number(gain, key="lower_95", label=f"{arm}:gain")
-        adjusted = row.get("holm_adjusted_pvalue")
-        if isinstance(adjusted, (bool, np.bool_)) or not isinstance(
-            adjusted, (int, float, np.integer, np.floating)
-        ):
-            raise TypeError(f"{arm} must contain a numeric Holm-adjusted p-value")
-        adjusted_value = float(adjusted)
-        if not math.isfinite(adjusted_value) or not 0.0 <= adjusted_value <= 1.0:
-            raise ValueError("Holm-adjusted p-values must lie in [0, 1]")
-        if lower > DELTA_NLL and adjusted_value <= HOLM_ALPHA:
-            winning.append(arm)
+        gain_lowers[arm] = _finite_result_number(
+            gain, key="lower_95", label=f"{arm}:gain"
+        )
+
+    winning: list[str] = []
+    if gain_family_valid:
+        for arm in DEPLOYABLE_HISTORY_ARMS:
+            row = arms[arm]
+            assert isinstance(row, Mapping)
+            adjusted = row.get("holm_adjusted_pvalue")
+            if isinstance(adjusted, (bool, np.bool_)) or not isinstance(
+                adjusted, (int, float, np.integer, np.floating)
+            ):
+                raise TypeError(f"{arm} must contain a numeric Holm-adjusted p-value")
+            adjusted_value = float(adjusted)
+            if not math.isfinite(adjusted_value) or not 0.0 <= adjusted_value <= 1.0:
+                raise ValueError("Holm-adjusted p-values must lie in [0, 1]")
+            if gain_lowers[arm] > DELTA_NLL and adjusted_value <= HOLM_ALPHA:
+                winning.append(arm)
 
     for arm in DEPLOYABLE_HISTORY_ARMS:
         row = arms[arm]
