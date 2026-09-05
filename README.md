@@ -1,5 +1,8 @@
 # qLDPC-FNO
 
+An accuracy-first research harness for testing learned priors and causal noise
+forecasting with a fixed BP-LSD decoder on a cyclic qLDPC code.
+
 Quantum information is fragile: unwanted interactions can change a physical
 qubit, while directly inspecting an unknown quantum state would destroy the
 information one is trying to protect. Quantum error correction addresses this by
@@ -43,10 +46,13 @@ training diagnostic, syndrome validity is reported explicitly, and the held-out
 comparison counts invalid corrections as block failures. Speed comes
 only after accuracy and validity.
 
-> **Status:** the smoke pipeline and the accuracy-campaign implementation are
-> complete through held-out paired evaluation. No canonical campaign result is
-> reported yet, so this repository does not claim that either learned method
-> improves accuracy or latency over uniform BP-LSD.
+> **Status:** the fixed-shot disconfirming experiment is complete. At `p=0.0375`,
+> uniform BP-LSD had 387 block failures in 2,048 held-out shots, compared with
+> 835 for soft-prior BP-LSD and 819 for proposal-plus-residual BP-LSD. Both
+> learned variants were classified as harmful under the predeclared paired rule.
+> A separate reduced causal-forecasting screen also failed its progression
+> rules and was stopped rather than scaled. This repository therefore makes no
+> learned-decoder accuracy or latency improvement claim.
 
 ## Why this pairing?
 
@@ -66,6 +72,32 @@ Read [Research background](docs/background.md) for the full motivation,
 [Concepts](docs/concepts.md) for the vocabulary, and
 [Experiment methodology](docs/experiment-methodology.md) for the exact implemented
 study.
+
+## Causal forecasting extension
+
+Repeated syndrome measurements raise a narrower question than direct neural
+decoding: can earlier syndromes reveal a changing noise field before the next
+round arrives? The causal forecaster sees only syndrome history through round
+`t-1` and predicts a per-qubit error-probability field for round `t`. That field
+becomes the prior for the same fixed canonical BP-LSD decoder, which then receives
+the current syndrome and remains responsible for producing a valid correction.
+
+The experiment crosses two spatial encoders—local CNN and ring FNO—with two
+temporal memories—finite impulse response (FIR) and HiPPO. This isolates whether
+Fourier structure helps spatial forecasting, whether HiPPO helps temporal memory,
+and whether the two benefits interact instead of crediting a single combined
+model.
+
+The completed screen is labelled `reduced_non_scientific`. It used two validation
+sequences per regime, reports no p-values, and cannot establish a scientific
+effect. In all four nonstationary regimes, the selected non-neural history-aware
+baseline, EWMA, failed the predeclared rule requiring it to improve validation
+NLL over the stationary-field baseline. In the joint in-basis regime, the
+descriptive crossed BLER interaction was `+0.03125`, opposite the proposed
+negative direction. This exact formulation was therefore stopped instead of
+scaled. See
+[Causal FNO–HiPPO results](docs/causal-fno-hippo-results.md) for the full evidence
+and interpretation.
 
 ## Experiment flow
 
@@ -194,7 +226,47 @@ benefit result only permits the next experiment; it is not a positive accuracy
 claim. Baseline tuning, at least three training seeds, and a larger confirmatory
 test remain required before any positive accuracy claim.
 
-### 5. Run the accuracy campaign on Google Cloud
+### 5. Reproduce the reduced causal forecasting screen
+
+This run is intentionally `reduced_non_scientific`: it is an execution and
+architecture screen, not a statistical test. Choose output directories that do
+not already exist; generated artifacts are local and are not part of a fresh
+clone.
+
+Generate the five synthetic regimes and verify their manifests, payload hashes,
+and regenerated samples:
+
+```bash
+uv run python experiments/19_generate_causal_sequences.py generate \
+  --config configs/causal_fno_hippo_reduced.json \
+  --out artifacts/causal-sequences-reduced
+
+uv run python experiments/19_generate_causal_sequences.py verify \
+  --config configs/causal_fno_hippo_reduced.json \
+  --out artifacts/causal-sequences-reduced \
+  --regenerate
+```
+
+Run the crossed CNN/FNO × FIR/HiPPO screen, then independently verify its input
+bindings, stored evidence, and recomputed aggregates:
+
+```bash
+uv run python experiments/20_run_causal_factor_screen.py run \
+  --config configs/causal_fno_hippo_reduced.json \
+  --sequences artifacts/causal-sequences-reduced \
+  --out artifacts/causal-screen-reduced
+
+uv run python experiments/20_run_causal_factor_screen.py verify \
+  --config configs/causal_fno_hippo_reduced.json \
+  --sequences artifacts/causal-sequences-reduced \
+  --out artifacts/causal-screen-reduced
+```
+
+The run can be computationally expensive despite its small sample count because
+it trains four neural cells in each nonstationary regime and evaluates every
+prior through BP-LSD. Do not report its output as confirmatory evidence.
+
+### 6. Run the accuracy campaign on Google Cloud
 
 Cloud execution requires `gcloud`, an authenticated account, an active project
 with billing, and permission to use Cloud Build, Artifact Registry, Cloud Run,
@@ -271,7 +343,7 @@ before manually running them: object deletion is recursive and irreversible.
 Delete the job, bucket objects, bucket, repository, and campaign service account
 when they are no longer needed.
 
-### 5. Run individual stages manually
+### 7. Run individual accuracy stages manually
 
 The campaign is also exposed as individual, potentially resource-intensive
 stages. The manual layout below differs deliberately from the campaign runner's
@@ -407,7 +479,7 @@ and provenance chain.
 
 | Path | Purpose |
 | --- | --- |
-| `configs/` | Pinned smoke and accuracy-campaign policies |
+| `configs/` | Pinned smoke, accuracy-campaign, and reduced causal-screen policies |
 | `experiments/` | Numbered, single-stage command-line entry points |
 | `scripts/run_smoke.sh` | End-to-end smoke orchestrator |
 | `scripts/run_accuracy_campaign.sh` | Resumable local campaign runner |
@@ -417,9 +489,10 @@ and provenance chain.
 | `src/qldpc_fno/codes/` | Lifted-product construction and GF(2) operations |
 | `src/qldpc_fno/stim/` | Detector-error-model and packed-sample utilities |
 | `src/qldpc_fno/decoders/` | Uniform and hybrid BP-LSD implementations |
-| `src/qldpc_fno/models/` | One-dimensional ring FNO |
+| `src/qldpc_fno/models/` | Ring FNO, HiPPO recurrence, and crossed causal forecasters |
+| `src/qldpc_fno/temporal/` | Causal regime generation, observation-only baselines, evaluation, and artifact verification |
 | `src/qldpc_fno/campaign/` | Configuration, seeds, shards, and provenance checks |
-| `src/qldpc_fno/training/` | Smoke and conditional training/calibration logic |
+| `src/qldpc_fno/training/` | Smoke, conditional, and causal-sequence training/calibration logic |
 | `src/qldpc_fno/metrics/` | Syndrome and logical block-level scoring |
 | `tests/` | Unit and integration tests, including corruption/restart checks |
 | `docs/` | Concepts, methodology, and reproducibility guides |
@@ -441,7 +514,7 @@ that training identity still matches. See
 [Reproducibility](docs/reproducibility.md) for safe restart commands and the
 artifact contract.
 
-## Roadmap
+## Next experiments
 
 - Run and report the canonical held-out campaign for uniform BP-LSD, soft-prior
   BP-LSD, and proposal + residual BP-LSD on identical test shards.
@@ -450,6 +523,9 @@ artifact contract.
 - Stress-test any candidate that survives the disconfirming run across additional
   noise ranges and code sizes before treating transfer as established.
 - Report comparable timing components only for accuracy-eligible methods.
+- Do not scale the stopped CNN/FNO × FIR/HiPPO formulation without first
+  establishing observation-only forecasting headroom on a newly specified
+  nonstationary regime.
 - Treat Willow/temporal work as a separate study: add a hardware-data adapter,
   temporal splits, drift tests, and independent provenance without combining it
   with the qLDPC code-capacity campaign.
