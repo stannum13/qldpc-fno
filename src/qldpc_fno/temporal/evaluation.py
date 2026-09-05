@@ -358,6 +358,15 @@ class FrozenArm:
     checkpoint_sha256: str
     calibration_digest: str
     calibration_temperature: float
+    training_best_epoch: int
+    training_best_validation_nll: float
+    training_nll_history: tuple[float, ...]
+    training_validation_nll_history: tuple[float, ...]
+    training_partition_digest: str
+    training_regime: str
+    training_train_content_digest: str
+    training_validation_content_digest: str
+    training_calibration_content_digest: str
     calibration_sequence_ids: tuple[str, ...]
     evaluation_sequence_ids: tuple[str, ...]
     evaluation_role: str
@@ -595,6 +604,15 @@ def _frozen_arm_integrity(arm: FrozenArm) -> str:
             "materialized_checkpoint_sha256": _state_dict_sha256(materialized_state),
             "calibration_digest": arm.calibration_digest,
             "calibration_temperature": arm.calibration_temperature,
+            "training_best_epoch": arm.training_best_epoch,
+            "training_best_validation_nll": arm.training_best_validation_nll,
+            "training_nll_history": list(arm.training_nll_history),
+            "training_validation_nll_history": list(arm.training_validation_nll_history),
+            "training_partition_digest": arm.training_partition_digest,
+            "training_regime": arm.training_regime,
+            "training_train_content_digest": arm.training_train_content_digest,
+            "training_validation_content_digest": arm.training_validation_content_digest,
+            "training_calibration_content_digest": arm.training_calibration_content_digest,
             "calibration_sequence_ids": list(arm.calibration_sequence_ids),
             "evaluation_sequence_ids": list(arm.evaluation_sequence_ids),
             "evaluation_role": arm.evaluation_role,
@@ -634,6 +652,42 @@ def _validate_selection_integrity(selection: BaselineSelection) -> None:
 
 
 def _validate_arm_integrity(arm: FrozenArm | FrozenBaseline) -> None:
+    if type(arm) is FrozenArm:
+        if arm.config_digest != _json_digest(arm.config.to_dict()):
+            raise ValueError("declared config_digest disagrees with materialized config")
+        if arm.checkpoint_sha256 != _state_dict_sha256(
+            {item.name: item.tensor() for item in arm._state}
+        ):
+            raise ValueError("declared checkpoint hash disagrees with materialized state")
+        if (
+            arm.training_partition_digest != arm.partition_digest
+            or arm.training_regime != arm.evaluation_regime
+            or arm.training_validation_content_digest == ""
+            or arm.training_calibration_content_digest == ""
+            or arm.training_train_content_digest == ""
+        ):
+            raise ValueError("learned predictor training provenance is inconsistent")
+    else:
+        materialized: object
+        if arm.predictor_type == "stationary_field":
+            materialized = StationaryForecaster(
+                arm.scalar_probability,
+                arm.empirical_field,
+                arm.shrinkage,
+                arm.temperature,
+            )
+        else:
+            materialized = CircularLogisticForecaster(
+                arm.weight.copy(),
+                arm.bias.copy(),
+                arm.l2,
+                arm.temperature,
+                arm.feature_kind,
+                arm.decay,
+                arm.lags,
+            )
+        if arm.model_sha256 != _baseline_model_sha256(materialized):
+            raise ValueError("declared baseline model hash disagrees with materialized state")
     expected = (
         _frozen_arm_integrity(arm) if type(arm) is FrozenArm else _frozen_baseline_integrity(arm)
     )
@@ -682,6 +736,15 @@ def export_frozen_predictor(
             "config_digest": arm.config_digest,
             "checkpoint_sha256": arm.checkpoint_sha256,
             "calibration_temperature": arm.calibration_temperature,
+            "training_best_epoch": arm.training_best_epoch,
+            "training_best_validation_nll": arm.training_best_validation_nll,
+            "training_nll_history": list(arm.training_nll_history),
+            "training_validation_nll_history": list(arm.training_validation_nll_history),
+            "training_partition_digest": arm.training_partition_digest,
+            "training_regime": arm.training_regime,
+            "training_train_content_digest": arm.training_train_content_digest,
+            "training_validation_content_digest": arm.training_validation_content_digest,
+            "training_calibration_content_digest": arm.training_calibration_content_digest,
             "calibration_sequence_ids": list(arm.calibration_sequence_ids),
             "state": state_rows,
         }, arrays
@@ -748,6 +811,15 @@ def restore_frozen_predictor(
                 "checkpoint_sha256",
                 "calibration_temperature",
                 "calibration_sequence_ids",
+                "training_best_epoch",
+                "training_best_validation_nll",
+                "training_nll_history",
+                "training_validation_nll_history",
+                "training_partition_digest",
+                "training_regime",
+                "training_train_content_digest",
+                "training_validation_content_digest",
+                "training_calibration_content_digest",
                 "state",
             },
         )
@@ -776,6 +848,19 @@ def restore_frozen_predictor(
             checkpoint_sha256=str(metadata["checkpoint_sha256"]),
             calibration_digest=str(metadata["calibration_digest"]),
             calibration_temperature=float(metadata["calibration_temperature"]),
+            training_best_epoch=int(metadata["training_best_epoch"]),
+            training_best_validation_nll=float(metadata["training_best_validation_nll"]),
+            training_nll_history=tuple(map(float, metadata["training_nll_history"])),
+            training_validation_nll_history=tuple(
+                map(float, metadata["training_validation_nll_history"])
+            ),
+            training_partition_digest=str(metadata["training_partition_digest"]),
+            training_regime=str(metadata["training_regime"]),
+            training_train_content_digest=str(metadata["training_train_content_digest"]),
+            training_validation_content_digest=str(metadata["training_validation_content_digest"]),
+            training_calibration_content_digest=str(
+                metadata["training_calibration_content_digest"]
+            ),
             calibration_sequence_ids=tuple(map(str, metadata["calibration_sequence_ids"])),
             evaluation_sequence_ids=tuple(map(str, metadata["evaluation_sequence_ids"])),
             evaluation_role=str(metadata["evaluation_role"]),
@@ -890,10 +975,7 @@ def restore_frozen_predictor(
             raise ValueError("baseline predictor parameter accounting is invalid")
     else:
         raise ValueError("frozen predictor kind is invalid")
-    try:
-        _validate_arm_integrity(arm)
-    except ValueError as error:
-        raise ValueError("frozen predictor evidence integrity check failed") from error
+    _validate_arm_integrity(arm)
     return arm
 
 
@@ -902,6 +984,7 @@ def validate_frozen_arm_calibration(
     calibration: SequenceRoleBatch,
     *,
     partition: RolePartition,
+    training_result: CausalTrainingResult,
 ) -> None:
     """Re-fit calibration from source labels and verify the persisted temperature/digest."""
 
@@ -915,18 +998,7 @@ def validate_frozen_arm_calibration(
         for round_index in range(syndromes.shape[1]):
             logits.append(model.readout(model.temporal.predict(state)))
             state = model._update(state, syndromes[:, round_index])
-    training_result = CausalTrainingResult(
-        model_state_dict=model.state_dict(),
-        best_epoch=0,
-        best_validation_nll=math.nan,
-        training_nll_history=(),
-        validation_nll_history=(),
-        partition_digest=partition.digest,
-        regime=partition.regime,
-        train_content_digest=partition.train_content_digest,
-        validation_content_digest=partition.validation_content_digest,
-        calibration_content_digest=partition.calibration_content_digest,
-    )
+    validate_frozen_arm_training_result(arm, training_result)
     temperature = fit_calibration_temperature(
         torch.stack(logits, dim=1),
         calibration,
@@ -943,6 +1015,40 @@ def validate_frozen_arm_calibration(
     )
     if expected_digest != arm.calibration_digest:
         raise ValueError("learned predictor calibration digest disagrees with exact refit")
+
+
+def validate_frozen_arm_training_result(
+    arm: FrozenArm, training_result: CausalTrainingResult
+) -> None:
+    """Require deterministic retraining to reproduce checkpoint and all fit evidence."""
+
+    _validate_arm_integrity(arm)
+    expected = (
+        arm.training_best_epoch,
+        arm.training_best_validation_nll,
+        arm.training_nll_history,
+        arm.training_validation_nll_history,
+        arm.training_partition_digest,
+        arm.training_regime,
+        arm.training_train_content_digest,
+        arm.training_validation_content_digest,
+        arm.training_calibration_content_digest,
+    )
+    observed = (
+        training_result.best_epoch,
+        training_result.best_validation_nll,
+        training_result.training_nll_history,
+        training_result.validation_nll_history,
+        training_result.partition_digest,
+        training_result.regime,
+        training_result.train_content_digest,
+        training_result.validation_content_digest,
+        training_result.calibration_content_digest,
+    )
+    if observed != expected:
+        raise ValueError("deterministic retraining result disagrees with persisted fit evidence")
+    if _state_dict_sha256(training_result.model_state_dict) != arm.checkpoint_sha256:
+        raise ValueError("deterministic retraining checkpoint is not byte-identical")
 
 
 def _validate_fitted_baseline(name: str, model: object, split: ForecastSplit) -> None:
@@ -1396,6 +1502,15 @@ def freeze_learned_arm(
             checkpoint_sha256=model_hash,
         ),
         calibration_temperature=temperature,
+        training_best_epoch=training_result.best_epoch,
+        training_best_validation_nll=training_result.best_validation_nll,
+        training_nll_history=training_result.training_nll_history,
+        training_validation_nll_history=training_result.validation_nll_history,
+        training_partition_digest=training_result.partition_digest,
+        training_regime=training_result.regime,
+        training_train_content_digest=training_result.train_content_digest,
+        training_validation_content_digest=training_result.validation_content_digest,
+        training_calibration_content_digest=training_result.calibration_content_digest,
         calibration_sequence_ids=tuple(calibration.sequence_ids),
         evaluation_sequence_ids=tuple(validation.sequence_ids),
         evaluation_role="validation",
@@ -1949,4 +2064,5 @@ __all__ = [
     "reduced_progression",
     "restore_frozen_predictor",
     "validate_frozen_arm_calibration",
+    "validate_frozen_arm_training_result",
 ]

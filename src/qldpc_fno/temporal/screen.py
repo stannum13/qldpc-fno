@@ -52,6 +52,7 @@ from qldpc_fno.temporal.evaluation import (
     reduced_progression,
     restore_frozen_predictor,
     validate_frozen_arm_calibration,
+    validate_frozen_arm_training_result,
 )
 from qldpc_fno.temporal.generator import generate_latent_sequence, sample_sequence
 from qldpc_fno.temporal.seeds import REGIMES
@@ -201,6 +202,13 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _validate_reduced_screen_config(config: CausalExperimentConfig) -> None:
+    if config.artifact_mode != "reduced_non_scientific":
+        raise ValueError("factor screen requires reduced_non_scientific configuration")
+    if config.rounds.burn_in < 1:
+        raise ValueError("reduced screen requires empty-history round zero to remain unscored")
+
+
 def generate_sequence_campaign(
     *,
     config_path: Path,
@@ -210,10 +218,9 @@ def generate_sequence_campaign(
     """Generate every A-E train/validation/calibration sequence immutably."""
 
     config = CausalExperimentConfig.from_json(config_path)
+    _validate_reduced_screen_config(config)
     repository = _repository or _repository_evidence()
     _require_ignored_repository_output(repository, output_dir)
-    if config.artifact_mode != "reduced_non_scientific":
-        raise ValueError("reduced generation requires artifact_mode reduced_non_scientific")
     code = _canonical_code()
     request_digest = _mapping_digest(
         {"config": config.to_dict(), "source_commit": repository.commit, "roles": list(_ROLES)}
@@ -269,6 +276,7 @@ def verify_sequence_campaign(
     """Verify root membership and optionally byte-regenerate every sequence."""
 
     config = CausalExperimentConfig.from_json(config_path)
+    _validate_reduced_screen_config(config)
     code = _canonical_code()
     root = _load_json(output_dir / _MANIFEST)
     if set(root) != {
@@ -1156,6 +1164,7 @@ def _replay_screen_result(
     """Reconstruct predictors and rerun exact BP-LSD against regenerated sources."""
 
     config = CausalExperimentConfig.from_json(config_path)
+    _validate_reduced_screen_config(config)
     root = verify_sequence_campaign(
         config_path=config_path,
         output_dir=sequence_dir,
@@ -1204,10 +1213,24 @@ def _replay_screen_result(
                 raise ValueError("persisted baseline state disagrees with exact source-data refit")
         for predictor in predictors:
             if type(predictor) is FrozenArm:
+                fresh_model = build_forecaster(
+                    spatial=predictor.spatial_kind,
+                    temporal=predictor.temporal_kind,
+                    config=config,
+                )
+                retrained = train_causal_forecaster(
+                    fresh_model,
+                    train=train,
+                    validation=validation,
+                    config=config,
+                    partition=partition,
+                )
+                validate_frozen_arm_training_result(predictor, retrained)
                 validate_frozen_arm_calibration(
                     predictor,
                     calibration,
                     partition=partition,
+                    training_result=retrained,
                 )
         paired = evaluate_causal_arms(
             evaluation,
@@ -1295,8 +1318,7 @@ def run_reduced_screen(
     repository = _repository or _repository_evidence()
     _require_ignored_repository_output(repository, output_dir)
     config = CausalExperimentConfig.from_json(config_path)
-    if config.artifact_mode != "reduced_non_scientific":
-        raise ValueError("factor screen requires reduced_non_scientific configuration")
+    _validate_reduced_screen_config(config)
     root = verify_sequence_campaign(
         config_path=config_path, output_dir=sequence_dir, regenerate=False
     )

@@ -392,7 +392,9 @@ after a model survives discovery; no best-seed selection is permitted. The
 deployed confirmation checkpoint is the seed-1701 validation winner.
 
 Every stateful estimator resets at a sequence boundary. Burn-in rounds update
-state but do not contribute scored losses. Prediction always precedes the update
+state but do not contribute scored losses. The reduced screen requires at least
+one burn-in round: its empty-history round-zero prior is recorded but is never a
+scored forecast or decoded comparison. Prediction always precedes the update
 with round `t`: for EWMA, `m_0=0`, `q_t=mapper(m_t)`, and
 `m_(t+1)=decay*m_t+(1-decay)*s_t`. FIR, HiPPO, and GRU obey the identical
 predict-then-update convention, so `s_t` cannot influence `q_t`.

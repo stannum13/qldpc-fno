@@ -297,6 +297,17 @@ def test_baseline_selection_snapshots_models_and_membership(monkeypatch) -> None
         restored.predict(observed, sequence_ids=selection.validation_sequence_ids),
     )
     assert restored.artifact_digest == frozen.artifact_digest
+    forged = replace(frozen, model_sha256="0" * 64, artifact_digest="")
+    object.__setattr__(
+        forged,
+        "artifact_digest",
+        evaluation_module._frozen_baseline_integrity(forged),
+    )
+    forged_metadata = dict(metadata)
+    forged_metadata["model_sha256"] = forged.model_sha256
+    forged_metadata["artifact_digest"] = forged.artifact_digest
+    with pytest.raises(ValueError, match="declared baseline model hash"):
+        evaluation_module.restore_frozen_predictor(forged_metadata, arrays)
     assert not frozen.weight.flags.writeable
     with pytest.raises(FrozenInstanceError):
         frozen.temperature = 4.0  # type: ignore[misc]
@@ -368,6 +379,21 @@ def test_freeze_learned_arm_binds_provenance_and_snapshots_state() -> None:
         validation=validation,
         calibration=calibration,
     )
+    evaluation_module.validate_frozen_arm_training_result(arm, training_result)
+    with pytest.raises(ValueError, match="persisted fit evidence"):
+        evaluation_module.validate_frozen_arm_training_result(
+            arm,
+            replace(training_result, best_epoch=training_result.best_epoch + 1),
+        )
+    substituted_state = dict(training_result.model_state_dict)
+    state_name = next(iter(substituted_state))
+    substituted_state[state_name] = substituted_state[state_name].clone()
+    substituted_state[state_name].view(-1)[0] = -0.0
+    with pytest.raises(ValueError, match="checkpoint.*byte-identical"):
+        evaluation_module.validate_frozen_arm_training_result(
+            arm,
+            replace(training_result, model_state_dict=substituted_state),
+        )
     metadata, arrays = evaluation_module.export_frozen_predictor(arm)
     restored = evaluation_module.restore_frozen_predictor(metadata, arrays)
     assert type(restored) is type(arm)
@@ -376,8 +402,20 @@ def test_freeze_learned_arm_binds_provenance_and_snapshots_state() -> None:
     first_key = next(iter(tampered_arrays))
     tampered_arrays[first_key] = np.array(tampered_arrays[first_key], copy=True)
     tampered_arrays[first_key].flat[0] += 1
-    with pytest.raises(ValueError, match="integrity"):
+    with pytest.raises(ValueError, match="checkpoint hash"):
         evaluation_module.restore_frozen_predictor(metadata, tampered_arrays)
+    for field in ("checkpoint_sha256", "config_digest"):
+        forged = replace(arm, **{field: "0" * 64}, artifact_digest="")
+        object.__setattr__(
+            forged,
+            "artifact_digest",
+            evaluation_module._frozen_arm_integrity(forged),
+        )
+        forged_metadata = dict(metadata)
+        forged_metadata[field] = getattr(forged, field)
+        forged_metadata["artifact_digest"] = forged.artifact_digest
+        with pytest.raises(ValueError, match=f"declared {field.removesuffix('_sha256')}"):
+            evaluation_module.restore_frozen_predictor(forged_metadata, arrays)
 
     accounting = parameter_accounting(model)
     assert arm.partition_digest == partition.digest

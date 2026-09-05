@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -82,6 +83,20 @@ def test_generate_and_directly_regenerate_all_a_to_e_role_artifacts(tmp_path: Pa
         generate_sequence_campaign(
             config_path=config_path,
             output_dir=output,
+            _repository=_repository(),
+        )
+
+
+def test_reduced_screen_forbids_scoring_empty_history_round_zero(tmp_path: Path) -> None:
+    config_path = _tiny_config(tmp_path / "config.json")
+    payload = json.loads(config_path.read_text())
+    payload["rounds"]["burn_in"] = 0
+    write_canonical_json(config_path, payload)
+
+    with pytest.raises(ValueError, match="round zero.*unscored"):
+        generate_sequence_campaign(
+            config_path=config_path,
+            output_dir=tmp_path / "sequences",
             _repository=_repository(),
         )
 
@@ -254,6 +269,78 @@ def test_tiny_full_screen_replays_evidence_and_is_scientifically_deterministic(
         "bp_lsd_per_round_p50_seconds",
         "end_to_end_estimated_per_round_p50_seconds",
     }
+
+    predictor_dir = first / "evidence" / "joint_in_basis" / "fno_hippo" / "predictor"
+    predictor_metadata_path = predictor_dir.parent / "predictor.json"
+    original_predictor_payloads = {
+        path: path.read_bytes() for path in (predictor_metadata_path, *predictor_dir.glob("*.npy"))
+    }
+    metadata = json.loads(predictor_metadata_path.read_text())
+    arrays = {path.stem: np.load(path, allow_pickle=False) for path in predictor_dir.glob("*.npy")}
+    first_state_key = next(
+        row["key"]
+        for row in metadata["state"]
+        if np.issubdtype(arrays[row["key"]].dtype, np.floating)
+    )
+    arrays[first_state_key] = np.array(arrays[first_state_key], copy=True)
+    arrays[first_state_key].flat[0] = -0.0
+    restored = evaluation_module.restore_frozen_predictor(
+        json.loads(predictor_metadata_path.read_text()),
+        {path.stem: np.load(path, allow_pickle=False) for path in predictor_dir.glob("*.npy")},
+    )
+    forged_state = tuple(
+        evaluation_module._FrozenTensor.from_tensor(
+            row["name"], torch.from_numpy(np.asarray(arrays[row["key"]]).copy())
+        )
+        for row in metadata["state"]
+    )
+    forged = replace(
+        restored,
+        checkpoint_sha256=evaluation_module._state_dict_sha256(
+            {item.name: item.tensor() for item in forged_state}
+        ),
+        artifact_digest="",
+        _state=forged_state,
+    )
+    object.__setattr__(forged, "artifact_digest", evaluation_module._frozen_arm_integrity(forged))
+    assert forged.checkpoint_sha256 != restored.checkpoint_sha256
+    _, _, _, attack_evaluation, _ = screen_module._load_regime_batches(
+        config=config,
+        sequence_dir=sequences,
+        root=root,
+        code=code,
+        regime="joint_in_basis",
+    )
+    assert np.array_equal(
+        restored.predict(
+            attack_evaluation.syndromes,
+            sequence_ids=attack_evaluation.sequence_ids,
+        ),
+        forged.predict(
+            attack_evaluation.syndromes,
+            sequence_ids=attack_evaluation.sequence_ids,
+        ),
+    )
+    forged_metadata, forged_arrays = evaluation_module.export_frozen_predictor(forged)
+    write_canonical_json(predictor_metadata_path, forged_metadata)
+    for name, values in forged_arrays.items():
+        with (predictor_dir / f"{name}.npy").open("wb") as handle:
+            np.save(handle, values, allow_pickle=False)
+    attack_manifest = json.loads(json.dumps(first_manifest))
+    for path in original_predictor_payloads:
+        relative = str(path.relative_to(first))
+        attack_manifest["payloads"][relative] = sha256_file(path)
+    write_canonical_json(first / "manifest.json", attack_manifest)
+    with pytest.raises(ValueError, match="retraining checkpoint.*byte-identical"):
+        verify_screen_result(
+            first,
+            config_path=config_path,
+            sequence_dir=sequences,
+            _repository=repository,
+        )
+    for path, payload in original_predictor_payloads.items():
+        path.write_bytes(payload)
+    write_canonical_json(first / "manifest.json", first_manifest)
 
     second_result = json.loads((second / "results.json").read_text())
     second_result["regimes"]["joint_in_basis"]["arms"]["fno_hippo"]["forecast"]["overall_nll"] = (
