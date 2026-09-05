@@ -555,3 +555,267 @@ def test_manifest_rejects_missing_undeclared_and_rehashed_payload_bindings(
             ["verify", "--config", str(CONFIG_PATH), "--out", str(output), "--roles", "train"],
             dependencies=dependencies,
         )
+
+
+_SCHEMA_ACTIONS = ("missing", "extra", "renamed")
+_BOUNDARY_KEYS = {
+    "root": (
+        "schema_version",
+        "artifact_kind",
+        "complete",
+        "source",
+        "config",
+        "code",
+        "retained_checks",
+        "roles",
+        "fisher_precheck",
+        "approval",
+        "development_record",
+        "sequences",
+        "identity_sha256",
+        "content_sha256",
+    ),
+    "source": ("commit", "clean"),
+    "config": ("sha256", "identity_sha256"),
+    "code": ("name", "ell", "n", "k", "hx_sha256", "hz_sha256", "logical_x_sha256"),
+    "retained_checks": (
+        "algorithm_version",
+        "matrix_sha256",
+        "row_indices",
+        "supports",
+        "weights",
+        "covered_qubits",
+        "content_sha256",
+    ),
+    "fisher_precheck": (
+        "status",
+        "provenance",
+        "minimum_information",
+        "median_information",
+        "maximum_information",
+        "cramer_rao_minimum",
+        "cramer_rao_median",
+        "cramer_rao_maximum",
+        "maximum_derivative_error",
+        "failure_reasons",
+    ),
+    "fisher_provenance": ("domain", "seed", "law", "draws"),
+    "sequence": (
+        "regime",
+        "role",
+        "sequence_index",
+        "path",
+        "seeds",
+        "sequence_content_sha256",
+        "payload_sha256",
+        "arrays",
+    ),
+    "seeds": ("latent", "bernoulli", "filter"),
+    "arrays": (
+        "global_log_odds",
+        "probabilities",
+        "errors",
+        "syndromes",
+        "logical_flips",
+        "scored_mask",
+    ),
+    "array_metadata": ("shape", "dtype", "sha256"),
+    "approval": (
+        "approval_sha256",
+        "development_record_sha256",
+        "development_identity_sha256",
+        "approver",
+        "approved_at",
+    ),
+    "development_binding": ("sha256", "identity_sha256"),
+}
+
+
+def _schema_cases() -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (boundary, key, action)
+        for boundary, keys in _BOUNDARY_KEYS.items()
+        for key in keys
+        for action in _SCHEMA_ACTIONS
+    )
+
+
+@pytest.fixture(scope="module")
+def strict_schema_artifacts(tmp_path_factory: pytest.TempPathFactory):
+    base = tmp_path_factory.mktemp("task7-strict-schema")
+    module = _cli_module()
+    dependencies = _dependencies()
+    development = base / "development"
+    _generate(module, development, "train,validation,calibration", dependencies=dependencies)
+    approval = _approval(development)
+    test_output = base / "test"
+    _generate(module, test_output, "test", dependencies=dependencies, approval=approval, record=development)
+    return module, dependencies, development, test_output, approval
+
+
+def _boundary_mapping(manifest: dict[str, object], boundary: str) -> dict[str, object]:
+    sequence = manifest["sequences"][0]
+    assert isinstance(sequence, dict)
+    if boundary == "root":
+        return manifest
+    if boundary == "source":
+        return manifest["source"]
+    if boundary == "config":
+        return manifest["config"]
+    if boundary == "code":
+        return manifest["code"]
+    if boundary == "retained_checks":
+        return manifest["retained_checks"]
+    if boundary == "fisher_precheck":
+        return manifest["fisher_precheck"]
+    if boundary == "fisher_provenance":
+        return manifest["fisher_precheck"]["provenance"]
+    if boundary == "sequence":
+        return sequence
+    if boundary == "seeds":
+        return sequence["seeds"]
+    if boundary == "arrays":
+        return sequence["arrays"]
+    if boundary == "array_metadata":
+        return sequence["arrays"]["errors"]
+    if boundary == "approval":
+        return manifest["approval"]
+    if boundary == "development_binding":
+        return manifest["development_record"]
+    raise AssertionError(boundary)
+
+
+def _verify_artifact(module, dependencies, development: Path, test_output: Path, approval: Path, *, test: bool) -> None:
+    argv = [
+        "verify",
+        "--config",
+        str(CONFIG_PATH),
+        "--out",
+        str(test_output if test else development),
+        "--roles",
+        "test" if test else "train,validation,calibration",
+    ]
+    if test:
+        argv.extend(("--approval", str(approval), "--development-record", str(development)))
+    module.run(argv, dependencies=dependencies)
+
+
+@pytest.mark.parametrize(("boundary", "key", "action"), _schema_cases())
+def test_every_manifest_boundary_rejects_missing_extra_and_renamed_fields(
+    strict_schema_artifacts, boundary: str, key: str, action: str
+) -> None:
+    module, dependencies, development, test_output, approval = strict_schema_artifacts
+    is_test = boundary in {"approval", "development_binding"}
+    manifest_path = (test_output if is_test else development) / "manifest.json"
+    original = manifest_path.read_bytes()
+    manifest = json.loads(original)
+    mapping = _boundary_mapping(manifest, boundary)
+    if action == "missing":
+        mapping.pop(key)
+    elif action == "extra":
+        mapping[f"extra_{key}"] = True
+    else:
+        mapping[f"renamed_{key}"] = mapping.pop(key)
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises((TypeError, ValueError)):
+        _verify_artifact(
+            module, dependencies, development, test_output, approval, test=is_test
+        )
+    manifest_path.write_bytes(original)
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        "schema_version",
+        "artifact_kind",
+        "complete",
+        "source",
+        "config",
+        "code",
+        "retained_checks",
+        "roles",
+        "fisher_precheck",
+        "approval",
+        "development_record",
+        "sequences",
+        "identity_sha256",
+        "content_sha256",
+    ),
+)
+def test_root_field_tampering_recomputes_root_hashes_before_rejection(
+    strict_schema_artifacts, key: str
+) -> None:
+    module, dependencies, development, test_output, approval = strict_schema_artifacts
+    manifest_path = development / "manifest.json"
+    original = manifest_path.read_bytes()
+    manifest = json.loads(original)
+    if key == "schema_version":
+        manifest[key] = 2
+    elif key == "artifact_kind":
+        manifest[key] = "tampered"
+    elif key == "complete":
+        manifest[key] = False
+    elif key == "source":
+        manifest[key]["commit"] = "b" * 40
+    elif key == "config":
+        manifest[key]["sha256"] = "b" * 64
+    elif key == "code":
+        manifest[key]["hx_sha256"] = "b" * 64
+    elif key == "retained_checks":
+        manifest[key]["matrix_sha256"] = "b" * 64
+        manifest[key]["content_sha256"] = sequence_store._digest(
+            {name: value for name, value in manifest[key].items() if name != "content_sha256"}
+        )
+    elif key == "roles":
+        manifest[key] = ["validation", "train", "calibration"]
+    elif key == "fisher_precheck":
+        manifest[key]["minimum_information"] = 9.0
+    elif key == "approval" or key == "development_record":
+        manifest[key] = {"tampered": True}
+    elif key == "sequences":
+        manifest[key][0]["sequence_content_sha256"] = "b" * 64
+    elif key == "identity_sha256":
+        manifest[key] = "b" * 64
+    else:
+        manifest[key] = "b" * 64
+    if key not in {"identity_sha256", "content_sha256"}:
+        manifest["identity_sha256"] = sequence_store._digest(sequence_store._identity_input(manifest))
+        manifest["content_sha256"] = sequence_store._digest(sequence_store._content_input(manifest))
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises((TypeError, ValueError)):
+        _verify_artifact(module, dependencies, development, test_output, approval, test=False)
+    manifest_path.write_bytes(original)
+
+
+_MANUAL_APPROVAL_KEYS = (
+    "schema_version",
+    "kind",
+    "approved",
+    "approver",
+    "approved_at",
+    "development_record_sha256",
+    "development_identity_sha256",
+)
+
+
+@pytest.mark.parametrize(
+    ("key", "action"),
+    tuple((key, action) for key in _MANUAL_APPROVAL_KEYS for action in _SCHEMA_ACTIONS),
+)
+def test_manual_approval_record_rejects_every_schema_key_mutation_before_test_open(
+    strict_schema_artifacts, key: str, action: str
+) -> None:
+    module, dependencies, development, test_output, approval = strict_schema_artifacts
+    original = approval.read_bytes()
+    value = json.loads(original)
+    if action == "missing":
+        value.pop(key)
+    elif action == "extra":
+        value[f"extra_{key}"] = True
+    else:
+        value[f"renamed_{key}"] = value.pop(key)
+    approval.write_text(json.dumps(value))
+    with pytest.raises(ValueError):
+        _verify_artifact(module, dependencies, development, test_output, approval, test=True)
+    approval.write_bytes(original)
