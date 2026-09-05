@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from dataclasses import replace
 from pathlib import Path
+from time import process_time
 
 import numpy as np
 import pytest
@@ -29,9 +29,23 @@ def _config():
     return load_identifiability_config(CONFIG_PATH)
 
 
+def _deadline(config) -> float:
+    return process_time() + config.runtime.process_cpu_seconds
+
+
+def _grid(config, interior_cells: int, *, process_cpu_deadline: float | None = None):
+    return build_clipped_ar_grid(
+        config,
+        interior_cells=interior_cells,
+        process_cpu_deadline=(
+            _deadline(config) if process_cpu_deadline is None else process_cpu_deadline
+        ),
+    )
+
+
 def test_grid_has_exact_interior_edges_and_separate_clipping_atoms() -> None:
     config = _config()
-    grid = build_clipped_ar_grid(config, interior_cells=config.grid.interior_cells)
+    grid = _grid(config, config.grid.interior_cells)
 
     assert grid.interior_cells == 2_048
     assert grid.interior_midpoints.shape == (2_048,)
@@ -49,7 +63,7 @@ def test_grid_has_exact_interior_edges_and_separate_clipping_atoms() -> None:
 
 def test_round_zero_is_a_separate_exact_point_and_first_transition_uses_mean_zero() -> None:
     config = _config()
-    grid = build_clipped_ar_grid(config, interior_cells=16)
+    grid = _grid(config, 16)
 
     assert grid.initial_state_value == 0.0
     assert grid.initial_probability == config.dynamics.base_probability
@@ -71,7 +85,7 @@ def test_round_zero_is_a_separate_exact_point_and_first_transition_uses_mean_zer
 
 
 def test_point_transition_has_explicit_nonnegative_normalized_tail_mass() -> None:
-    grid = build_clipped_ar_grid(_config(), interior_cells=8)
+    grid = _grid(_config(), 8)
     actual = transition_from_point(grid, 0.95)
 
     assert actual.dtype == np.float64
@@ -98,7 +112,7 @@ def test_independent_fixture_script_regenerates_small_grids_without_production_i
 @pytest.mark.parametrize("interior_cells", [8, 16])
 def test_transition_matches_independent_exhaustive_float64_fixture(interior_cells: int) -> None:
     fixture = json.loads(FIXTURE_PATH.read_text())["grids"][str(interior_cells)]
-    grid = build_clipped_ar_grid(_config(), interior_cells=interior_cells)
+    grid = _grid(_config(), interior_cells)
     posterior = np.asarray(fixture["posterior"], dtype=np.float64)
 
     actual = transition_distribution(grid, posterior)
@@ -111,7 +125,7 @@ def test_transition_matches_independent_exhaustive_float64_fixture(interior_cell
 
 
 def test_transition_is_deterministic_and_rejects_invalid_posteriors() -> None:
-    grid = build_clipped_ar_grid(_config(), interior_cells=16)
+    grid = _grid(_config(), 16)
     posterior = np.linspace(1.0, 18.0, 18, dtype=np.float64)
     posterior /= posterior.sum()
 
@@ -125,20 +139,60 @@ def test_transition_is_deterministic_and_rejects_invalid_posteriors() -> None:
         transition_distribution(grid, np.full(18, -1.0 / 18.0))
 
 
-def test_transition_enforces_process_cpu_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_grids_share_one_absolute_cpu_deadline_with_an_inclusive_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from qldpc_fno.identifiability import grid as grid_module
 
-    grid = build_clipped_ar_grid(_config(), interior_cells=8)
-    expired = replace(grid, process_cpu_deadline=0.0)
-    monkeypatch.setattr(grid_module.time, "process_time", lambda: 1.0)
+    config = _config()
+    shared_deadline = 123.0
+    nominal = _grid(config, config.grid.interior_cells, process_cpu_deadline=shared_deadline)
+    doubled = _grid(config, config.grid.doubled_interior_cells, process_cpu_deadline=shared_deadline)
+    monkeypatch.setattr(grid_module.time, "process_time", lambda: shared_deadline)
 
     with pytest.raises(ExperimentDeadlineExceeded, match="process CPU deadline"):
-        transition_distribution(expired, np.full(10, 0.1))
+        transition_distribution(nominal, np.full(nominal.states.size, 1.0 / nominal.states.size))
+    with pytest.raises(ExperimentDeadlineExceeded, match="process CPU deadline"):
+        transition_distribution(doubled, np.full(doubled.states.size, 1.0 / doubled.states.size))
+
+
+def test_transition_preserves_symmetric_tiny_clipping_tails() -> None:
+    config = _config()
+    grid = _grid(config, 16)
+    expected = np.asarray(
+        json.loads(FIXTURE_PATH.read_text())["grids"]["16"]["point_transitions"]["0.0"]
+    )
+
+    actual = transition_from_point(grid, 0.0)
+    expected_tail = expected[grid.left_atom_index]
+
+    assert expected_tail > 0.0
+    assert expected[grid.right_atom_index] == expected_tail
+    assert actual[grid.left_atom_index] > 0.0
+    assert actual[grid.right_atom_index] > 0.0
+    np.testing.assert_allclose(actual[grid.left_atom_index], expected_tail, rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose(actual[grid.right_atom_index], expected_tail, rtol=1e-14, atol=0.0)
+
+
+def test_transition_uses_stable_positive_interval_and_upper_tail_at_g_half() -> None:
+    grid = _grid(_config(), 16)
+    expected = np.asarray(
+        json.loads(FIXTURE_PATH.read_text())["grids"]["16"]["point_transitions"]["0.5"]
+    )
+
+    actual = transition_from_point(grid, 0.5)
+    expected_last_interior = expected[-2]
+    expected_right_atom = expected[-1]
+
+    assert expected_right_atom > 0.0
+    assert actual[-1] > 0.0
+    np.testing.assert_allclose(actual[-2], expected_last_interior, rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose(actual[-1], expected_right_atom, rtol=1e-14, atol=0.0)
 
 
 def test_large_grid_uses_no_materialized_quadratic_transition_matrix() -> None:
     config = _config()
-    grid = build_clipped_ar_grid(config, interior_cells=config.grid.doubled_interior_cells)
+    grid = _grid(config, config.grid.doubled_interior_cells)
 
     assert grid.states.shape == (4_098,)
     assert not hasattr(grid, "transition_matrix")

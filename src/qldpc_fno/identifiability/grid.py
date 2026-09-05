@@ -102,12 +102,16 @@ class ClippedARGrid:
 
 
 def build_clipped_ar_grid(
-    config: IdentifiabilityConfig, *, interior_cells: int
+    config: IdentifiabilityConfig, *, interior_cells: int, process_cpu_deadline: float
 ) -> ClippedARGrid:
-    """Build the configured clipped-AR state grid without a dense transition matrix."""
+    """Build a grid bound to the one process-CPU deadline for its enclosing run."""
     config.validate()
     if type(interior_cells) is not int or interior_cells <= 0:
         raise ValueError("interior_cells must be a positive integer")
+    if not isinstance(process_cpu_deadline, (int, float, np.floating)) or not math.isfinite(
+        float(process_cpu_deadline)
+    ):
+        raise ValueError("process_cpu_deadline must be finite")
     clip = config.dynamics.clip
     edges = np.linspace(-clip, clip, interior_cells + 1, dtype=np.float64)
     midpoints = 0.5 * (edges[:-1] + edges[1:])
@@ -126,14 +130,20 @@ def build_clipped_ar_grid(
         probability_clip=config.dynamics.probability_clip,
         initial_state_value=0.0,
         initial_probability=config.dynamics.base_probability,
-        process_cpu_deadline=time.process_time() + config.runtime.process_cpu_seconds,
+        process_cpu_deadline=float(process_cpu_deadline),
         source_batch_cells=_SOURCE_BATCH_CELLS,
         mass_tolerance=_MASS_TOLERANCE,
     )
 
 
+def make_process_cpu_deadline(config: IdentifiabilityConfig) -> float:
+    """Create the absolute CPU deadline once, at the start of an experiment run."""
+    config.validate()
+    return time.process_time() + config.runtime.process_cpu_seconds
+
+
 def _check_deadline(grid: ClippedARGrid) -> None:
-    if time.process_time() > grid.process_cpu_deadline:
+    if time.process_time() >= grid.process_cpu_deadline:
         raise ExperimentDeadlineExceeded("clipped-AR transition exceeded process CPU deadline")
 
 
@@ -148,13 +158,26 @@ def _normalize_distribution(grid: ClippedARGrid, distribution: np.ndarray) -> np
     return result
 
 
+def _normal_bin_probabilities(standardized_edges: np.ndarray) -> np.ndarray:
+    """Return normal cell masses, using survival differences in the right tail."""
+    lower = standardized_edges[..., :-1]
+    upper = standardized_edges[..., 1:]
+    probabilities = ndtr(upper) - ndtr(lower)
+    positive_lower = lower > 0.0
+    if np.any(positive_lower):
+        probabilities[positive_lower] = (
+            ndtr(-lower[positive_lower]) - ndtr(-upper[positive_lower])
+        )
+    return probabilities
+
+
 def _point_transition(grid: ClippedARGrid, state: float) -> np.ndarray:
     mean = grid.ar_coefficient * state
-    cdf_edges = ndtr((grid.cell_edges - mean) / grid.innovation_std)
+    standardized_edges = (grid.cell_edges - mean) / grid.innovation_std
     result = np.empty(grid.states.shape, dtype=np.float64)
-    result[grid.left_atom_index] = cdf_edges[0]
-    result[1:-1] = np.diff(cdf_edges)
-    result[grid.right_atom_index] = 1.0 - cdf_edges[-1]
+    result[grid.left_atom_index] = ndtr(standardized_edges[0])
+    result[1:-1] = _normal_bin_probabilities(standardized_edges)
+    result[grid.right_atom_index] = ndtr(-standardized_edges[-1])
     return _normalize_distribution(grid, result)
 
 
@@ -198,10 +221,10 @@ def transition_distribution(grid: ClippedARGrid, posterior: np.ndarray) -> np.nd
         if not np.any(weights):
             continue
         means = grid.ar_coefficient * grid.states[start:stop, None]
-        cdf_edges = ndtr((grid.cell_edges[None, :] - means) / grid.innovation_std)
-        result[grid.left_atom_index] += float(weights @ cdf_edges[:, 0])
-        result[1:-1] += weights @ np.diff(cdf_edges, axis=1)
-        result[grid.right_atom_index] += float(weights @ (1.0 - cdf_edges[:, -1]))
+        standardized_edges = (grid.cell_edges[None, :] - means) / grid.innovation_std
+        result[grid.left_atom_index] += float(weights @ ndtr(standardized_edges[:, 0]))
+        result[1:-1] += weights @ _normal_bin_probabilities(standardized_edges)
+        result[grid.right_atom_index] += float(weights @ ndtr(-standardized_edges[:, -1]))
     _check_deadline(grid)
     return _normalize_distribution(grid, result)
 
