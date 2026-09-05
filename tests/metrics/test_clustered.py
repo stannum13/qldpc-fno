@@ -7,6 +7,7 @@ from scipy.stats import t as student_t
 from qldpc_fno.metrics.clustered import (
     cluster_percentile_interval,
     paired_sequence_inference,
+    studentized_sequence_interval,
 )
 
 
@@ -185,3 +186,112 @@ def test_clustered_statistics_reject_incomplete_or_non_sequence_values(values: n
 def test_paired_inference_rejects_round_matrix_to_prevent_pseudoreplication() -> None:
     with pytest.raises(ValueError, match="one value per independent sequence"):
         paired_sequence_inference(np.zeros((64, 8)), mu0=0.0, seeds=(1,), draws=10)
+
+
+def _manual_studentized_bootstrap(
+    values: np.ndarray, *, seed: int, null_mean: float
+) -> tuple[float, float, float, float, float, float]:
+    residuals = values - values.mean()
+    signs = np.random.default_rng(seed).choice(
+        (-1.0, 1.0), size=(10_000, values.size)
+    )
+    resampled = signs * residuals
+    resampled_se = resampled.std(axis=1, ddof=1) / np.sqrt(values.size)
+    resampled_t = resampled.mean(axis=1) / resampled_se
+    observed_se = values.std(ddof=1) / np.sqrt(values.size)
+    observed_t = (values.mean() - null_mean) / observed_se
+    lower = values.mean() - np.quantile(resampled_t, 0.95) * observed_se
+    upper = values.mean() - np.quantile(resampled_t, 0.05) * observed_se
+    two_sided = values.mean() - np.quantile(
+        resampled_t, (0.975, 0.025)
+    ) * observed_se
+    p_greater = (1 + np.count_nonzero(resampled_t >= observed_t)) / 10_001
+    p_less = (1 + np.count_nonzero(resampled_t <= observed_t)) / 10_001
+    return lower, upper, two_sided[0], two_sided[1], p_greater, p_less
+
+
+def test_studentized_interval_matches_fixed_centered_rademacher_bootstrap_t() -> None:
+    values = np.linspace(-0.001, 0.003, 64) + np.sin(np.arange(64)) * 0.0001
+    expected = _manual_studentized_bootstrap(values, seed=71, null_mean=0.00025)
+
+    result = studentized_sequence_interval(values, seed=71, null_mean=0.00025)
+
+    assert result["status"] == "ok"
+    assert result["bootstrap_draws"] == 10_000
+    assert result["valid_draws"] == 10_000
+    assert result["n_sequences"] == 64
+    assert result["lower_95"] == pytest.approx(expected[0])
+    assert result["upper_95"] == pytest.approx(expected[1])
+    assert result["two_sided_95"] == pytest.approx(expected[2:4])
+    assert result["pvalue_greater"] == pytest.approx(expected[4])
+    assert result["pvalue_less"] == pytest.approx(expected[5])
+
+
+def test_studentized_interval_is_deterministic_and_keeps_sequences_as_units() -> None:
+    values = np.linspace(-0.002, 0.004, 64)
+    first = studentized_sequence_interval(values, seed=93, null_mean=0.00025)
+    second = studentized_sequence_interval(values, seed=93, null_mean=0.00025)
+
+    assert first == second
+    with pytest.raises(ValueError, match="one value per independent sequence"):
+        studentized_sequence_interval(
+            np.broadcast_to(values[:, None], (64, 128)),
+            seed=93,
+            null_mean=0.00025,
+        )
+
+
+def test_studentized_interval_rejects_fewer_than_confirmatory_sequences() -> None:
+    with pytest.raises(ValueError, match="at least 64 independent"):
+        studentized_sequence_interval(
+            np.linspace(-0.002, 0.004, 63), seed=1, null_mean=0.00025
+        )
+
+
+def test_studentized_interval_reports_observed_variance_degeneracy() -> None:
+    result = studentized_sequence_interval(
+        np.full(64, 0.001), seed=17, null_mean=0.00025
+    )
+
+    assert result == {
+        "bootstrap_draws": 10_000,
+        "estimate": pytest.approx(0.001),
+        "lower_95": None,
+        "n_sequences": 64,
+        "null_mean": pytest.approx(0.00025),
+        "observed_t": None,
+        "pvalue_greater": None,
+        "pvalue_less": None,
+        "seed": 17,
+        "standard_error": 0.0,
+        "status": "degenerate_variance",
+        "two_sided_95": None,
+        "upper_95": None,
+        "valid_draws": 0,
+    }
+
+
+def test_studentized_interval_reports_any_zero_variance_resample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DegenerateSigns:
+        def choice(
+            self, choices: tuple[float, float], *, size: tuple[int, int]
+        ) -> np.ndarray:
+            assert choices == (-1.0, 1.0)
+            signs = np.ones(size, dtype=np.float64)
+            signs[0, ::2] = -1.0
+            return signs
+
+    monkeypatch.setattr(np.random, "default_rng", lambda seed: DegenerateSigns())
+    result = studentized_sequence_interval(
+        np.tile(np.array([-1.0, 1.0]), 32), seed=2, null_mean=0.0
+    )
+
+    assert result["status"] == "bootstrap_degenerate"
+    assert result["bootstrap_draws"] == 10_000
+    assert result["valid_draws"] == 9_999
+    assert result["lower_95"] is None
+    assert result["upper_95"] is None
+    assert result["two_sided_95"] is None
+    assert result["pvalue_greater"] is None

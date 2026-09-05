@@ -8,6 +8,9 @@ from collections.abc import Iterable
 import numpy as np
 from scipy.stats import t as student_t
 
+_CONFIRMATORY_SEQUENCES = 64
+_STUDENTIZED_BOOTSTRAP_DRAWS = 10_000
+
 
 def _sequence_values(values: np.ndarray, *, name: str, minimum: int = 1) -> np.ndarray:
     array = np.asarray(values, dtype=np.float64)
@@ -203,4 +206,106 @@ def cluster_percentile_interval(
         "interval_low": float(low),
         "n_sequences": n_sequences,
         "seed": seed,
+    }
+
+
+def studentized_sequence_interval(
+    values: np.ndarray,
+    *,
+    seed: int,
+    null_mean: float,
+) -> dict[str, object]:
+    """Return the fixed confirmatory centered Rademacher bootstrap-t evidence.
+
+    Each input value and each Rademacher sign represents one independent
+    sequence.  The resampling law and draw count are intentionally not
+    configurable: this is the preregistered confirmatory procedure.
+    """
+    sequence_values = _sequence_values(
+        values,
+        name="values",
+        minimum=_CONFIRMATORY_SEQUENCES,
+    )
+    if type(seed) is not int or seed < 0:
+        raise ValueError("seed must be a non-negative integer")
+    if isinstance(null_mean, (bool, np.bool_)) or not isinstance(
+        null_mean, (int, float, np.integer, np.floating)
+    ):
+        raise TypeError("null_mean must be numeric")
+    null_mean = float(null_mean)
+    if not math.isfinite(null_mean):
+        raise ValueError("null_mean must be finite")
+
+    n_sequences = int(sequence_values.size)
+    estimate = float(sequence_values.mean())
+    standard_error = float(sequence_values.std(ddof=1) / math.sqrt(n_sequences))
+    common = {
+        "bootstrap_draws": _STUDENTIZED_BOOTSTRAP_DRAWS,
+        "estimate": estimate,
+        "n_sequences": n_sequences,
+        "null_mean": null_mean,
+        "seed": seed,
+        "standard_error": standard_error,
+    }
+    if standard_error == 0.0:
+        return {
+            **common,
+            "lower_95": None,
+            "observed_t": None,
+            "pvalue_greater": None,
+            "pvalue_less": None,
+            "status": "degenerate_variance",
+            "two_sided_95": None,
+            "upper_95": None,
+            "valid_draws": 0,
+        }
+
+    residuals = sequence_values - estimate
+    signs = np.random.default_rng(seed).choice(
+        (-1.0, 1.0),
+        size=(_STUDENTIZED_BOOTSTRAP_DRAWS, n_sequences),
+    )
+    null_draws = null_mean + signs * residuals
+    resampled_standard_errors = null_draws.std(axis=1, ddof=1) / math.sqrt(
+        n_sequences
+    )
+    valid = np.isfinite(resampled_standard_errors) & (resampled_standard_errors > 0.0)
+    valid_draws = int(np.count_nonzero(valid))
+    if valid_draws != _STUDENTIZED_BOOTSTRAP_DRAWS:
+        return {
+            **common,
+            "lower_95": None,
+            "observed_t": None,
+            "pvalue_greater": None,
+            "pvalue_less": None,
+            "status": "bootstrap_degenerate",
+            "two_sided_95": None,
+            "upper_95": None,
+            "valid_draws": valid_draws,
+        }
+
+    resampled_t = (null_draws.mean(axis=1) - null_mean) / resampled_standard_errors
+    observed_t = (estimate - null_mean) / standard_error
+    q_025, q_05, q_95, q_975 = np.quantile(
+        resampled_t,
+        (0.025, 0.05, 0.95, 0.975),
+    )
+    lower_95 = estimate - float(q_95) * standard_error
+    upper_95 = estimate - float(q_05) * standard_error
+    two_sided_low = estimate - float(q_975) * standard_error
+    two_sided_high = estimate - float(q_025) * standard_error
+    return {
+        **common,
+        "lower_95": lower_95,
+        "observed_t": observed_t,
+        "pvalue_greater": (
+            1.0 + float(np.count_nonzero(resampled_t >= observed_t))
+        )
+        / (_STUDENTIZED_BOOTSTRAP_DRAWS + 1.0),
+        "pvalue_less": (1.0 + float(np.count_nonzero(resampled_t <= observed_t)))
+        / (_STUDENTIZED_BOOTSTRAP_DRAWS + 1.0),
+        "status": "ok",
+        "two_sided_95": (two_sided_low, two_sided_high),
+        "upper_95": upper_95,
+        "valid_draws": valid_draws,
     }
