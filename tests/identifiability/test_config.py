@@ -173,6 +173,17 @@ def test_loader_rejects_boolean_integers_and_nonfinite_numbers(
         load_identifiability_config(_write(tmp_path, canonical_payload))
 
 
+def test_loader_rejects_boolean_empirical_stationary_shrinkage(
+    tmp_path: Path, canonical_payload: dict[str, object]
+) -> None:
+    baselines = canonical_payload["baselines"]
+    assert isinstance(baselines, dict)
+    baselines["empirical_stationary_shrinkage"] = [True]
+
+    with pytest.raises(ValueError, match="finite number"):
+        load_identifiability_config(_write(tmp_path, canonical_payload))
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [

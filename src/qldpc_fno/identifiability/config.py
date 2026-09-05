@@ -207,9 +207,11 @@ class BaselineConfig:
     arm_aliases: tuple[tuple[str, str], ...]
 
     def validate(self) -> None:
-        _fixed(
-            self.empirical_stationary_shrinkage, (1.0,), "baselines.empirical_stationary_shrinkage"
+        shrinkage = tuple(
+            _number(value, f"baselines.empirical_stationary_shrinkage[{index}]")
+            for index, value in enumerate(self.empirical_stationary_shrinkage)
         )
+        _fixed(shrinkage, (1.0,), "baselines.empirical_stationary_shrinkage")
         _fixed(self.ewma_decays, (0.5, 0.8, 0.9, 0.97, 0.99), "baselines.ewma_decays")
         _fixed_int(self.ewma_kernel, 5, "baselines.ewma_kernel")
         _fixed_int(self.logistic_lags, 32, "baselines.logistic_lags")
