@@ -67,8 +67,9 @@ def _mapping_sha256(value: Mapping[str, object]) -> str:
 
 
 def _source_commit() -> str:
+    repository = Path(__file__).resolve().parents[3]
     return subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
         check=True,
         capture_output=True,
         text=True,

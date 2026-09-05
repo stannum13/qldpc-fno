@@ -161,6 +161,24 @@ def test_config_rejects_invalid_decoder_schedule(tmp_path: Path) -> None:
         CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_iter", 101),
+        ("ms_scaling_factor", 0.5),
+        ("lsd_order", 4),
+    ],
+)
+def test_config_requires_exact_canonical_bplsd_policy(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    payload = _payload()
+    payload["decoder"][field] = value
+
+    with pytest.raises(ValueError, match="canonical BP-LSD"):
+        CausalExperimentConfig.from_json(_write_config(tmp_path, payload))
+
+
 @pytest.mark.parametrize("field,value", [("mismatch_step_min", -2), ("mismatch_step_max", 2)])
 def test_config_rejects_mismatch_steps_outside_supported_range(
     tmp_path: Path, field: str, value: int

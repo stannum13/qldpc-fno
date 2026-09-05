@@ -13,6 +13,7 @@ import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,12 +38,20 @@ from qldpc_fno.temporal.dataset import (
 )
 from qldpc_fno.temporal.evaluation import (
     ArmEvaluation,
+    BaselineSelection,
     CausalEvaluationBatch,
+    FrozenArm,
+    FrozenBaseline,
+    PairedCausalEvaluation,
     evaluate_causal_arms,
+    evaluate_oracle_sanity,
+    export_frozen_predictor,
     fit_select_observation_baselines,
     freeze_learned_arm,
     reduced_factor_diagnostics,
     reduced_progression,
+    restore_frozen_predictor,
+    validate_frozen_arm_calibration,
 )
 from qldpc_fno.temporal.generator import generate_latent_sequence, sample_sequence
 from qldpc_fno.temporal.seeds import REGIMES
@@ -67,6 +76,25 @@ _CAUSAL_MUTATIONS = (
 )
 _RESULT_FILES = ("results.json", "timing.json")
 _MANIFEST = "manifest.json"
+_EVIDENCE_TOKEN = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _RegimeEvidence:
+    selection: BaselineSelection
+    predictors: tuple[FrozenBaseline | FrozenArm, ...]
+    evaluation: PairedCausalEvaluation
+    _token: object
+
+    def __post_init__(self) -> None:
+        if self._token is not _EVIDENCE_TOKEN:
+            raise ValueError("regime evidence must be created by the screen runner")
+
+
+@dataclass(frozen=True, slots=True)
+class _RepositoryEvidence:
+    root: Path
+    commit: str
 
 
 def _canonical_json(value: Mapping[str, object]) -> bytes:
@@ -79,15 +107,48 @@ def _mapping_digest(value: Mapping[str, object]) -> str:
     ).hexdigest()
 
 
-def _source_commit() -> str:
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+def _repository_evidence() -> _RepositoryEvidence:
+    root = Path(__file__).resolve().parents[3]
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=normal"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if status:
+        raise RuntimeError("causal experiment requires a clean nonignored repository worktree")
+    commit = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
+    return _RepositoryEvidence(root=root, commit=commit)
+
+
+def _require_ignored_repository_output(repository: _RepositoryEvidence, output_dir: Path) -> None:
+    resolved = output_dir.resolve()
+    if not resolved.is_relative_to(repository.root):
+        return
+    ignored = subprocess.run(
+        ["git", "-C", str(repository.root), "check-ignore", "--quiet", "--", str(resolved)],
+        check=False,
+    )
+    if ignored.returncode != 0:
+        raise ValueError("experiment output inside the repository must be git-ignored")
 
 
 def _write_bytes(path: Path, payload: bytes) -> None:
     with path.open("xb") as handle:
         handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _write_npy(path: Path, values: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as handle:
+        np.save(handle, np.ascontiguousarray(values), allow_pickle=False)
         handle.flush()
         os.fsync(handle.fileno())
 
@@ -140,15 +201,22 @@ def _load_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def generate_sequence_campaign(*, config_path: Path, output_dir: Path) -> dict[str, Any]:
+def generate_sequence_campaign(
+    *,
+    config_path: Path,
+    output_dir: Path,
+    _repository: _RepositoryEvidence | None = None,
+) -> dict[str, Any]:
     """Generate every A-E train/validation/calibration sequence immutably."""
 
     config = CausalExperimentConfig.from_json(config_path)
+    repository = _repository or _repository_evidence()
+    _require_ignored_repository_output(repository, output_dir)
     if config.artifact_mode != "reduced_non_scientific":
         raise ValueError("reduced generation requires artifact_mode reduced_non_scientific")
     code = _canonical_code()
     request_digest = _mapping_digest(
-        {"config": config.to_dict(), "source_commit": _source_commit(), "roles": list(_ROLES)}
+        {"config": config.to_dict(), "source_commit": repository.commit, "roles": list(_ROLES)}
     )
     completion = output_dir / _MANIFEST
     if output_dir.exists():
@@ -186,7 +254,7 @@ def generate_sequence_campaign(*, config_path: Path, output_dir: Path) -> dict[s
             "complete": True,
             "config": config.to_dict(),
             "request_digest": request_digest,
-            "source_commit": _source_commit(),
+            "source_commit": repository.commit,
             "sequences": rows,
         }
         _write_bytes(staging / _MANIFEST, _canonical_json(root))
@@ -375,11 +443,28 @@ def recompute_screen_result(payload: Mapping[str, object]) -> None:
             "selected_observation_baseline",
             "baseline_validation_nll",
             "hashes",
+            "oracle_generator_sanity",
             "arms",
         }:
             raise ValueError(f"result regime {regime!r} has missing or unknown fields")
         if set(regime_result["arms"]) != set(_ARM_NAMES):
             raise ValueError(f"result regime {regime!r} does not contain the exact arm set")
+        oracle = regime_result["oracle_generator_sanity"]
+        if (
+            not isinstance(oracle, Mapping)
+            or oracle.get("scope") != "generator_sanity_only"
+            or oracle.get("deployable_competition") is not False
+            or oracle.get("decoder_evaluated") is not False
+        ):
+            raise ValueError("result oracle must be labelled nondeployable generator sanity only")
+        _assert_close(
+            oracle.get("overall_nll"), float(np.mean(oracle["per_sequence_nll"])), "oracle_nll"
+        )
+        _assert_close(
+            oracle.get("overall_brier"),
+            float(np.mean(oracle["per_sequence_brier"])),
+            "oracle_brier",
+        )
         baseline_scores = regime_result["baseline_validation_nll"]
         if not isinstance(baseline_scores, Mapping) or set(baseline_scores) != set(_BASELINE_NAMES):
             raise ValueError("result regime has an invalid baseline validation-NLL map")
@@ -618,12 +703,44 @@ def recompute_screen_result(payload: Mapping[str, object]) -> None:
         raise ValueError("result recomputation mismatch: mismatch direction")
 
 
-def publish_screen_result(
-    output_dir: Path, scientific_payload: Mapping[str, object], *, timing: Mapping[str, object]
+def _publish_screen_result(
+    output_dir: Path,
+    scientific_payload: Mapping[str, object],
+    *,
+    timing: Mapping[str, object],
+    evidence: Mapping[str, _RegimeEvidence],
+    config_path: Path,
+    sequence_dir: Path,
+    repository: _RepositoryEvidence,
 ) -> dict[str, Any]:
     """Publish deterministic science first, isolated timings second, manifest last."""
 
     recompute_screen_result(scientific_payload)
+    if set(evidence) != set(REGIMES):
+        raise ValueError("screen evidence must cover exact A-E regimes")
+    for regime in REGIMES:
+        item = evidence[regime]
+        if type(item) is not _RegimeEvidence or item._token is not _EVIDENCE_TOKEN:
+            raise TypeError("screen publication requires runner-created typed evidence")
+        paired = item.evaluation
+        expected_regime = {
+            "selected_observation_baseline": item.selection.selected_name,
+            "baseline_validation_nll": dict(item.selection.validation_nll),
+            "hashes": {
+                "decoder_config": paired.decoder_config_digest,
+                "partition": paired.partition_digest,
+                "partition_content": paired.partition_content_digest,
+                "baseline_fit_policy": item.selection.fit_policy_digest,
+            },
+            "oracle_generator_sanity": scientific_payload["regimes"][regime][
+                "oracle_generator_sanity"
+            ],
+            "arms": {name: _serialize_arm(arm)[0] for name, arm in paired.arms.items()},
+        }
+        if _mapping_digest(expected_regime) != _mapping_digest(
+            scientific_payload["regimes"][regime]
+        ):
+            raise ValueError("scientific result does not match runner-created typed evidence")
     result_bytes = _canonical_json(scientific_payload)
     if output_dir.exists():
         completion = output_dir / _MANIFEST
@@ -634,19 +751,35 @@ def publish_screen_result(
             or (output_dir / "results.json").read_bytes() != result_bytes
         ):
             raise FileExistsError(f"refuse to overwrite completed differing run: {output_dir}")
-        verify_screen_result(output_dir)
+        verify_screen_result(
+            output_dir,
+            config_path=config_path,
+            sequence_dir=sequence_dir,
+            _repository=repository,
+        )
         return _load_json(completion)
 
     def write(staging: Path) -> None:
         _write_bytes(staging / "results.json", result_bytes)
         _write_bytes(staging / "timing.json", _canonical_json(timing))
+        for regime in REGIMES:
+            _write_regime_evidence(staging / "evidence" / regime, evidence[regime])
+        declared = sorted(
+            str(path.relative_to(staging)) for path in staging.rglob("*") if path.is_file()
+        )
         completion = {
             "artifact_mode": "reduced_non_scientific",
             "complete": True,
-            "payloads": {name: sha256_file(staging / name) for name in _RESULT_FILES},
+            "payloads": {name: sha256_file(staging / name) for name in declared},
             "timing_is_scientific": False,
         }
         _write_bytes(staging / _MANIFEST, _canonical_json(completion))
+        verify_screen_result(
+            staging,
+            config_path=config_path,
+            sequence_dir=sequence_dir,
+            _repository=repository,
+        )
 
     _publish_directory(output_dir, write)
     return _load_json(output_dir / _MANIFEST)
@@ -655,11 +788,13 @@ def publish_screen_result(
 def verify_screen_result(
     output_dir: Path,
     *,
-    config_path: Path | None = None,
-    sequence_dir: Path | None = None,
+    config_path: Path,
+    sequence_dir: Path,
+    _repository: _RepositoryEvidence | None = None,
 ) -> dict[str, Any]:
     """Verify hashes and recompute the deterministic scientific result payload."""
 
+    repository = _repository or _repository_evidence()
     manifest = _load_json(output_dir / _MANIFEST)
     if set(manifest) != {"artifact_mode", "complete", "payloads", "timing_is_scientific"}:
         raise ValueError("screen completion manifest has missing or unknown fields")
@@ -670,12 +805,14 @@ def verify_screen_result(
     ):
         raise ValueError("screen completion manifest has invalid scope")
     payloads = manifest.get("payloads")
-    if not isinstance(payloads, Mapping) or set(payloads) != set(_RESULT_FILES):
+    if not isinstance(payloads, Mapping) or not set(_RESULT_FILES).issubset(payloads):
         raise ValueError("screen completion payload set is invalid")
-    actual_files = {path.name for path in output_dir.iterdir() if path.is_file()}
-    if actual_files != {*_RESULT_FILES, _MANIFEST}:
+    actual_files = {
+        str(path.relative_to(output_dir)) for path in output_dir.rglob("*") if path.is_file()
+    }
+    if actual_files != {*payloads, _MANIFEST}:
         raise ValueError("screen run contains missing or undeclared files")
-    for name in _RESULT_FILES:
+    for name in payloads:
         if sha256_file(output_dir / name) != payloads[name]:
             raise ValueError(f"screen payload SHA-256 mismatch: {name}")
     result = _load_json(output_dir / "results.json")
@@ -683,12 +820,18 @@ def verify_screen_result(
     source = result.get("source")
     if not isinstance(source, Mapping):
         raise TypeError("screen result source hashes are missing")
-    if config_path is not None and source.get("config_sha256") != sha256_file(config_path):
+    if source.get("config_sha256") != sha256_file(config_path):
         raise ValueError("screen result configuration SHA-256 mismatch")
-    if sequence_dir is not None and source.get("sequences_manifest_sha256") != sha256_file(
-        sequence_dir / _MANIFEST
-    ):
+    if source.get("sequences_manifest_sha256") != sha256_file(sequence_dir / _MANIFEST):
         raise ValueError("screen result sequence-manifest SHA-256 mismatch")
+    if source.get("source_commit") != repository.commit:
+        raise ValueError("screen result source commit does not match the locked environment")
+    _replay_screen_result(
+        output_dir=output_dir,
+        config_path=config_path,
+        sequence_dir=sequence_dir,
+        persisted=result,
+    )
     return manifest
 
 
@@ -704,8 +847,9 @@ def _load_regime_batches(
     SequenceRoleBatch,
     SequenceRoleBatch,
     CausalEvaluationBatch,
+    dict[str, object],
 ]:
-    by_role: dict[str, list[tuple[object, object, str]]] = defaultdict(list)
+    by_role: dict[str, list[tuple[object, object, object, str]]] = defaultdict(list)
     rows = root["sequences"]
     if not isinstance(rows, list):
         raise TypeError("sequence campaign membership is missing")
@@ -713,13 +857,15 @@ def _load_regime_batches(
         if row["regime"] != regime:
             continue
         artifact = sequence_dir / str(row["path"])
-        observed, supervision, _, _ = read_verified_sequence(
+        observed, supervision, diagnostics, _ = read_verified_sequence(
             artifact,
             config=config,
             code=code,
             expected_source_commit=str(root["source_commit"]),
         )
-        by_role[str(row["role"])].append((observed, supervision, sha256_file(artifact / _MANIFEST)))
+        by_role[str(row["role"])].append(
+            (observed, supervision, diagnostics, sha256_file(artifact / _MANIFEST))
+        )
 
     batches: dict[str, SequenceRoleBatch] = {}
     for role in _ROLES:
@@ -736,8 +882,8 @@ def _load_regime_batches(
                 np.stack([record[0].syndromes for record in records])
             ).float(),
             targets=torch.as_tensor(np.stack([record[1].errors for record in records])).float(),
-            scored_mask=torch.as_tensor(masks[0], dtype=torch.bool),
-            sequence_ids=tuple(record[2] for record in records),
+            scored_mask=torch.as_tensor(np.array(masks[0], copy=True), dtype=torch.bool),
+            sequence_ids=tuple(record[3] for record in records),
         )
     validation_records = by_role["validation"]
     validation = batches["validation"]
@@ -750,7 +896,12 @@ def _load_regime_batches(
         logical_flips=np.stack([record[1].logical_flips for record in validation_records]),
         scored_mask=validation.scored_mask.numpy(),
     )
-    return batches["train"], validation, batches["calibration"], evaluation
+    oracle = evaluate_oracle_sanity(
+        np.stack([record[2].probabilities for record in validation_records]),
+        evaluation.errors,
+        evaluation.scored_mask,
+    )
+    return batches["train"], validation, batches["calibration"], evaluation, oracle
 
 
 def _audit_model(
@@ -867,21 +1018,282 @@ def _serialize_arm(arm: ArmEvaluation) -> tuple[dict[str, object], dict[str, obj
         "sequence_summaries": sequence_rows,
         "per_round_outcomes": outcomes,
     }
+    estimator_per_round = arm.estimator_batch_seconds / len(outcomes)
     timing = {
-        "latency_p50_seconds": arm.latency_p50_seconds,
-        "latency_p95_seconds": arm.latency_p95_seconds,
-        "latency_p99_seconds": arm.latency_p99_seconds,
+        "scope": "engineering_measurement_no_speed_claim",
+        "estimator_batch_seconds": arm.estimator_batch_seconds,
+        "estimator_amortized_per_round_seconds": estimator_per_round,
+        "bp_lsd_per_round_p50_seconds": arm.latency_p50_seconds,
+        "bp_lsd_per_round_p95_seconds": arm.latency_p95_seconds,
+        "bp_lsd_per_round_p99_seconds": arm.latency_p99_seconds,
+        "end_to_end_estimated_per_round_p50_seconds": (
+            estimator_per_round + arm.latency_p50_seconds
+        ),
+        "end_to_end_estimated_per_round_p95_seconds": (
+            estimator_per_round + arm.latency_p95_seconds
+        ),
+        "end_to_end_estimated_per_round_p99_seconds": (
+            estimator_per_round + arm.latency_p99_seconds
+        ),
         "per_round": timing_rows,
     }
     return scientific, timing
 
 
+def _write_regime_evidence(target: Path, evidence: _RegimeEvidence) -> None:
+    if tuple(predictor.name for predictor in evidence.predictors) != _ARM_NAMES:
+        raise ValueError("regime evidence does not contain the canonical predictor order")
+    if tuple(evidence.evaluation.arms) != _ARM_NAMES:
+        raise ValueError("regime evidence does not contain the canonical evaluated arm order")
+    target.mkdir(parents=True, exist_ok=False)
+    selection = {
+        "selected_name": evidence.selection.selected_name,
+        "validation_nll": dict(evidence.selection.validation_nll),
+        "artifact_digest": evidence.selection.artifact_digest,
+        "partition_digest": evidence.selection.partition_digest,
+        "partition_content_digest": evidence.selection.partition_content_digest,
+        "fit_policy_digest": evidence.selection.fit_policy_digest,
+        "train_sequence_ids": list(evidence.selection.train_sequence_ids),
+        "validation_sequence_ids": list(evidence.selection.validation_sequence_ids),
+        "calibration_sequence_ids": list(evidence.selection.calibration_sequence_ids),
+        "evaluation_content_digest": evidence.selection.evaluation_content_digest,
+    }
+    _write_bytes(target / "selection.json", _canonical_json(selection))
+    for predictor in evidence.predictors:
+        arm_dir = target / predictor.name
+        arm_dir.mkdir()
+        metadata, arrays = export_frozen_predictor(predictor)
+        _write_bytes(arm_dir / "predictor.json", _canonical_json(metadata))
+        for name, values in arrays.items():
+            _write_npy(arm_dir / "predictor" / f"{name}.npy", values)
+        evaluated = evidence.evaluation.arms[predictor.name]
+        outcomes = evaluated.per_round_outcomes
+        trace_metadata = {
+            "sequence_ids": list(evaluated.evaluation_sequence_ids),
+            "sequence_membership": [list(row) for row in evaluated.sequence_membership],
+            "round_zero_prior": "causal_empty_history_unscored",
+            "scored_rounds_only_for_decoder": True,
+            "arrays": [
+                "priors",
+                "corrections",
+                "predicted_observables",
+                "syndrome_valid",
+                "converged",
+                "iterations",
+            ],
+        }
+        _write_bytes(arm_dir / "trace.json", _canonical_json(trace_metadata))
+        trace_arrays = {
+            "priors": evaluated.priors,
+            "corrections": evaluated.corrections,
+            "predicted_observables": np.asarray(
+                [row["predicted_observables"] for row in outcomes], dtype=np.uint8
+            ),
+            "syndrome_valid": np.asarray(
+                [row["syndrome_valid"] for row in outcomes], dtype=np.bool_
+            ),
+            "converged": np.asarray([row["converged"] for row in outcomes], dtype=np.bool_),
+            "iterations": np.asarray([row["iterations"] for row in outcomes], dtype=np.int64),
+        }
+        for name, values in trace_arrays.items():
+            _write_npy(arm_dir / "trace" / f"{name}.npy", values)
+
+
+def _load_frozen_evidence(arm_dir: Path) -> FrozenArm | FrozenBaseline:
+    metadata = _load_json(arm_dir / "predictor.json")
+    array_dir = arm_dir / "predictor"
+    arrays = {
+        path.stem: np.load(path, allow_pickle=False) for path in sorted(array_dir.glob("*.npy"))
+    }
+    return restore_frozen_predictor(metadata, arrays)
+
+
+def _verify_trace(arm_dir: Path, arm: ArmEvaluation) -> None:
+    metadata = _load_json(arm_dir / "trace.json")
+    if metadata != {
+        "sequence_ids": list(arm.evaluation_sequence_ids),
+        "sequence_membership": [list(row) for row in arm.sequence_membership],
+        "round_zero_prior": "causal_empty_history_unscored",
+        "scored_rounds_only_for_decoder": True,
+        "arrays": [
+            "priors",
+            "corrections",
+            "predicted_observables",
+            "syndrome_valid",
+            "converged",
+            "iterations",
+        ],
+    }:
+        raise ValueError("persisted trace metadata does not match replayed membership")
+    outcomes = arm.per_round_outcomes
+    expected = {
+        "priors": arm.priors,
+        "corrections": arm.corrections,
+        "predicted_observables": np.asarray(
+            [row["predicted_observables"] for row in outcomes], dtype=np.uint8
+        ),
+        "syndrome_valid": np.asarray([row["syndrome_valid"] for row in outcomes], dtype=np.bool_),
+        "converged": np.asarray([row["converged"] for row in outcomes], dtype=np.bool_),
+        "iterations": np.asarray([row["iterations"] for row in outcomes], dtype=np.int64),
+    }
+    trace_dir = arm_dir / "trace"
+    actual_files = {path.stem for path in trace_dir.glob("*.npy")}
+    if actual_files != set(expected):
+        raise ValueError("persisted trace has a missing or unknown array")
+    for name, values in expected.items():
+        observed = np.load(trace_dir / f"{name}.npy", allow_pickle=False)
+        if not np.array_equal(observed, values):
+            raise ValueError(f"persisted trace disagrees with exact replay: {name}")
+
+
+def _replay_screen_result(
+    *,
+    output_dir: Path,
+    config_path: Path,
+    sequence_dir: Path,
+    persisted: Mapping[str, object],
+) -> None:
+    """Reconstruct predictors and rerun exact BP-LSD against regenerated sources."""
+
+    config = CausalExperimentConfig.from_json(config_path)
+    root = verify_sequence_campaign(
+        config_path=config_path,
+        output_dir=sequence_dir,
+        regenerate=True,
+    )
+    code = _canonical_code()
+    logical_x = logical_x_basis(code.hx, code.hz)
+    replayed_overfit: dict[str, object] = {}
+    for spatial, temporal in _CELLS:
+        name = f"{spatial}_{temporal}"
+        fixture_model = build_forecaster(spatial=spatial, temporal=temporal, config=config)
+        fixture_result = overfit_causal_forecaster(
+            fixture_model,
+            fixture=build_overfit_fixture(config),
+            config=config,
+        )
+        replayed_overfit[name] = {
+            "steps": fixture_result.steps,
+            "nll": fixture_result.metrics.nll,
+            "accuracy": fixture_result.metrics.accuracy,
+        }
+    replayed_evaluations: dict[str, PairedCausalEvaluation] = {}
+    replayed_progressions: dict[str, object] = {}
+    replayed_audits: dict[str, object] = {}
+    for regime in REGIMES:
+        train, validation, calibration, evaluation, oracle = _load_regime_batches(
+            config=config,
+            sequence_dir=sequence_dir,
+            root=root,
+            code=code,
+            regime=regime,
+        )
+        partition = validate_role_partition(train, validation, calibration, regime=regime)
+        selection = fit_select_observation_baselines(
+            train=train,
+            validation=validation,
+            calibration=calibration,
+            partition=partition,
+        )
+        predictors = tuple(
+            _load_frozen_evidence(output_dir / "evidence" / regime / name) for name in _ARM_NAMES
+        )
+        for name in _BASELINE_NAMES:
+            loaded = next(predictor for predictor in predictors if predictor.name == name)
+            if loaded.artifact_digest != selection.baseline(name).artifact_digest:
+                raise ValueError("persisted baseline state disagrees with exact source-data refit")
+        for predictor in predictors:
+            if type(predictor) is FrozenArm:
+                validate_frozen_arm_calibration(
+                    predictor,
+                    calibration,
+                    partition=partition,
+                )
+        paired = evaluate_causal_arms(
+            evaluation,
+            predictors,
+            hx=code.hx,
+            hz=code.hz,
+            logical_x=logical_x,
+        )
+        replayed_evaluations[regime] = paired
+        for name, arm in paired.arms.items():
+            _verify_trace(output_dir / "evidence" / regime / name, arm)
+        science_arms = {name: _serialize_arm(arm)[0] for name, arm in paired.arms.items()}
+        replayed_regime = {
+            "selected_observation_baseline": selection.selected_name,
+            "baseline_validation_nll": dict(selection.validation_nll),
+            "hashes": {
+                "decoder_config": paired.decoder_config_digest,
+                "partition": paired.partition_digest,
+                "partition_content": paired.partition_content_digest,
+                "baseline_fit_policy": selection.fit_policy_digest,
+            },
+            "oracle_generator_sanity": oracle,
+            "arms": science_arms,
+        }
+        if _mapping_digest(replayed_regime) != _mapping_digest(persisted["regimes"][regime]):
+            raise ValueError(f"persisted result disagrees with exact replay for {regime}")
+        replayed_audits[regime] = {
+            predictor.name: _audit_model(predictor.materialize(), evaluation)
+            for predictor in predictors
+            if type(predictor) is FrozenArm
+        }
+        if regime != "stationary_iid":
+            progression = reduced_progression(
+                selection=selection,
+                stationary=paired.arms["stationary_field"],
+                selected=paired.arms[selection.selected_name],
+            )
+            replayed_progressions[regime] = {
+                "selected_name": progression.selected_name,
+                "nll_improvement": progression.nll_improvement,
+                "bler_difference": progression.bler_difference,
+                "progressed": progression.progressed,
+                "scope": progression.scope,
+                "p_value": None,
+                "hypothesis_status": None,
+            }
+    if _mapping_digest(replayed_progressions) != _mapping_digest(persisted["progressions"]):
+        raise ValueError("persisted progressions disagree with exact Task9 replay")
+    in_basis = replayed_evaluations["joint_in_basis"]
+    mismatch = replayed_evaluations["joint_basis_mismatch"]
+    factor = reduced_factor_diagnostics(
+        in_basis_arms={name: in_basis.arms[name] for name in _CELL_NAMES},
+        basis_mismatch_arms={name: mismatch.arms[name] for name in _CELL_NAMES},
+    )
+    replayed_factor = {
+        "in_basis_interaction": factor.in_basis_interaction.tolist(),
+        "basis_mismatch_interaction": factor.basis_mismatch_interaction.tolist(),
+        "in_basis_mean": factor.in_basis_mean,
+        "basis_mismatch_mean": factor.basis_mismatch_mean,
+        "in_basis_supports_predeclared_direction": factor.in_basis_supports_predeclared_direction,
+        "basis_mismatch_retains_predeclared_direction": factor.basis_mismatch_retains_predeclared_direction,
+        "scope": factor.scope,
+        "p_value": None,
+        "hypothesis_status": None,
+    }
+    if _mapping_digest(replayed_factor) != _mapping_digest(persisted["factor_diagnostics"]):
+        raise ValueError("persisted factor diagnostics disagree with exact Task9 replay")
+    audit = persisted["causal_audit"]
+    if _mapping_digest(replayed_audits) != _mapping_digest(audit["arms"]):
+        raise ValueError("persisted causal audit disagrees with reconstructed predictors")
+    if _mapping_digest(replayed_overfit) != _mapping_digest(audit["overfit_fixture"]):
+        raise ValueError("persisted overfit fixture disagrees with deterministic replay")
+
+
 def run_reduced_screen(
-    *, config_path: Path, sequence_dir: Path, output_dir: Path
+    *,
+    config_path: Path,
+    sequence_dir: Path,
+    output_dir: Path,
+    _repository: _RepositoryEvidence | None = None,
 ) -> dict[str, Any]:
     """Run the complete reduced screen without attaching confirmatory inference."""
 
     started = time.perf_counter()
+    repository = _repository or _repository_evidence()
+    _require_ignored_repository_output(repository, output_dir)
     config = CausalExperimentConfig.from_json(config_path)
     if config.artifact_mode != "reduced_non_scientific":
         raise ValueError("factor screen requires reduced_non_scientific configuration")
@@ -894,7 +1306,8 @@ def run_reduced_screen(
     timing_regimes: dict[str, object] = {}
     progressions: dict[str, object] = {}
     causal_arms: dict[str, object] = {}
-    evaluations: dict[str, object] = {}
+    evaluations: dict[str, PairedCausalEvaluation] = {}
+    screen_evidence: dict[str, _RegimeEvidence] = {}
     overfit: dict[str, object] = {}
     for spatial, temporal in _CELLS:
         name = f"{spatial}_{temporal}"
@@ -914,7 +1327,7 @@ def run_reduced_screen(
         }
 
     for regime in REGIMES:
-        train, validation, calibration, evaluation = _load_regime_batches(
+        train, validation, calibration, evaluation, oracle = _load_regime_batches(
             config=config,
             sequence_dir=sequence_dir,
             root=root,
@@ -928,7 +1341,7 @@ def run_reduced_screen(
             calibration=calibration,
             partition=partition,
         )
-        frozen: list[object] = [
+        frozen: list[FrozenBaseline | FrozenArm] = [
             selection.baseline("stationary_field"),
             selection.baseline("ewma"),
             selection.baseline("logistic_ar"),
@@ -965,6 +1378,12 @@ def run_reduced_screen(
             logical_x=logical_x,
         )
         evaluations[regime] = paired
+        screen_evidence[regime] = _RegimeEvidence(
+            selection=selection,
+            predictors=tuple(frozen),
+            evaluation=paired,
+            _token=_EVIDENCE_TOKEN,
+        )
         causal_arms[regime] = audit_rows
         science_arms: dict[str, object] = {}
         timing_arms: dict[str, object] = {}
@@ -979,6 +1398,7 @@ def run_reduced_screen(
                 "partition_content": paired.partition_content_digest,
                 "baseline_fit_policy": selection.fit_policy_digest,
             },
+            "oracle_generator_sanity": oracle,
             "arms": science_arms,
         }
         timing_regimes[regime] = timing_arms
@@ -1023,7 +1443,7 @@ def run_reduced_screen(
         "source": {
             "config_sha256": sha256_file(config_path),
             "sequences_manifest_sha256": sha256_file(sequence_dir / _MANIFEST),
-            "source_commit": _source_commit(),
+            "source_commit": repository.commit,
         },
         "causal_audit": {
             "passed": all(row["passed"] for arms in causal_arms.values() for row in arms.values()),
@@ -1037,14 +1457,22 @@ def run_reduced_screen(
     timing = {
         "wall_seconds": time.perf_counter() - started,
         "scientific": False,
+        "scope": "engineering_measurement_no_speed_claim",
         "regimes": timing_regimes,
     }
-    return publish_screen_result(output_dir, scientific, timing=timing)
+    return _publish_screen_result(
+        output_dir,
+        scientific,
+        timing=timing,
+        evidence=screen_evidence,
+        config_path=config_path,
+        sequence_dir=sequence_dir,
+        repository=repository,
+    )
 
 
 __all__ = [
     "generate_sequence_campaign",
-    "publish_screen_result",
     "recompute_screen_result",
     "run_reduced_screen",
     "verify_screen_result",

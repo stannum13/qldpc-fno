@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, ClassVar, Self
 
+from qldpc_fno.decoders.bplsd import BPLSDConfig
 from qldpc_fno.temporal.seeds import REGIMES
 
 
@@ -205,6 +206,16 @@ class DecoderConfig:
         if self.lsd_method != "LSD_E":
             raise ValueError("lsd_method must be 'LSD_E'")
         _integer(self.lsd_order, "lsd_order", minimum=0)
+        configured = BPLSDConfig(
+            max_iter=self.max_iter,
+            bp_method=self.bp_method,
+            ms_scaling_factor=self.ms_scaling_factor,
+            schedule=self.schedule,
+            lsd_method=self.lsd_method,
+            lsd_order=self.lsd_order,
+        )
+        if configured != BPLSDConfig():
+            raise ValueError("decoder must equal the canonical BP-LSD configuration")
 
 
 @dataclass(frozen=True, slots=True)

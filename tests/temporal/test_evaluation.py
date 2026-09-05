@@ -176,10 +176,13 @@ def _arm_evaluation(
         latency_p50_seconds=0.1,
         latency_p95_seconds=0.1,
         latency_p99_seconds=0.1,
+        estimator_batch_seconds=0.1,
         expected_calibration_error=0.0,
         reliability=(),
         logical_failures=np.zeros(len(identities), dtype=bool),
         syndrome_valid=np.ones(len(identities), dtype=bool),
+        priors=np.zeros((len(identities), 1, 1), dtype=np.float64),
+        corrections=np.zeros((len(identities), 1), dtype=np.uint8),
         stored_parameters=1,
         effective_parameters=1,
         partition_digest=partition_digest,
@@ -285,8 +288,15 @@ def test_baseline_selection_snapshots_models_and_membership(monkeypatch) -> None
 
     source_models[1].weight[:] = 100.0
     after = frozen.predict(observed, sequence_ids=selection.validation_sequence_ids)
+    metadata, arrays = evaluation_module.export_frozen_predictor(frozen)
+    restored = evaluation_module.restore_frozen_predictor(metadata, arrays)
 
     assert np.array_equal(before, after)
+    assert np.array_equal(
+        before,
+        restored.predict(observed, sequence_ids=selection.validation_sequence_ids),
+    )
+    assert restored.artifact_digest == frozen.artifact_digest
     assert not frozen.weight.flags.writeable
     with pytest.raises(FrozenInstanceError):
         frozen.temperature = 4.0  # type: ignore[misc]
@@ -358,6 +368,16 @@ def test_freeze_learned_arm_binds_provenance_and_snapshots_state() -> None:
         validation=validation,
         calibration=calibration,
     )
+    metadata, arrays = evaluation_module.export_frozen_predictor(arm)
+    restored = evaluation_module.restore_frozen_predictor(metadata, arrays)
+    assert type(restored) is type(arm)
+    assert restored.artifact_digest == arm.artifact_digest
+    tampered_arrays = dict(arrays)
+    first_key = next(iter(tampered_arrays))
+    tampered_arrays[first_key] = np.array(tampered_arrays[first_key], copy=True)
+    tampered_arrays[first_key].flat[0] += 1
+    with pytest.raises(ValueError, match="integrity"):
+        evaluation_module.restore_frozen_predictor(metadata, tampered_arrays)
 
     accounting = parameter_accounting(model)
     assert arm.partition_digest == partition.digest
@@ -487,6 +507,10 @@ def test_frozen_learned_arm_reconstructs_checkpoint_and_predicts_from_syndromes(
     evaluated = evaluate_causal_arms(batch, (arm,), hx=hx, hz=hz, logical_x=logical_x)
     assert evaluated.arms["cnn_fir"].stored_parameters == arm.stored_parameters
     assert evaluated.arms["cnn_fir"].partition_digest == partition.digest
+    assert evaluated.arms["cnn_fir"].priors.shape == (1, 2, 2610)
+    assert evaluated.arms["cnn_fir"].corrections.shape == (1, 2610)
+    assert not evaluated.arms["cnn_fir"].priors.flags.writeable
+    assert not evaluated.arms["cnn_fir"].corrections.flags.writeable
 
 
 def test_evaluation_reconstructs_all_qec_labels_before_decode(

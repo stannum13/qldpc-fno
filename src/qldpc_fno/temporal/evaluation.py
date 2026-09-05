@@ -14,6 +14,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
+from time import perf_counter
 from types import MappingProxyType
 
 import numpy as np
@@ -400,6 +401,19 @@ class FrozenArm:
             )
         return values.cpu().numpy()
 
+    def materialize(self) -> CausalChannelForecaster:
+        """Reconstruct the exact frozen model for independent causal auditing."""
+
+        _validate_arm_integrity(self)
+        model = build_forecaster(
+            spatial=self.spatial_kind,
+            temporal=self.temporal_kind,
+            config=self.config,
+        )
+        model.load_state_dict({item.name: item.tensor() for item in self._state}, strict=True)
+        model.eval()
+        return model
+
 
 @dataclass(frozen=True, slots=True)
 class BaselineSelection:
@@ -625,6 +639,310 @@ def _validate_arm_integrity(arm: FrozenArm | FrozenBaseline) -> None:
     )
     if arm.artifact_digest != expected:
         raise ValueError("frozen arm integrity check failed")
+
+
+def export_frozen_predictor(
+    arm: FrozenArm | FrozenBaseline,
+) -> tuple[dict[str, object], dict[str, np.ndarray]]:
+    """Export one safe JSON/array bundle without pickle or executable objects."""
+
+    if type(arm) not in {FrozenArm, FrozenBaseline}:
+        raise TypeError("only exact frozen predictor types can be exported")
+    _validate_arm_integrity(arm)
+    common: dict[str, object] = {
+        "name": arm.name,
+        "predictor_type": arm.predictor_type,
+        "partition_digest": arm.partition_digest,
+        "partition_content_digest": arm.partition_content_digest,
+        "calibration_digest": arm.calibration_digest,
+        "evaluation_sequence_ids": list(arm.evaluation_sequence_ids),
+        "evaluation_role": arm.evaluation_role,
+        "evaluation_regime": arm.evaluation_regime,
+        "evaluation_content_digest": arm.evaluation_content_digest,
+        "stored_parameters": arm.stored_parameters,
+        "effective_parameters": arm.effective_parameters,
+        "artifact_digest": arm.artifact_digest,
+    }
+    if type(arm) is FrozenArm:
+        arrays: dict[str, np.ndarray] = {}
+        state_rows: list[dict[str, object]] = []
+        for index, item in enumerate(arm._state):
+            key = f"state_{index:04d}"
+            value = item.tensor().numpy().copy()
+            arrays[key] = value
+            state_rows.append(
+                {"key": key, "name": item.name, "dtype": item.dtype, "shape": list(item.shape)}
+            )
+        return {
+            **common,
+            "kind": "learned",
+            "spatial_kind": arm.spatial_kind,
+            "temporal_kind": arm.temporal_kind,
+            "config": arm.config.to_dict(),
+            "config_digest": arm.config_digest,
+            "checkpoint_sha256": arm.checkpoint_sha256,
+            "calibration_temperature": arm.calibration_temperature,
+            "calibration_sequence_ids": list(arm.calibration_sequence_ids),
+            "state": state_rows,
+        }, arrays
+    return {
+        **common,
+        "kind": "baseline",
+        "fit_policy_digest": arm.fit_policy_digest,
+        "model_sha256": arm.model_sha256,
+        "train_sequence_ids": list(arm.train_sequence_ids),
+        "validation_sequence_ids": list(arm.validation_sequence_ids),
+        "calibration_sequence_ids": list(arm.calibration_sequence_ids),
+        "scalar_probability": (
+            arm.scalar_probability if math.isfinite(arm.scalar_probability) else None
+        ),
+        "shrinkage": arm.shrinkage if math.isfinite(arm.shrinkage) else None,
+        "temperature": arm.temperature,
+        "l2": arm.l2,
+        "feature_kind": arm.feature_kind,
+        "decay": arm.decay,
+        "lags": arm.lags,
+        "arrays": ["empirical_field", "weight", "bias"],
+    }, {
+        "empirical_field": arm.empirical_field.copy(),
+        "weight": arm.weight.copy(),
+        "bias": arm.bias.copy(),
+    }
+
+
+def _required_metadata(metadata: Mapping[str, object], fields: set[str]) -> None:
+    if set(metadata) != fields:
+        raise ValueError("frozen predictor metadata has missing or unknown fields")
+
+
+def restore_frozen_predictor(
+    metadata: Mapping[str, object], arrays: Mapping[str, np.ndarray]
+) -> FrozenArm | FrozenBaseline:
+    """Restore and integrity-check an exact frozen predictor from safe evidence."""
+
+    common = {
+        "kind",
+        "name",
+        "predictor_type",
+        "partition_digest",
+        "partition_content_digest",
+        "calibration_digest",
+        "evaluation_sequence_ids",
+        "evaluation_role",
+        "evaluation_regime",
+        "evaluation_content_digest",
+        "stored_parameters",
+        "effective_parameters",
+        "artifact_digest",
+    }
+    kind = metadata.get("kind")
+    if kind == "learned":
+        _required_metadata(
+            metadata,
+            common
+            | {
+                "spatial_kind",
+                "temporal_kind",
+                "config",
+                "config_digest",
+                "checkpoint_sha256",
+                "calibration_temperature",
+                "calibration_sequence_ids",
+                "state",
+            },
+        )
+        state_rows = metadata["state"]
+        if not isinstance(state_rows, list):
+            raise TypeError("learned predictor state manifest must be a list")
+        expected_keys = tuple(str(row["key"]) for row in state_rows)
+        if set(arrays) != set(expected_keys):
+            raise ValueError("learned predictor state payload set is invalid")
+        state: list[_FrozenTensor] = []
+        for row in state_rows:
+            value = np.asarray(arrays[str(row["key"])])
+            frozen = _FrozenTensor.from_tensor(str(row["name"]), torch.from_numpy(value.copy()))
+            if frozen.dtype != row["dtype"] or list(frozen.shape) != row["shape"]:
+                raise ValueError("learned predictor state metadata disagrees with payload")
+            state.append(frozen)
+        arm: FrozenArm | FrozenBaseline = FrozenArm(
+            name=str(metadata["name"]),
+            predictor_type=str(metadata["predictor_type"]),
+            spatial_kind=str(metadata["spatial_kind"]),
+            temporal_kind=str(metadata["temporal_kind"]),
+            config=CausalExperimentConfig.from_dict(metadata["config"]),
+            config_digest=str(metadata["config_digest"]),
+            partition_digest=str(metadata["partition_digest"]),
+            partition_content_digest=str(metadata["partition_content_digest"]),
+            checkpoint_sha256=str(metadata["checkpoint_sha256"]),
+            calibration_digest=str(metadata["calibration_digest"]),
+            calibration_temperature=float(metadata["calibration_temperature"]),
+            calibration_sequence_ids=tuple(map(str, metadata["calibration_sequence_ids"])),
+            evaluation_sequence_ids=tuple(map(str, metadata["evaluation_sequence_ids"])),
+            evaluation_role=str(metadata["evaluation_role"]),
+            evaluation_regime=str(metadata["evaluation_regime"]),
+            evaluation_content_digest=str(metadata["evaluation_content_digest"]),
+            stored_parameters=int(metadata["stored_parameters"]),
+            effective_parameters=int(metadata["effective_parameters"]),
+            artifact_digest=str(metadata["artifact_digest"]),
+            _state=tuple(state),
+            _token=_FREEZE_TOKEN,
+        )
+        if (
+            arm.name != f"{arm.spatial_kind}_{arm.temporal_kind}"
+            or arm.predictor_type
+            != f"causal_channel_forecaster:{arm.spatial_kind}:{arm.temporal_kind}"
+        ):
+            raise ValueError("learned predictor evidence has a noncanonical identity")
+        accounting = parameter_accounting(arm.materialize())
+        if (
+            arm.stored_parameters != accounting.stored_real_scalars
+            or arm.effective_parameters != accounting.effective_functional_scalars
+        ):
+            raise ValueError("learned predictor parameter accounting is invalid")
+    elif kind == "baseline":
+        _required_metadata(
+            metadata,
+            common
+            | {
+                "fit_policy_digest",
+                "model_sha256",
+                "train_sequence_ids",
+                "validation_sequence_ids",
+                "calibration_sequence_ids",
+                "scalar_probability",
+                "shrinkage",
+                "temperature",
+                "l2",
+                "feature_kind",
+                "decay",
+                "lags",
+                "arrays",
+            },
+        )
+        expected_arrays = ("empirical_field", "weight", "bias")
+        if tuple(metadata["arrays"]) != expected_arrays or set(arrays) != set(expected_arrays):
+            raise ValueError("baseline predictor payload set is invalid")
+        scalar = metadata["scalar_probability"]
+        shrinkage = metadata["shrinkage"]
+        arm = FrozenBaseline(
+            name=str(metadata["name"]),
+            predictor_type=str(metadata["predictor_type"]),
+            partition_digest=str(metadata["partition_digest"]),
+            partition_content_digest=str(metadata["partition_content_digest"]),
+            fit_policy_digest=str(metadata["fit_policy_digest"]),
+            model_sha256=str(metadata["model_sha256"]),
+            calibration_digest=str(metadata["calibration_digest"]),
+            train_sequence_ids=tuple(map(str, metadata["train_sequence_ids"])),
+            validation_sequence_ids=tuple(map(str, metadata["validation_sequence_ids"])),
+            calibration_sequence_ids=tuple(map(str, metadata["calibration_sequence_ids"])),
+            evaluation_sequence_ids=tuple(map(str, metadata["evaluation_sequence_ids"])),
+            evaluation_role=str(metadata["evaluation_role"]),
+            evaluation_regime=str(metadata["evaluation_regime"]),
+            evaluation_content_digest=str(metadata["evaluation_content_digest"]),
+            scalar_probability=math.nan if scalar is None else float(scalar),
+            shrinkage=math.nan if shrinkage is None else float(shrinkage),
+            temperature=float(metadata["temperature"]),
+            l2=float(metadata["l2"]),
+            feature_kind=str(metadata["feature_kind"]),
+            decay=None if metadata["decay"] is None else float(metadata["decay"]),
+            lags=int(metadata["lags"]),
+            stored_parameters=int(metadata["stored_parameters"]),
+            effective_parameters=int(metadata["effective_parameters"]),
+            artifact_digest=str(metadata["artifact_digest"]),
+            _empirical_field=_FrozenArray.from_array(np.asarray(arrays["empirical_field"])),
+            _weight=_FrozenArray.from_array(np.asarray(arrays["weight"])),
+            _bias=_FrozenArray.from_array(np.asarray(arrays["bias"])),
+            _token=_FREEZE_TOKEN,
+        )
+        expected_predictor = {
+            "stationary_field": "stationary_field",
+            "ewma": "ewma",
+            "logistic_ar": "lagged",
+        }
+        if (
+            arm.name not in expected_predictor
+            or arm.predictor_type != expected_predictor[arm.name]
+            or arm.fit_policy_digest != BASELINE_FIT_POLICY_DIGEST
+        ):
+            raise ValueError("baseline predictor evidence has a noncanonical identity or policy")
+        materialized_count = _baseline_parameter_count(
+            StationaryForecaster(
+                arm.scalar_probability,
+                arm.empirical_field,
+                arm.shrinkage,
+                arm.temperature,
+            )
+            if arm.name == "stationary_field"
+            else CircularLogisticForecaster(
+                arm.weight,
+                arm.bias,
+                arm.l2,
+                arm.temperature,
+                arm.feature_kind,
+                arm.decay,
+                arm.lags,
+            )
+        )
+        if (
+            arm.stored_parameters != materialized_count
+            or arm.effective_parameters != materialized_count
+        ):
+            raise ValueError("baseline predictor parameter accounting is invalid")
+    else:
+        raise ValueError("frozen predictor kind is invalid")
+    try:
+        _validate_arm_integrity(arm)
+    except ValueError as error:
+        raise ValueError("frozen predictor evidence integrity check failed") from error
+    return arm
+
+
+def validate_frozen_arm_calibration(
+    arm: FrozenArm,
+    calibration: SequenceRoleBatch,
+    *,
+    partition: RolePartition,
+) -> None:
+    """Re-fit calibration from source labels and verify the persisted temperature/digest."""
+
+    _validate_arm_integrity(arm)
+    model = arm.materialize()
+    parameter = next(model.parameters())
+    syndromes = calibration.syndromes.to(dtype=parameter.dtype, device="cpu")
+    state = model.initial_state(syndromes.shape[0], device="cpu", dtype=parameter.dtype)
+    logits: list[torch.Tensor] = []
+    with torch.no_grad():
+        for round_index in range(syndromes.shape[1]):
+            logits.append(model.readout(model.temporal.predict(state)))
+            state = model._update(state, syndromes[:, round_index])
+    training_result = CausalTrainingResult(
+        model_state_dict=model.state_dict(),
+        best_epoch=0,
+        best_validation_nll=math.nan,
+        training_nll_history=(),
+        validation_nll_history=(),
+        partition_digest=partition.digest,
+        regime=partition.regime,
+        train_content_digest=partition.train_content_digest,
+        validation_content_digest=partition.validation_content_digest,
+        calibration_content_digest=partition.calibration_content_digest,
+    )
+    temperature = fit_calibration_temperature(
+        torch.stack(logits, dim=1),
+        calibration,
+        partition=partition,
+        training_result=training_result,
+    )
+    if not math.isclose(temperature, arm.calibration_temperature, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("learned predictor calibration temperature disagrees with exact refit")
+    expected_digest = _calibration_digest(
+        calibration,
+        temperature=temperature,
+        partition_digest=partition.digest,
+        checkpoint_sha256=arm.checkpoint_sha256,
+    )
+    if expected_digest != arm.calibration_digest:
+        raise ValueError("learned predictor calibration digest disagrees with exact refit")
 
 
 def _validate_fitted_baseline(name: str, model: object, split: ForecastSplit) -> None:
@@ -1113,10 +1431,13 @@ class ArmEvaluation:
     latency_p50_seconds: float
     latency_p95_seconds: float
     latency_p99_seconds: float
+    estimator_batch_seconds: float
     expected_calibration_error: float
     reliability: tuple[Mapping[str, object], ...]
     logical_failures: np.ndarray
     syndrome_valid: np.ndarray
+    priors: np.ndarray
+    corrections: np.ndarray
     stored_parameters: int
     effective_parameters: int
     partition_digest: str
@@ -1160,10 +1481,13 @@ def _arm_evaluation_integrity(arm: ArmEvaluation) -> str:
             "latency_p50_seconds": arm.latency_p50_seconds,
             "latency_p95_seconds": arm.latency_p95_seconds,
             "latency_p99_seconds": arm.latency_p99_seconds,
+            "estimator_batch_seconds": arm.estimator_batch_seconds,
             "expected_calibration_error": arm.expected_calibration_error,
             "reliability": [dict(row) for row in arm.reliability],
             "logical_failures": _numpy_digest(arm.logical_failures),
             "syndrome_valid": _numpy_digest(arm.syndrome_valid),
+            "priors": _numpy_digest(arm.priors),
+            "corrections": _numpy_digest(arm.corrections),
             "stored_parameters": arm.stored_parameters,
             "effective_parameters": arm.effective_parameters,
             "partition_digest": arm.partition_digest,
@@ -1300,7 +1624,9 @@ def evaluate_causal_arms(
     )
     evaluated: dict[str, ArmEvaluation] = {}
     for arm in arms:
+        estimator_started = perf_counter()
         probabilities = arm.predict(batch.syndromes, sequence_ids=batch.sequence_ids)
+        estimator_batch_seconds = perf_counter() - estimator_started
         priors = _as_flat(probabilities).astype(np.float64)
         if priors.shape != errors.shape or not np.all(
             np.isfinite(priors) & (priors > 0.0) & (priors < 0.5)
@@ -1382,10 +1708,13 @@ def evaluate_causal_arms(
             latency_p50_seconds=float(np.quantile(decoded.latency_seconds, 0.50)),
             latency_p95_seconds=float(np.quantile(decoded.latency_seconds, 0.95)),
             latency_p99_seconds=float(np.quantile(decoded.latency_seconds, 0.99)),
+            estimator_batch_seconds=estimator_batch_seconds,
             expected_calibration_error=calibration_error,
             reliability=reliability,
             logical_failures=_readonly_copy(failures),
             syndrome_valid=_readonly_copy(recomputed_valid),
+            priors=_readonly_copy(priors),
+            corrections=_readonly_copy(decoded.corrections),
             stored_parameters=arm.stored_parameters,
             effective_parameters=arm.effective_parameters,
             partition_digest=arm.partition_digest,
@@ -1613,8 +1942,11 @@ __all__ = [
     "ReducedProgression",
     "evaluate_causal_arms",
     "evaluate_oracle_sanity",
+    "export_frozen_predictor",
     "fit_select_observation_baselines",
     "freeze_learned_arm",
     "reduced_factor_diagnostics",
     "reduced_progression",
+    "restore_frozen_predictor",
+    "validate_frozen_arm_calibration",
 ]
