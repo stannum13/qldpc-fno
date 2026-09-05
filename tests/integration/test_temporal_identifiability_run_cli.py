@@ -1109,6 +1109,103 @@ def test_deadline_crossed_by_development_directory_publication_replaces_verdict(
     assert json.loads((output / "manifest.json").read_text()) == result
 
 
+def test_failed_abort_publication_restores_the_completed_development_artifact(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _cli_module()
+    sequences = tmp_path / "development-sequences"
+    _write_sequences(sequences, ("train", "validation", "calibration"))
+    output = tmp_path / "development"
+    state: dict[str, object] = {"expired": False, "completed_manifest": None}
+    original_replace = screen_module.os.replace
+
+    def fail_abort_publication(source, destination) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if destination_path == output and "-aborted-" in source_path.name:
+            raise OSError("injected abort publication failure")
+        original_replace(source, destination)
+        if destination_path == output and "-staging-" in source_path.name:
+            state["completed_manifest"] = (output / "manifest.json").read_bytes()
+            state["expired"] = True
+
+    monkeypatch.setattr(screen_module.os, "replace", fail_abort_publication)
+    dependencies = replace(
+        _dependencies([]),
+        process_time=lambda: 21_601.0 if state["expired"] else 0.0,
+    )
+
+    with pytest.raises(OSError, match="injected abort publication failure"):
+        module.run(
+            [
+                "development",
+                "--config",
+                str(CONFIG_PATH),
+                "--sequences",
+                str(sequences),
+                "--out",
+                str(output),
+            ],
+            dependencies=dependencies,
+        )
+
+    assert (output / "manifest.json").read_bytes() == state["completed_manifest"]
+    assert json.loads((output / "manifest.json").read_text())["status"] == "complete"
+    assert len(list(output.rglob("*.npz"))) > 0
+
+
+def test_deadline_replacement_refuses_a_concurrent_complete_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _cli_module()
+    sequences = tmp_path / "development-sequences"
+    _write_sequences(sequences, ("train", "validation", "calibration"))
+    output = tmp_path / "development"
+    displaced_original = tmp_path / "original-development"
+    state: dict[str, object] = {
+        "published": False,
+        "swapped": False,
+        "unrelated": None,
+    }
+    original_replace = screen_module.os.replace
+
+    def publish_then_mark(source, destination) -> None:
+        original_replace(source, destination)
+        if Path(destination) == output and "-staging-" in Path(source).name:
+            state["published"] = True
+
+    def process_time() -> float:
+        if state["published"] and not state["swapped"]:
+            original_replace(output, displaced_original)
+            unrelated = json.loads((displaced_original / "manifest.json").read_text())
+            unrelated["owner"] = "concurrent-run-with-copied-internal-identities"
+            output.mkdir()
+            (output / "manifest.json").write_text(json.dumps(unrelated, sort_keys=True))
+            state["swapped"] = True
+            state["unrelated"] = unrelated
+        return 21_601.0 if state["published"] else 0.0
+
+    monkeypatch.setattr(screen_module.os, "replace", publish_then_mark)
+    dependencies = replace(_dependencies([]), process_time=process_time)
+
+    with pytest.raises(ValueError, match="identity|just-published|completed"):
+        module.run(
+            [
+                "development",
+                "--config",
+                str(CONFIG_PATH),
+                "--sequences",
+                str(sequences),
+                "--out",
+                str(output),
+            ],
+            dependencies=dependencies,
+        )
+
+    assert json.loads((output / "manifest.json").read_text()) == state["unrelated"]
+    assert json.loads((displaced_original / "manifest.json").read_text())["status"] == "complete"
+
+
 def test_deadline_crossed_by_confirmation_directory_publication_replaces_verdict(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

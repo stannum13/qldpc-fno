@@ -850,7 +850,7 @@ def _abort(
     stages: Mapping[str, str],
     limit: float,
     elapsed: float,
-    replace_completed: bool = False,
+    expected_completed: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     root: dict[str, object] = {
         "schema_version": _SCHEMA_VERSION,
@@ -870,29 +870,82 @@ def _abort(
         "decision": None,
     }
     root["identity_sha256"] = _digest({key: root[key] for key in root})
-    if output_dir.exists() and not replace_completed:
+    if output_dir.exists() and expected_completed is None:
         raise FileExistsError("refusing to overwrite an existing run output")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-aborted-", dir=output_dir.parent))
     displaced: Path | None = None
+    abort_confirmed = False
+
+    def require_expected_completed(path: Path) -> None:
+        manifest_path = path / "manifest.json"
+        published = _load_json(manifest_path, "published run manifest")
+        expected_fields = {"identity_sha256", "content_sha256", "manifest_sha256"}
+        if (
+            expected_completed is None
+            or set(expected_completed) != expected_fields
+            or published.get("complete") is not True
+            or published.get("status") != "complete"
+            or any(
+                published.get(key) != expected_completed[key]
+                for key in ("identity_sha256", "content_sha256")
+            )
+            or sha256_file(manifest_path) != expected_completed["manifest_sha256"]
+        ):
+            raise ValueError("deadline replacement target is not the exact just-published run")
+
     try:
         _write_atomic(staging / "manifest.json", _canonical_json(root))
-        if replace_completed:
-            published = _load_json(output_dir / "manifest.json", "published run manifest")
-            if published.get("complete") is not True or published.get("status") != "complete":
-                raise ValueError("deadline replacement requires the just-published complete run")
+        if expected_completed is not None:
+            require_expected_completed(output_dir)
             displaced = Path(
                 tempfile.mkdtemp(prefix=f".{output_dir.name}-expired-", dir=output_dir.parent)
             )
             displaced.rmdir()
             os.replace(output_dir, displaced)
+            require_expected_completed(displaced)
         os.replace(staging, output_dir)
+        published_abort = _load_json(output_dir / "manifest.json", "deadline abort manifest")
+        published_files = {
+            str(path.relative_to(output_dir)) for path in output_dir.rglob("*") if path.is_file()
+        }
+        if published_abort != root or published_files != {"manifest.json"}:
+            raise ValueError("deadline abort publication failed validation")
+        abort_confirmed = True
         if displaced is not None:
             shutil.rmtree(displaced)
-    except BaseException:
+            displaced = None
+    except BaseException as publication_error:
         shutil.rmtree(staging, ignore_errors=True)
-        if displaced is not None:
-            shutil.rmtree(displaced, ignore_errors=True)
+        if displaced is not None and not abort_confirmed:
+            if output_dir.exists():
+                try:
+                    current = _load_json(output_dir / "manifest.json", "failed abort manifest")
+                except TypeError, ValueError:
+                    current = None
+                if current == root:
+                    try:
+                        shutil.rmtree(output_dir)
+                    except OSError as cleanup_error:
+                        raise RuntimeError(
+                            "abort publication failed and its invalid output could not be "
+                            f"removed; completed artifact retained at {displaced}, "
+                            f"output path={output_dir}, cleanup error={cleanup_error!r}"
+                        ) from publication_error
+                else:
+                    raise RuntimeError(
+                        "abort publication failed; completed artifact retained at "
+                        f"{displaced} because output path {output_dir} is occupied"
+                    ) from publication_error
+            try:
+                os.replace(displaced, output_dir)
+                displaced = None
+            except OSError as restoration_error:
+                raise RuntimeError(
+                    "abort publication failed and completed artifact restoration failed; "
+                    f"retained path={displaced}, output path={output_dir}, "
+                    f"restoration error={restoration_error!r}"
+                ) from publication_error
         raise
     return root
 
@@ -990,6 +1043,7 @@ def run_development(
     config_payload: dict[str, object] | None = None
     staging: Path | None = None
     published_complete = False
+    completed_identity: dict[str, str] | None = None
     try:
         (
             _,
@@ -1096,6 +1150,11 @@ def run_development(
         root["identity_sha256"] = _digest(_identity_input(root))
         root["content_sha256"] = _digest(_content_input(root))
         _write_atomic(staging / "manifest.json", _canonical_json(root))
+        completed_identity = {
+            "identity_sha256": str(root["identity_sha256"]),
+            "content_sha256": str(root["content_sha256"]),
+            "manifest_sha256": sha256_file(staging / "manifest.json"),
+        }
         deadline.check()
         os.replace(staging, output_dir)
         staging = None
@@ -1113,7 +1172,7 @@ def run_development(
             stages=stages,
             limit=deadline.limit,
             elapsed=deadline.elapsed(),
-            replace_completed=published_complete,
+            expected_completed=completed_identity if published_complete else None,
         )
     except BaseException:
         if staging is not None:
@@ -2020,6 +2079,7 @@ def run_confirmation(
     config_payload: dict[str, object] | None = None
     staging: Path | None = None
     published_complete = False
+    completed_identity: dict[str, str] | None = None
     try:
         (
             _,
@@ -2189,6 +2249,11 @@ def run_confirmation(
         root["identity_sha256"] = _digest(_identity_input(root))
         root["content_sha256"] = _digest(_content_input(root))
         _write_atomic(staging / "manifest.json", _canonical_json(root))
+        completed_identity = {
+            "identity_sha256": str(root["identity_sha256"]),
+            "content_sha256": str(root["content_sha256"]),
+            "manifest_sha256": sha256_file(staging / "manifest.json"),
+        }
         deadline.check()
         os.replace(staging, output_dir)
         staging = None
@@ -2206,7 +2271,7 @@ def run_confirmation(
             stages=stages,
             limit=deadline.limit,
             elapsed=deadline.elapsed(),
-            replace_completed=published_complete,
+            expected_completed=completed_identity if published_complete else None,
         )
     except BaseException:
         if staging is not None:
