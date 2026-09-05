@@ -165,6 +165,36 @@ def test_grid_bayes_uses_the_exact_small_grid_likelihood_and_forecast_then_updat
     )
 
 
+def test_grid_bayes_first_informative_lag_is_syndrome_one_when_g_zero_is_known() -> None:
+    from qldpc_fno.identifiability.filters import forecast_grid_bayes
+
+    config = _config()
+    checks = _checks()
+    histories = {
+        "baseline": _history([[0, 0, 0], [0, 0, 0], [0, 0, 0]]),
+        "changed_zero": _history([[1, 1, 1], [0, 0, 0], [0, 0, 0]]),
+        "changed_one": _history([[0, 0, 0], [1, 1, 1], [0, 0, 0]]),
+    }
+    forecasts = {
+        name: forecast_grid_bayes(
+            history,
+            checks,
+            config,
+            interior_cells=8,
+            process_cpu_deadline=_deadline(config),
+        ).probabilities
+        for name, history in histories.items()
+    }
+
+    # g[0] is the exact known point zero, so observing syndrome_0 cannot update
+    # it.  The round-one forecast is consequently identical for either value.
+    np.testing.assert_array_equal(forecasts["baseline"], forecasts["changed_zero"])
+    assert forecasts["baseline"][1] == forecasts["changed_one"][1]
+    # syndrome_1 observes the uncertain g[1] state after q_hat_1 is emitted and
+    # therefore changes the next forecast, q_hat_2.
+    assert forecasts["baseline"][2] != forecasts["changed_one"][2]
+
+
 def test_latent_history_integrates_only_the_previous_exact_state() -> None:
     from qldpc_fno.identifiability.filters import forecast_latent_history
 
