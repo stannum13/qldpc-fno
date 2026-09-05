@@ -207,6 +207,8 @@ class BaselineConfig:
     arm_aliases: tuple[tuple[str, str], ...]
 
     def validate(self) -> None:
+        if type(self.empirical_stationary_shrinkage) is not tuple:
+            raise ValueError("baselines.empirical_stationary_shrinkage must be an immutable tuple")
         shrinkage = tuple(
             _number(value, f"baselines.empirical_stationary_shrinkage[{index}]")
             for index, value in enumerate(self.empirical_stationary_shrinkage)

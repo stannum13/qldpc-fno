@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -182,6 +182,14 @@ def test_loader_rejects_boolean_empirical_stationary_shrinkage(
 
     with pytest.raises(ValueError, match="finite number"):
         load_identifiability_config(_write(tmp_path, canonical_payload))
+
+
+def test_baseline_config_rejects_mutable_empirical_stationary_shrinkage() -> None:
+    config = load_identifiability_config(CONFIG_PATH)
+    mutable = replace(config.baselines, empirical_stationary_shrinkage=[1.0])
+
+    with pytest.raises(ValueError, match="immutable tuple"):
+        mutable.validate()
 
 
 @pytest.mark.parametrize(
