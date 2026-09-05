@@ -1066,6 +1066,124 @@ def test_deadline_crossed_while_finalizing_cannot_publish_a_verdict(tmp_path: Pa
     }
 
 
+def test_deadline_crossed_by_development_directory_publication_replaces_verdict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _cli_module()
+    sequences = tmp_path / "development-sequences"
+    _write_sequences(sequences, ("train", "validation", "calibration"))
+    output = tmp_path / "development"
+    state = {"expired": False}
+    original_replace = screen_module.os.replace
+
+    def replace_then_expire(source, destination) -> None:
+        original_replace(source, destination)
+        if Path(destination) == output and "-staging-" in Path(source).name:
+            state["expired"] = True
+
+    monkeypatch.setattr(screen_module.os, "replace", replace_then_expire)
+    dependencies = replace(
+        _dependencies([]),
+        process_time=lambda: 21_601.0 if state["expired"] else 0.0,
+    )
+
+    result = module.run(
+        [
+            "development",
+            "--config",
+            str(CONFIG_PATH),
+            "--sequences",
+            str(sequences),
+            "--out",
+            str(output),
+        ],
+        dependencies=dependencies,
+    )
+
+    assert result["status"] == "aborted_no_verdict"
+    assert result["complete"] is False
+    assert result["decision"] is None
+    assert {str(path.relative_to(output)) for path in output.rglob("*") if path.is_file()} == {
+        "manifest.json"
+    }
+    assert json.loads((output / "manifest.json").read_text()) == result
+
+
+def test_deadline_crossed_by_confirmation_directory_publication_replaces_verdict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _cli_module()
+    development_sequences = tmp_path / "development-sequences"
+    _write_sequences(development_sequences, ("train", "validation", "calibration"))
+    dependencies = _dependencies([])
+    development = tmp_path / "development"
+    module.run(
+        [
+            "development",
+            "--config",
+            str(CONFIG_PATH),
+            "--sequences",
+            str(development_sequences),
+            "--out",
+            str(development),
+        ],
+        dependencies=dependencies,
+    )
+    approval = _approval(development)
+    test_sequences = tmp_path / "test-sequences"
+    _write_sequences(test_sequences, ("test",))
+    output = tmp_path / "confirmation"
+    state = {"expired": False}
+    original_replace = screen_module.os.replace
+
+    def replace_then_expire(source, destination) -> None:
+        original_replace(source, destination)
+        if Path(destination) == output and "-staging-" in Path(source).name:
+            state["expired"] = True
+
+    def non_go_inference(**_kwargs):
+        return {
+            "decision": {
+                "invalid_controls": (),
+                "limitation": None,
+                "outcome": "INCONCLUSIVE-OBSERVER-GAP",
+                "winning_arms": (),
+            }
+        }
+
+    monkeypatch.setattr(screen_module.os, "replace", replace_then_expire)
+    dependencies = replace(
+        dependencies,
+        inference=non_go_inference,
+        process_time=lambda: 21_601.0 if state["expired"] else 0.0,
+    )
+
+    result = module.run(
+        [
+            "confirmation",
+            "--config",
+            str(CONFIG_PATH),
+            "--sequences",
+            str(test_sequences),
+            "--out",
+            str(output),
+            "--development-record",
+            str(development),
+            "--approval",
+            str(approval),
+        ],
+        dependencies=dependencies,
+    )
+
+    assert result["status"] == "aborted_no_verdict"
+    assert result["complete"] is False
+    assert result["decision"] is None
+    assert {str(path.relative_to(output)) for path in output.rglob("*") if path.is_file()} == {
+        "manifest.json"
+    }
+    assert json.loads((output / "manifest.json").read_text()) == result
+
+
 def test_confirmation_verify_replays_development_before_test_and_result_access(
     tmp_path: Path,
 ) -> None:

@@ -850,6 +850,7 @@ def _abort(
     stages: Mapping[str, str],
     limit: float,
     elapsed: float,
+    replace_completed: bool = False,
 ) -> dict[str, object]:
     root: dict[str, object] = {
         "schema_version": _SCHEMA_VERSION,
@@ -869,15 +870,29 @@ def _abort(
         "decision": None,
     }
     root["identity_sha256"] = _digest({key: root[key] for key in root})
-    if output_dir.exists():
+    if output_dir.exists() and not replace_completed:
         raise FileExistsError("refusing to overwrite an existing run output")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}-aborted-", dir=output_dir.parent))
+    displaced: Path | None = None
     try:
         _write_atomic(staging / "manifest.json", _canonical_json(root))
+        if replace_completed:
+            published = _load_json(output_dir / "manifest.json", "published run manifest")
+            if published.get("complete") is not True or published.get("status") != "complete":
+                raise ValueError("deadline replacement requires the just-published complete run")
+            displaced = Path(
+                tempfile.mkdtemp(prefix=f".{output_dir.name}-expired-", dir=output_dir.parent)
+            )
+            displaced.rmdir()
+            os.replace(output_dir, displaced)
         os.replace(staging, output_dir)
+        if displaced is not None:
+            shutil.rmtree(displaced)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
+        if displaced is not None:
+            shutil.rmtree(displaced, ignore_errors=True)
         raise
     return root
 
@@ -974,6 +989,7 @@ def run_development(
     source_payload: dict[str, object] | None = None
     config_payload: dict[str, object] | None = None
     staging: Path | None = None
+    published_complete = False
     try:
         (
             _,
@@ -1083,6 +1099,8 @@ def run_development(
         deadline.check()
         os.replace(staging, output_dir)
         staging = None
+        published_complete = True
+        deadline.check()
         return root
     except ExperimentDeadlineExceeded:
         if staging is not None:
@@ -1095,6 +1113,7 @@ def run_development(
             stages=stages,
             limit=deadline.limit,
             elapsed=deadline.elapsed(),
+            replace_completed=published_complete,
         )
     except BaseException:
         if staging is not None:
@@ -2000,6 +2019,7 @@ def run_confirmation(
     source_payload: dict[str, object] | None = None
     config_payload: dict[str, object] | None = None
     staging: Path | None = None
+    published_complete = False
     try:
         (
             _,
@@ -2172,6 +2192,8 @@ def run_confirmation(
         deadline.check()
         os.replace(staging, output_dir)
         staging = None
+        published_complete = True
+        deadline.check()
         return root
     except ExperimentDeadlineExceeded:
         if staging is not None:
@@ -2184,6 +2206,7 @@ def run_confirmation(
             stages=stages,
             limit=deadline.limit,
             elapsed=deadline.elapsed(),
+            replace_completed=published_complete,
         )
     except BaseException:
         if staging is not None:
