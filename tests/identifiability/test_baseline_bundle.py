@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from qldpc_fno.identifiability.baseline_bundle import (
+    BundleManifest,
     FrozenEstimatorBundle,
     _syndrome_to_qubit_features,
     fit_development_bundle,
@@ -127,8 +128,15 @@ def test_empirical_stationary_is_raw_mean_over_scored_train_only(
     assert np.array_equal(stationary.empirical_field.reshape(-1), scored_train)
 
 
-def test_existing_fitters_use_sorted_first_minimum_tie_rule(
+@pytest.mark.parametrize(
+    ("score_improvement", "expected_decay", "expected_weight"),
+    [(0.5e-12, 0.5, 1.0), (2.0e-12, 0.8, 2.0)],
+)
+def test_existing_fitters_apply_exact_first_minimum_tie_boundary(
     monkeypatch: pytest.MonkeyPatch,
+    score_improvement: float,
+    expected_decay: float,
+    expected_weight: float,
 ) -> None:
     from qldpc_fno.temporal.baselines import fit_ewma
 
@@ -137,7 +145,12 @@ def test_existing_fitters_use_sorted_first_minimum_tie_rule(
     def tied_mapping(*args, **kwargs):
         nonlocal calls
         calls += 1
-        return np.full((1, 1, 1), calls), np.zeros(1), 1e-4, 1.0 - calls * 1e-13
+        return (
+            np.full((1, 1, 1), calls),
+            np.zeros(1),
+            1e-4,
+            1.0 - calls * score_improvement,
+        )
 
     monkeypatch.setattr("qldpc_fno.temporal.baselines._select_mapping", tied_mapping)
     values = np.zeros((1, 1, 1, 1), dtype=np.float64)
@@ -150,14 +163,14 @@ def test_existing_fitters_use_sorted_first_minimum_tie_rule(
         values,
         train_mask=mask,
         validation_mask=mask,
-        decays=(0.99, 0.5, 0.8),
+        decays=(0.8, 0.5),
         kernel_size=1,
         l2_grid=(1e-4,),
         max_iter=1,
     )
 
-    assert model.decay == 0.5
-    assert np.array_equal(model.weight, np.ones((1, 1, 1)))
+    assert model.decay == expected_decay
+    assert np.array_equal(model.weight, np.full((1, 1, 1), expected_weight))
 
 
 def test_baseline_geometry_losslessly_reshapes_raw_rings() -> None:
@@ -204,6 +217,45 @@ def test_safe_bundle_is_deterministic_numeric_non_pickle_payload(
     ).read_bytes()
     with np.load(tmp_path / "first" / "arrays.npz", allow_pickle=False) as arrays:
         assert all(arrays[name].dtype != object for name in arrays.files)
+
+
+def test_bundle_publication_failure_before_rename_leaves_no_final_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, partitions: DevelopmentPartitions
+) -> None:
+    bundle = _bundle(monkeypatch, partitions)
+    destination = tmp_path / "bundle"
+
+    def fail_before_rename(source: object, target: object) -> None:
+        assert Path(target) == destination
+        assert Path(source).is_dir()
+        assert not destination.exists()
+        raise OSError("injected pre-rename failure")
+
+    monkeypatch.setattr("qldpc_fno.identifiability.baseline_bundle.os.replace", fail_before_rename)
+
+    with pytest.raises(OSError, match="pre-rename"):
+        write_frozen_bundle(destination, bundle)
+
+    assert not destination.exists()
+    assert not tuple(tmp_path.glob(".bundle.*"))
+
+
+def test_bundle_manifest_rejects_invalid_and_forged_schema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, partitions: DevelopmentPartitions
+) -> None:
+    with pytest.raises(ValueError, match="schema"):
+        BundleManifest(2, "a" * 64, "b" * 64, "c" * 64, ())
+
+    bundle = _bundle(monkeypatch, partitions)
+    path = tmp_path / "bundle"
+    valid = write_frozen_bundle(path, bundle)
+    forged = BundleManifest.__new__(BundleManifest)
+    for field in dataclasses.fields(valid):
+        object.__setattr__(forged, field.name, getattr(valid, field.name))
+    object.__setattr__(forged, "schema_version", 2)
+
+    with pytest.raises(ValueError, match="schema"):
+        read_verified_bundle(path, forged)
 
 
 @pytest.mark.parametrize("missing", ["metadata.json", "arrays.npz"])

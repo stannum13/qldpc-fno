@@ -6,6 +6,8 @@ import math
 import numpy as np
 import pytest
 
+from qldpc_fno.codes.lifted_product import build_self_lifted_product
+from qldpc_fno.codes.seeds import PAPER_LP_3_7_16
 from qldpc_fno.identifiability.endpoints import (
     EndpointBatch,
     EndpointSequence,
@@ -16,7 +18,7 @@ from qldpc_fno.identifiability.endpoints import (
     retained_syndrome_nll_by_sequence,
 )
 from qldpc_fno.identifiability.filters import ForecastResult
-from qldpc_fno.identifiability.observation import DisjointChecks
+from qldpc_fno.identifiability.observation import DisjointChecks, greedy_disjoint_rows
 from qldpc_fno.identifiability.types import (
     ContemporaneousOracleInput,
     DeployableHistory,
@@ -27,14 +29,7 @@ from qldpc_fno.identifiability.types import (
 
 
 def _checks() -> DisjointChecks:
-    return DisjointChecks(
-        np.array([0, 1]),
-        (np.array([0, 1]), np.array([2])),
-        np.array([2, 1]),
-        np.array([0, 1, 2]),
-        "greedy_disjoint_rows/v1",
-        "a" * 64,
-    )
+    return greedy_disjoint_rows(build_self_lifted_product(PAPER_LP_3_7_16).hx)
 
 
 def _identity(
@@ -201,28 +196,32 @@ def test_latent_nmse_clips_only_after_mean_log_odds_mapping() -> None:
 
 
 def test_retained_syndrome_nll_uses_predictive_parity_probabilities() -> None:
-    syndromes = np.array([[0, 1], [1, 0]], dtype=np.uint8)
-    q_hat = np.array([[0.1, 0.1, 0.1], [0.2, 0.2, 0.2]])
+    checks = _checks()
+    syndromes = np.zeros((2, 945), dtype=np.uint8)
+    syndromes[1, checks.row_indices[0]] = 1
+    q_hat = np.array([0.1, 0.2])
     sequence = _sequence(
-        np.full_like(q_hat, 0.1),
+        np.full((2, 2610), 0.1),
         q_hat,
         np.array([False, True]),
         syndromes=syndromes,
     )
 
-    observed = retained_syndrome_nll_by_sequence(_batch(sequence), _checks())
+    observed = retained_syndrome_nll_by_sequence(_batch(sequence), checks)
 
-    parity = np.array([(1 - (1 - 2 * 0.2) ** 2) / 2, 0.2])
-    expected = np.array([-np.log(parity[0]) - np.log1p(-parity[1])]) / 2
+    parity = (1 - (1 - 2 * 0.2) ** 10) / 2
+    expected = np.array(
+        [-np.log(parity) - (len(checks.row_indices) - 1) * np.log1p(-parity)]
+    ) / len(checks.row_indices)
     assert np.allclose(observed, expected)
 
 
 def test_retained_syndrome_nll_accepts_typed_scalar_forecast() -> None:
     sequence = _sequence(
-        np.full((2, 3), 0.1),
+        np.full((2, 2610), 0.1),
         np.array([0.1, 0.2]),
         np.array([False, True]),
-        syndromes=np.array([[1, 0], [0, 0]], dtype=np.uint8),
+        syndromes=np.zeros((2, 945), dtype=np.uint8),
     )
 
     observed = retained_syndrome_nll_by_sequence(_batch(sequence), _checks())
@@ -238,6 +237,69 @@ def test_retained_syndrome_nll_rejects_noncanonical_support_container() -> None:
         retained_syndrome_nll_by_sequence(
             _batch(sequence), ((0, 1), (0,))  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "matrix_sha256",
+        "algorithm_version",
+        "row_indices",
+        "supports",
+        "weights",
+        "covered_qubits",
+    ],
+)
+def test_retained_syndrome_nll_rejects_every_forged_canonical_field(field: str) -> None:
+    canonical = _checks()
+    forged = DisjointChecks(
+        canonical.row_indices,
+        canonical.supports,
+        canonical.weights,
+        canonical.covered_qubits,
+        canonical.algorithm_version,
+        canonical.matrix_sha256,
+    )
+    if field == "matrix_sha256":
+        replacement: object = "0" * 64
+    elif field == "algorithm_version":
+        replacement = "greedy_disjoint_rows/forged"
+    elif field == "row_indices":
+        replacement = canonical.row_indices.tolist()
+    elif field == "supports":
+        replacement = (canonical.supports[0][::-1].copy(), *canonical.supports[1:])
+    elif field == "weights":
+        replacement = canonical.weights + np.arange(len(canonical.weights)) % 2
+    else:
+        replacement = canonical.covered_qubits[::-1].copy()
+    object.__setattr__(forged, field, replacement)
+    sequence = _sequence(
+        np.full((1, 2610), 0.1),
+        np.array([0.1]),
+        np.array([True]),
+        syndromes=np.zeros((1, 945), dtype=np.uint8),
+    )
+
+    with pytest.raises(ValueError, match="canonical"):
+        retained_syndrome_nll_by_sequence(_batch(sequence), forged)
+
+
+@pytest.mark.parametrize(
+    ("syndrome_width", "qubit_width"),
+    [(944, 2610), (945, 2609)],
+)
+def test_retained_syndrome_nll_requires_canonical_geometry(
+    syndrome_width: int, qubit_width: int
+) -> None:
+    sequence = _sequence(
+        np.full((1, qubit_width), 0.1),
+        np.array([0.1]),
+        np.array([True]),
+        syndromes=np.zeros((1, syndrome_width), dtype=np.uint8),
+    )
+
+    with pytest.raises(ValueError, match="945.*2610"):
+        retained_syndrome_nll_by_sequence(_batch(sequence), _checks())
 
 
 def test_calibration_uses_exact_internal_edge_closure_and_latent_targets() -> None:

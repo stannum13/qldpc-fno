@@ -5,11 +5,14 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
+from qldpc_fno.codes.lifted_product import build_self_lifted_product
+from qldpc_fno.codes.seeds import PAPER_LP_3_7_16
 from qldpc_fno.identifiability.filters import ForecastResult
-from qldpc_fno.identifiability.observation import DisjointChecks
+from qldpc_fno.identifiability.observation import DisjointChecks, greedy_disjoint_rows
 from qldpc_fno.identifiability.types import (
     ContemporaneousOracleInput,
     DeployableHistory,
@@ -285,32 +288,66 @@ def _supports(value: Iterable[Iterable[int]], qubits: int) -> tuple[np.ndarray, 
     return supports
 
 
+@lru_cache(maxsize=1)
+def _canonical_disjoint_checks() -> DisjointChecks:
+    """Derive the retained-row identity once from a fresh canonical code matrix."""
+    canonical_code = build_self_lifted_product(PAPER_LP_3_7_16)
+    return greedy_disjoint_rows(canonical_code.hx)
+
+
+def _same_array(left: object, right: np.ndarray) -> bool:
+    return (
+        type(left) is np.ndarray
+        and left.dtype == right.dtype
+        and left.shape == right.shape
+        and np.array_equal(left, right)
+    )
+
+
+def _require_canonical_checks(checks: object) -> DisjointChecks:
+    if type(checks) is not DisjointChecks:
+        raise TypeError("retained NLL requires the exact DisjointChecks type")
+    canonical = _canonical_disjoint_checks()
+    same_supports = (
+        type(checks.supports) is tuple
+        and len(checks.supports) == len(canonical.supports)
+        and all(
+            _same_array(actual, expected)
+            for actual, expected in zip(checks.supports, canonical.supports, strict=True)
+        )
+    )
+    if not (
+        checks.matrix_sha256 == canonical.matrix_sha256
+        and checks.algorithm_version == canonical.algorithm_version
+        and _same_array(checks.row_indices, canonical.row_indices)
+        and same_supports
+        and _same_array(checks.weights, canonical.weights)
+        and _same_array(checks.covered_qubits, canonical.covered_qubits)
+    ):
+        raise ValueError("retained NLL checks must exactly match fresh canonical Hx")
+    return canonical
+
+
 def retained_syndrome_nll_by_sequence(
     batch: EndpointBatch, checks: DisjointChecks
 ) -> np.ndarray:
     """Mean predictive NLL for the exact independent retained syndrome rows."""
     checked = _require_batch(batch)
-    if type(checks) is not DisjointChecks:
-        raise TypeError("retained NLL requires the exact DisjointChecks type")
-    if not checks.is_pairwise_disjoint:
-        raise ValueError("retained NLL requires pairwise-disjoint retained checks")
-    if (
-        len(checks.row_indices) == 0
-        or np.any(checks.row_indices < 0)
-        or np.any(np.diff(checks.row_indices) <= 0)
-    ):
-        raise ValueError("retained check row indices must be nonempty and strictly ascending")
+    canonical_checks = _require_canonical_checks(checks)
 
     results = np.empty(len(checked.sequences), dtype=np.float64)
     for sequence_index, sequence in enumerate(checked.sequences):
-        if np.any(checks.row_indices >= sequence.observed.syndromes.shape[1]):
-            raise ValueError("retained check row indices are outside syndrome geometry")
+        if (
+            sequence.observed.syndromes.shape[1] != 945
+            or sequence.latent_probabilities.probabilities.shape[1] != 2610
+        ):
+            raise ValueError("retained NLL requires canonical 945-check and 2610-qubit geometry")
         predicted = _forecast_field(sequence)
-        rows = _supports(checks.supports, predicted.shape[1])
-        if len(rows) != len(checks.row_indices):
+        rows = _supports(canonical_checks.supports, predicted.shape[1])
+        if len(rows) != len(canonical_checks.row_indices):
             raise ValueError("retained syndrome rows and supports must agree")
         mask = sequence.observed.scored_mask
-        observed = sequence.observed.syndromes[mask][:, checks.row_indices]
+        observed = sequence.observed.syndromes[mask][:, canonical_checks.row_indices]
         total = 0.0
         for row_index, support in enumerate(rows):
             field = predicted[mask][:, support]
