@@ -363,8 +363,8 @@ decode_bplsd_prior_batch(
 
 **Files:**
 
-- Create: `experiments/18_generate_causal_sequences.py`
-- Create: `experiments/19_run_causal_factor_screen.py`
+- Create: `experiments/19_generate_causal_sequences.py`
+- Create: `experiments/20_run_causal_factor_screen.py`
 - Create: `tests/integration/test_causal_screen_cli.py`
 
 - [ ] Emit per-round outcomes, sequence summaries, causal-audit result, parameter
@@ -378,6 +378,9 @@ decode_bplsd_prior_batch(
 - [ ] Commit as `feat: orchestrate reduced causal screen`.
 - [ ] Independent QEC reviewer reads code, config, logs, seeds, and artifacts in
   the user's ten-part review order.
+
+The causal CLI numbering starts at 19 because experiment 18 is already the
+accuracy-campaign summarizer on the integrated branch.
 
 ---
 
