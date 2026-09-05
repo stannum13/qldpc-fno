@@ -276,8 +276,9 @@ def _single_grid_bayes(
     for index in range(1, rounds):
         probabilities[index] = integrate_probability(grid, prior)
         states[index] = float(prior @ grid.states)
-        posterior = _log_posterior_update(prior, observations[index], checks, config, grid)
-        prior = transition_distribution(grid, posterior)
+        if index < rounds - 1:
+            posterior = _log_posterior_update(prior, observations[index], checks, config, grid)
+            prior = transition_distribution(grid, posterior)
     return ForecastResult("grid_bayes", probabilities, states, grid.interior_cells)
 
 

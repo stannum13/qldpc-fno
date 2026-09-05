@@ -195,6 +195,49 @@ def test_grid_bayes_first_informative_lag_is_syndrome_one_when_g_zero_is_known()
     assert forecasts["baseline"][2] != forecasts["changed_one"][2]
 
 
+def test_grid_bayes_skips_terminal_update_and_transition_without_changing_forecasts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qldpc_fno.identifiability import filters as filters_module
+    from qldpc_fno.identifiability.filters import forecast_grid_bayes
+    from qldpc_fno.identifiability.grid import ExperimentDeadlineExceeded
+
+    config = _config()
+    checks = _checks()
+    history = _history([[0, 0, 0], [1, 0, 1], [0, 1, 0], [1, 1, 1]])
+    arguments = {
+        "interior_cells": 8,
+        "process_cpu_deadline": _deadline(config),
+    }
+    expected = forecast_grid_bayes(history, checks, config, **arguments)
+    real_update = filters_module._log_posterior_update
+    real_transition = filters_module.transition_distribution
+    updated_syndromes: list[np.ndarray] = []
+    transition_calls = 0
+
+    def recording_update(prior, syndrome, *args):
+        updated_syndromes.append(syndrome.copy())
+        return real_update(prior, syndrome, *args)
+
+    def terminal_deadline_transition(grid, posterior):
+        nonlocal transition_calls
+        transition_calls += 1
+        if transition_calls == history.syndromes.shape[0] - 1:
+            raise ExperimentDeadlineExceeded("deadline reached after final forecast")
+        return real_transition(grid, posterior)
+
+    monkeypatch.setattr(filters_module, "_log_posterior_update", recording_update)
+    monkeypatch.setattr(filters_module, "transition_distribution", terminal_deadline_transition)
+
+    actual = forecast_grid_bayes(history, checks, config, **arguments)
+
+    np.testing.assert_array_equal(actual.probabilities, expected.probabilities)
+    np.testing.assert_array_equal(actual.state_estimates, expected.state_estimates)
+    assert transition_calls == history.syndromes.shape[0] - 2
+    assert len(updated_syndromes) == history.syndromes.shape[0] - 2
+    np.testing.assert_array_equal(updated_syndromes, history.syndromes[1:-1])
+
+
 def test_latent_history_integrates_only_the_previous_exact_state() -> None:
     from qldpc_fno.identifiability.filters import forecast_latent_history
 
