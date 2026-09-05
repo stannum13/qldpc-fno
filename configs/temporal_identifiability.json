@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "artifact_label": "confirmatory_gate",
+  "regimes": ["stationary_iid", "temporal_uniform"],
+  "code": {
+    "name": "lp_3_7_16",
+    "ell": 45,
+    "n": 2610,
+    "k": 744,
+    "distance_upper_bound": 16,
+    "hx_sha256": "fc685627e7a7139b6af9c12187879a02f19c46598fe99a9be816f58d4627ead8",
+    "hz_sha256": "82b536419e91a3c877685d6ab347810878a46dfbff76373d5a02b160bb8d2ecb"
+  },
+  "splits": {"train": 8, "validation": 8, "calibration": 8, "test": 64},
+  "rounds": {"burn_in": 64, "scored": 128},
+  "dynamics": {
+    "base_probability": 0.0375,
+    "ar_coefficient": 0.97,
+    "innovation_std": 0.08,
+    "clip": 1.20,
+    "probability_clip": [0.00001, 0.25]
+  },
+  "grid": {
+    "interior_cells": 2048,
+    "doubled_interior_cells": 4096,
+    "open_loop_interior_cells": 4096,
+    "convergence_tolerance": 0.000025
+  },
+  "fisher": {
+    "draws": 10000,
+    "draw_law": "stationary_normal_then_clip",
+    "finite_difference_step": 0.000001,
+    "absolute_tolerance": 0.00000001,
+    "relative_tolerance": 0.000001
+  },
+  "inference": {
+    "delta_nll": 0.00025,
+    "bootstrap_draws": 10000,
+    "one_sided_alpha": 0.05,
+    "two_sided_lower_quantile": 0.025,
+    "two_sided_upper_quantile": 0.975,
+    "holm_alpha": 0.05,
+    "nmse_denominator": 0.1082910321489001,
+    "calibration_bins": 10,
+    "calibration_range": [0.00001, 0.25]
+  },
+  "baselines": {
+    "empirical_stationary_shrinkage": [1.0],
+    "ewma_decays": [0.5, 0.8, 0.9, 0.97, 0.99],
+    "ewma_kernel": 5,
+    "logistic_lags": 32,
+    "logistic_kernel": 3,
+    "logistic_l2": [0.0001, 0.001, 0.01, 0.1],
+    "lbfgs_max_iter": 500,
+    "tie_rule": "sorted_grid_first_minimum",
+    "tie_tolerance": 0.000000000001,
+    "calibration": "identity",
+    "arm_aliases": {
+      "known_marginal": "known_marginal",
+      "empirical_stationary": "empirical_stationary",
+      "ewma": "ewma",
+      "logistic_ar32": "logistic_ar32",
+      "parity_moment_ar": "parity_moment_ar",
+      "grid_bayes": "grid_bayes",
+      "latent_history_oracle": "latent_history_oracle",
+      "contemporaneous_oracle": "contemporaneous_oracle"
+    }
+  },
+  "decoder": {
+    "max_iter": 100,
+    "bp_method": "minimum_sum",
+    "schedule": "serial",
+    "ms_scaling_factor": 0.0,
+    "lsd_method": "LSD_E",
+    "lsd_order": 5
+  },
+  "runtime": {"process_cpu_seconds": 21600},
+  "seeds": {
+    "campaign_domain": "qldpc-fno/temporal-identifiability/v1",
+    "campaign": 7732479637849421559,
+    "bootstrap_domain": "qldpc-fno/temporal-identifiability/bootstrap/v1",
+    "bootstrap": 16303265125886503477,
+    "derangement_domain": "qldpc-fno/temporal-identifiability/derangement/v1",
+    "derangement": 13987031144127066471,
+    "fisher_domain": "qldpc-fno/temporal-identifiability/fisher/v1",
+    "fisher": 12048901516626741672
+  }
+}
