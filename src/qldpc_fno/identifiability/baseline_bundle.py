@@ -452,12 +452,16 @@ def write_frozen_bundle(path: Path, bundle: FrozenEstimatorBundle) -> BundleMani
 
 def _read_arrays(path: Path, names: tuple[str, ...]) -> dict[str, np.ndarray]:
     try:
-        with np.load(path, allow_pickle=False) as loaded:
-            if tuple(loaded.files) != names:
-                raise ValueError("safe bundle array names are missing, renamed, or reordered")
-            arrays = {name: np.array(loaded[name], copy=True) for name in names}
+        loaded = np.load(path, allow_pickle=False)
     except (OSError, ValueError) as exc:
         raise ValueError("failed to read safe non-pickle bundle arrays") from exc
+    with loaded:
+        if tuple(loaded.files) != names:
+            raise ValueError("safe bundle array names are missing, renamed, or reordered")
+        try:
+            arrays = {name: np.array(loaded[name], copy=True) for name in names}
+        except (OSError, ValueError) as exc:
+            raise ValueError("failed to read safe non-pickle bundle arrays") from exc
     if any(array.dtype == object or not np.all(np.isfinite(array)) for array in arrays.values()):
         raise ValueError("safe bundle arrays must be finite numeric values")
     return arrays

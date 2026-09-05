@@ -1,133 +1,282 @@
 from __future__ import annotations
 
+import dataclasses
 import math
 
 import numpy as np
 import pytest
 
 from qldpc_fno.identifiability.endpoints import (
+    EndpointBatch,
+    EndpointSequence,
+    SequenceEndpointAccumulator,
     calibration_by_sequence,
     expected_ce_by_sequence,
     latent_nmse_by_sequence,
     retained_syndrome_nll_by_sequence,
 )
+from qldpc_fno.identifiability.filters import ForecastResult
 from qldpc_fno.identifiability.observation import DisjointChecks
-from qldpc_fno.identifiability.types import SequenceIdentity, TrainingTargets
+from qldpc_fno.identifiability.types import (
+    ContemporaneousOracleInput,
+    DeployableHistory,
+    LatentHistoryOracleInput,
+    SequenceIdentity,
+    TrainingTargets,
+)
 
 
 def _checks() -> DisjointChecks:
     return DisjointChecks(
-        np.array([0, 1]), (np.array([0, 1]), np.array([2])), np.array([2, 1]),
-        np.array([0, 1, 2]), "greedy_disjoint_rows/v1", "a" * 64,
+        np.array([0, 1]),
+        (np.array([0, 1]), np.array([2])),
+        np.array([2, 1]),
+        np.array([0, 1, 2]),
+        "greedy_disjoint_rows/v1",
+        "a" * 64,
     )
 
 
-def _identities(count: int = 1, role: str = "test") -> tuple[SequenceIdentity, ...]:
-    return tuple(SequenceIdentity("stationary_iid", role, index, index + 1, index + 11, f"{index + 1:x}" * 64) for index in range(count))
+def _identity(
+    index: int = 0,
+    *,
+    role: str = "test",
+    regime: str = "stationary_iid",
+    content: str | None = None,
+) -> SequenceIdentity:
+    return SequenceIdentity(
+        regime,
+        role,
+        index,
+        index + 1,
+        index + 11,
+        content if content is not None else f"{index + 1:x}" * 64,
+    )
+
+
+def _sequence(
+    q: np.ndarray,
+    q_hat: np.ndarray,
+    mask: np.ndarray,
+    *,
+    identity: SequenceIdentity | None = None,
+    state: np.ndarray | None = None,
+    syndromes: np.ndarray | None = None,
+    arm: str = "ewma",
+) -> EndpointSequence:
+    latent = np.asarray(q, dtype=np.float64)
+    rounds = latent.shape[0]
+    if state is None:
+        state = np.zeros(rounds)
+    if syndromes is None:
+        syndromes = np.zeros((rounds, 2), dtype=np.uint8)
+    return EndpointSequence(
+        identity=_identity() if identity is None else identity,
+        observed=DeployableHistory(syndromes, mask),
+        latent_state=LatentHistoryOracleInput(state),
+        latent_probabilities=ContemporaneousOracleInput(latent),
+        forecast=ForecastResult(arm, q_hat, None, None),
+    )
+
+
+def _batch(*sequences: EndpointSequence) -> EndpointBatch:
+    return EndpointBatch(tuple(sequences))
 
 
 def test_expected_ce_uses_latent_probabilities_and_only_scored_rounds() -> None:
-    q = np.array([[[0.1], [0.2], [0.3]], [[0.4], [0.2], [0.1]]])
-    q_hat = np.array([[[0.2], [0.25], [0.25]], [[0.2], [0.2], [0.2]]])
-    mask = np.array([[False, True, True], [False, True, True]])
+    q0 = np.array([[0.1], [0.2], [0.24]])
+    p0 = np.array([[0.2], [0.25], [0.25]])
+    q1 = np.array([[0.24], [0.2], [0.1]])
+    p1 = np.array([[0.2], [0.2], [0.2]])
+    mask = np.array([False, True, True])
+    batch = _batch(
+        _sequence(q0, p0, mask, identity=_identity(0)),
+        _sequence(q1, p1, mask, identity=_identity(1)),
+    )
 
-    observed = expected_ce_by_sequence(q, q_hat, mask, identities=_identities(2))
+    observed = expected_ce_by_sequence(batch)
 
     expected = np.array(
         [
-            np.mean(-q[0, 1:] * np.log(q_hat[0, 1:]) - (1 - q[0, 1:]) * np.log1p(-q_hat[0, 1:])),
-            np.mean(-q[1, 1:] * np.log(q_hat[1, 1:]) - (1 - q[1, 1:]) * np.log1p(-q_hat[1, 1:])),
+            np.mean(-q0[1:] * np.log(p0[1:]) - (1 - q0[1:]) * np.log1p(-p0[1:])),
+            np.mean(-q1[1:] * np.log(p1[1:]) - (1 - q1[1:]) * np.log1p(-p1[1:])),
         ]
     )
     assert np.allclose(observed, expected)
 
 
-def test_latent_nmse_maps_mean_prediction_back_to_clipped_log_odds() -> None:
+@pytest.mark.parametrize(
+    ("scorer", "extra"),
+    [
+        (expected_ce_by_sequence, ()),
+        (latent_nmse_by_sequence, ()),
+        (calibration_by_sequence, ()),
+        (retained_syndrome_nll_by_sequence, (_checks(),)),
+    ],
+)
+def test_every_endpoint_public_boundary_rejects_raw_arrays(scorer, extra: tuple[object, ...]) -> None:
+    with pytest.raises(TypeError, match="EndpointBatch"):
+        scorer(np.full((2, 1), 0.1), *extra)
+
+
+def test_endpoint_sequence_rejects_raw_arrays_and_sampled_targets() -> None:
+    q = np.full((2, 1), 0.1)
+    forecast = ForecastResult("ewma", np.full((2, 1), 0.1), None, None)
+    targets = TrainingTargets(
+        np.zeros((2, 1), dtype=np.uint8), np.zeros((2, 1), dtype=np.uint8)
+    )
+
+    with pytest.raises(TypeError, match="ContemporaneousOracleInput"):
+        EndpointSequence(
+            _identity(),
+            DeployableHistory(np.zeros((2, 1), dtype=np.uint8), np.ones(2, dtype=np.bool_)),
+            LatentHistoryOracleInput(np.zeros(2)),
+            q,  # type: ignore[arg-type]
+            forecast,
+        )
+    with pytest.raises(TypeError, match="ContemporaneousOracleInput"):
+        EndpointSequence(
+            _identity(),
+            DeployableHistory(np.zeros((2, 1), dtype=np.uint8), np.ones(2, dtype=np.bool_)),
+            LatentHistoryOracleInput(np.zeros(2)),
+            targets,  # type: ignore[arg-type]
+            forecast,
+        )
+    with pytest.raises(TypeError, match="ForecastResult"):
+        EndpointSequence(
+            _identity(),
+            DeployableHistory(np.zeros((2, 1), dtype=np.uint8), np.ones(2, dtype=np.bool_)),
+            LatentHistoryOracleInput(np.zeros(2)),
+            ContemporaneousOracleInput(q),
+            q,  # type: ignore[arg-type]
+        )
+
+
+def test_endpoint_batch_rejects_mixed_or_duplicate_identities() -> None:
+    values = np.full((2, 1), 0.1)
+    mask = np.ones(2, dtype=np.bool_)
+    first = _sequence(values, values, mask, identity=_identity(0))
+
+    with pytest.raises(ValueError, match="content-disjoint"):
+        EndpointBatch((first, _sequence(values, values, mask, identity=_identity(0))))
+    with pytest.raises(ValueError, match="roles"):
+        EndpointBatch(
+            (first, _sequence(values, values, mask, identity=_identity(1, role="calibration")))
+        )
+    with pytest.raises(ValueError, match="regimes"):
+        EndpointBatch(
+            (first, _sequence(values, values, mask, identity=_identity(1, regime="temporal_uniform")))
+        )
+
+
+def test_endpoint_sequence_rejects_incomplete_scored_mask() -> None:
+    with pytest.raises(ValueError, match="scored"):
+        _sequence(
+            np.full((2, 1), 0.1),
+            np.full((2, 1), 0.1),
+            np.array([True, False]),
+        )
+
+
+def test_latent_nmse_clips_only_after_mean_log_odds_mapping() -> None:
     base = 0.0375
-    q_hat = np.array([[[base], [0.1]]])
-    latent = np.array([[0.0, 0.5]])
-    mask = np.array([[True, True]])
+    q_hat = np.array([[0.24, 1e-5]])
+    sequence = _sequence(
+        np.full((1, 2), base),
+        q_hat,
+        np.array([True]),
+        state=np.array([0.0]),
+    )
 
-    observed = latent_nmse_by_sequence(latent, q_hat, mask, identities=_identities())
+    observed = latent_nmse_by_sequence(_batch(sequence))
 
-    mapped = np.clip(
-        np.log(q_hat / (1 - q_hat)) - math.log(base / (1 - base)), -1.2, 1.2
-    ).mean(axis=2)
-    expected = np.mean((latent - mapped) ** 2, axis=1) / (0.08**2 / (1 - 0.97**2))
-    assert np.allclose(observed, expected)
-
-
-def test_latent_nmse_averages_the_mapped_per_qubit_field() -> None:
-    latent = np.array([[0.0]])
-    q_hat = np.array([[[0.0375, 0.1]]])
-
-    observed = latent_nmse_by_sequence(latent, q_hat, np.array([[True]]), identities=_identities())
-
-    logit = np.log(q_hat / (1 - q_hat)) - math.log(0.0375 / (1 - 0.0375))
-    expected = ((-np.mean(logit)) ** 2) / (0.08**2 / (1 - 0.97**2))
-    assert observed[0] == pytest.approx(expected)
+    offsets = np.log(q_hat / (1 - q_hat)) - math.log(base / (1 - base))
+    mapped = np.clip(offsets.mean(axis=1), -1.2, 1.2)
+    expected = np.square(mapped) / (0.08**2 / (1 - 0.97**2))
+    per_qubit_clipped = np.clip(offsets, -1.2, 1.2).mean(axis=1)
+    assert observed == pytest.approx(expected)
+    assert not np.allclose(
+        observed, np.square(per_qubit_clipped) / (0.08**2 / (1 - 0.97**2))
+    )
 
 
 def test_retained_syndrome_nll_uses_predictive_parity_probabilities() -> None:
-    syndromes = np.array([[[0, 1], [1, 0]]], dtype=np.uint8)
-    q_hat = np.array([[[0.1, 0.1, 0.1], [0.2, 0.2, 0.2]]])
-    mask = np.array([[False, True]])
-    supports = _checks()
+    syndromes = np.array([[0, 1], [1, 0]], dtype=np.uint8)
+    q_hat = np.array([[0.1, 0.1, 0.1], [0.2, 0.2, 0.2]])
+    sequence = _sequence(
+        np.full_like(q_hat, 0.1),
+        q_hat,
+        np.array([False, True]),
+        syndromes=syndromes,
+    )
 
-    observed = retained_syndrome_nll_by_sequence(syndromes, q_hat, mask, supports, identities=_identities())
+    observed = retained_syndrome_nll_by_sequence(_batch(sequence), _checks())
 
     parity = np.array([(1 - (1 - 2 * 0.2) ** 2) / 2, 0.2])
     expected = np.array([-np.log(parity[0]) - np.log1p(-parity[1])]) / 2
     assert np.allclose(observed, expected)
 
 
-def test_retained_syndrome_nll_accepts_one_scalar_forecast_per_round() -> None:
-    syndromes = np.array([[[1, 0], [0, 0]]], dtype=np.uint8)
-    q_hat = np.array([0.1, 0.2])
-
-    observed = retained_syndrome_nll_by_sequence(
-        syndromes, q_hat, np.array([False, True]), _checks(), identities=_identities()
+def test_retained_syndrome_nll_accepts_typed_scalar_forecast() -> None:
+    sequence = _sequence(
+        np.full((2, 3), 0.1),
+        np.array([0.1, 0.2]),
+        np.array([False, True]),
+        syndromes=np.array([[1, 0], [0, 0]], dtype=np.uint8),
     )
+
+    observed = retained_syndrome_nll_by_sequence(_batch(sequence), _checks())
 
     assert observed.shape == (1,)
 
 
-def test_retained_syndrome_nll_rejects_overlapping_supports() -> None:
+def test_retained_syndrome_nll_rejects_noncanonical_support_container() -> None:
+    sequence = _sequence(
+        np.full((1, 2), 0.1), np.full((1, 2), 0.1), np.array([True])
+    )
     with pytest.raises(TypeError, match="DisjointChecks"):
         retained_syndrome_nll_by_sequence(
-            np.array([[[1, 0]]], dtype=np.uint8),
-            np.array([[[0.2, 0.2]]]),
-            np.array([[True]]),
-            ((0, 1), (0,)), identities=_identities(),
+            _batch(sequence), ((0, 1), (0,))  # type: ignore[arg-type]
         )
 
 
-def test_calibration_records_fixed_bins_and_latent_not_sampled_error() -> None:
-    q = np.array([[[1e-5], [0.025], [0.25]]])
-    q_hat = np.array([[[1e-5], [0.025], [0.25]]])
-    evidence = calibration_by_sequence(q, q_hat, np.array([[True, True, True]]), identities=_identities())
+def test_calibration_uses_exact_internal_edge_closure_and_latent_targets() -> None:
+    edges = np.linspace(1e-5, 0.25, 11)
+    below = np.nextafter(edges[1], -np.inf)
+    predictions = np.array([[1e-5], [below], [edges[1]], [0.25]])
+    latent = np.array([[0.01], [0.02], [0.03], [0.04]])
+    evidence = calibration_by_sequence(
+        _batch(_sequence(latent, predictions, np.ones(4, dtype=np.bool_)))
+    )
 
     assert evidence.counts.shape == (1, 10)
     assert evidence.counts[0, 0] == 2
+    assert evidence.counts[0, 1] == 1
     assert evidence.counts[0, -1] == 1
-    assert evidence.predicted_sums[0, 0] == pytest.approx(1e-5 + 0.025)
-    assert evidence.latent_sums[0, -1] == pytest.approx(0.25)
-    assert evidence.absolute_error[0] == pytest.approx(0.0)
+    assert evidence.predicted_sums[0, 0] == pytest.approx(1e-5 + below)
+    assert evidence.latent_sums[0, 1] == pytest.approx(0.03)
+    expected_error = np.abs(evidence.predicted_sums - evidence.latent_sums).sum() / 4
+    assert evidence.absolute_error[0] == pytest.approx(expected_error)
 
 
-@pytest.mark.parametrize(
-    "function,args",
-    [
-        (expected_ce_by_sequence, (np.full((1, 2, 1), 0.1), np.full((1, 2, 1), 0.1), np.array([[True, False]]))),
-        (latent_nmse_by_sequence, (np.zeros((1, 2)), np.full((1, 2, 1), 0.1), np.array([[True, False]]))),
-    ],
-)
-def test_primary_endpoints_reject_incomplete_scored_masks(function, args: tuple[object, ...]) -> None:
-    with pytest.raises(ValueError, match="scored"):
-        function(*args, identities=_identities())
+def test_sequence_accumulator_accepts_only_typed_input_and_retains_bounded_state() -> None:
+    sequence = _sequence(
+        np.array([[0.1], [0.2], [0.24]]),
+        np.array([[0.2], [0.25], [0.25]]),
+        np.array([False, True, True]),
+    )
+    accumulator = SequenceEndpointAccumulator()
 
+    with pytest.raises(TypeError, match="EndpointSequence"):
+        accumulator.update(np.array([0.1]))  # type: ignore[arg-type]
+    accumulator.update(sequence)
 
-def test_endpoint_rejects_sampled_physical_error_container() -> None:
-    targets = TrainingTargets(np.zeros((2, 1), dtype=np.uint8), np.zeros((2, 1), dtype=np.uint8))
-    with pytest.raises(TypeError, match="sampled"):
-        expected_ce_by_sequence(targets, np.full((1, 2, 1), 0.1), np.array([[True, True]]), identities=_identities())
+    assert accumulator.expected_ce == pytest.approx(expected_ce_by_sequence(_batch(sequence))[0])
+    assert accumulator.count == 2
+    assert accumulator.calibration_counts is not None
+    assert accumulator.calibration_counts.shape == (10,)
+    assert all(
+        field.name
+        not in {"sequence", "sequences", "latent", "forecast", "probabilities", "syndromes"}
+        for field in dataclasses.fields(accumulator)
+    )
