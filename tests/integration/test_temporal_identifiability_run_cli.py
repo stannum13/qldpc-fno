@@ -238,6 +238,26 @@ def test_default_evaluation_reuses_sequence_independent_known_marginal_per_round
     manifest = _write_sequences(sequence_dir, ("validation",))
     config = load_identifiability_config(CONFIG_PATH)
     calls: list[tuple[int, float]] = []
+    for three_round_row in (
+        row for row in manifest["sequences"] if row["regime"] == "temporal_uniform"
+    ):
+        three_round_errors = np.zeros((3, 3), dtype=np.uint8)
+        three_round_errors[-1, 0] = 1
+        np.savez(
+            sequence_dir / three_round_row["path"],
+            global_log_odds=np.zeros(3),
+            probabilities=np.full((3, 3), 0.0375),
+            errors=three_round_errors,
+            syndromes=np.asarray(three_round_errors @ _FastCode.hx.T, dtype=np.uint8) % 2,
+            logical_flips=(
+                np.asarray(
+                    three_round_errors @ np.array([[1, 0, 1]], dtype=np.uint8).T,
+                    dtype=np.uint8,
+                )
+                % 2
+            ),
+            scored_mask=np.array([False, True, True]),
+        )
 
     def known_marginal(history, checks, received_config, *, process_cpu_deadline):
         assert checks is retained_checks
@@ -294,9 +314,78 @@ def test_default_evaluation_reuses_sequence_independent_known_marginal_per_round
         deadline=screen_module._CpuDeadline(started=0.0, limit=10.0, clock=lambda: 0.0),
     )
 
-    assert calls == [(2, 10.0)]
+    assert calls == [(2, 10.0), (3, 10.0)]
     assert len(evidence) == 16
-    assert len({row["arms"]["known_marginal"]["forecast"]["sha256"] for row in evidence}) == 1
+    assert len({row["arms"]["known_marginal"]["forecast"]["sha256"] for row in evidence}) == 2
+
+
+def test_cached_known_marginal_is_isolated_from_a_mutating_score_kernel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sequence_dir = tmp_path / "sequences"
+    manifest = _write_sequences(sequence_dir, ("validation",))
+    config = load_identifiability_config(CONFIG_PATH)
+    values_seen_by_scorer: list[float] = []
+
+    def known_marginal(history, _checks, _config, **_kwargs):
+        rounds = history.syndromes.shape[0]
+        return ForecastResult("known_marginal", np.full(rounds, 0.0375), np.zeros(rounds), 4096)
+
+    def fitted(name, sequence, bundle):
+        del bundle
+        rounds = sequence.deployable.syndromes.shape[0]
+        return ForecastResult(name, np.full(rounds, 0.0375), np.zeros(rounds), None)
+
+    def causal_forecast(arm):
+        def forecast(history, _checks, _config, **_kwargs):
+            rounds = history.syndromes.shape[0]
+            return ForecastResult(arm, np.full(rounds, 0.0375), np.zeros(rounds), 8)
+
+        return forecast
+
+    def latent_forecast(history, _config, **_kwargs):
+        rounds = history.global_log_odds.shape[0]
+        return ForecastResult(
+            "latent_history_oracle", np.full(rounds, 0.0375), np.zeros(rounds), None
+        )
+
+    def contemporaneous_forecast(history, _config):
+        rounds = history.probabilities.shape[0]
+        return ForecastResult("contemporaneous_oracle", np.full(rounds, 0.0375), None, None)
+
+    def mutating_score(*, sequence, forecast, **kwargs):
+        if forecast.arm == "known_marginal":
+            values_seen_by_scorer.append(float(forecast.probabilities[0]))
+            forecast.probabilities.flags.writeable = True
+            forecast.probabilities[:] = 0.04
+        return _score_kernel(sequence=sequence, forecast=forecast, **kwargs)
+
+    monkeypatch.setattr(screen_module, "forecast_known_marginal", known_marginal)
+    monkeypatch.setattr(screen_module, "_fitted_forecast", fitted)
+    monkeypatch.setattr(
+        screen_module, "forecast_parity_moment", causal_forecast("parity_moment_ar")
+    )
+    monkeypatch.setattr(screen_module, "forecast_grid_bayes", causal_forecast("grid_bayes"))
+    monkeypatch.setattr(screen_module, "forecast_latent_history", latent_forecast)
+    monkeypatch.setattr(screen_module, "forecast_contemporaneous", contemporaneous_forecast)
+
+    screen_module._evaluate_sequences(
+        sequence_dir=sequence_dir,
+        rows=manifest["sequences"],
+        staging=tmp_path / "staging",
+        config=config,
+        code=_FastCode,
+        checks=screen_module.greedy_disjoint_rows(_FastCode.hx),
+        bundle=_FakeBundle(),
+        dependencies=ScreenDependencies(
+            forecast_sequence=None,
+            score_sequence=mutating_score,
+            process_time=lambda: 0.0,
+        ),
+        deadline=screen_module._CpuDeadline(started=0.0, limit=10.0, clock=lambda: 0.0),
+    )
+
+    assert values_seen_by_scorer == [0.0375] * 16
 
 
 def _dependencies(events: list[str], cpu_values: list[float] | None = None) -> ScreenDependencies:

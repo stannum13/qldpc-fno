@@ -526,9 +526,10 @@ def _default_forecast_sequence(
             sequence.deployable, checks, config, process_cpu_deadline=process_cpu_deadline
         )
         if known_marginal_by_rounds is not None:
-            # ForecastResult owns read-only copies, so reuse cannot expose a
-            # sequence to mutable state from another sequence.
             known_marginal_by_rounds[rounds] = known_marginal
+    # Keep the cached owner pristine even if an injected downstream kernel
+    # deliberately re-enables NumPy writes on its per-row result.
+    known_marginal = dataclasses.replace(known_marginal)
     normal: dict[str, ForecastResult] = {
         "known_marginal": known_marginal,
         "empirical_stationary": _fitted_forecast("empirical_stationary", sequence, bundle),
