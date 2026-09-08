@@ -103,9 +103,9 @@ def _fisher(config, checks, *, status: str = "passed", minimum: float = 1.25):
         "minimum_information": minimum,
         "median_information": 2.5,
         "maximum_information": 3.75,
-        "cramer_rao_minimum": 0.8,
+        "cramer_rao_minimum": 1.0 / 3.75,
         "cramer_rao_median": 0.4,
-        "cramer_rao_maximum": 0.2,
+        "cramer_rao_maximum": 1.0 / minimum,
         "maximum_derivative_error": 0.0,
         "failure_reasons": [],
     }

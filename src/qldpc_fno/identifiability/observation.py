@@ -284,7 +284,7 @@ def run_fisher_precheck(config: IdentifiabilityConfig, checks: DisjointChecks) -
     finite_information = information[np.isfinite(information) & (information > 0.0)]
     if len(finite_information):
         minimum, median, maximum = np.quantile(finite_information, [0.0, 0.5, 1.0])
-        cramer_rao = 1.0 / np.array([minimum, median, maximum])
+        cramer_rao = 1.0 / np.array([maximum, median, minimum])
     else:
         minimum = median = maximum = math.nan
         cramer_rao = np.full(3, math.nan)

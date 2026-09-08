@@ -277,9 +277,10 @@ def test_fisher_precheck_records_the_preregistered_draw_provenance_and_gate_stat
     assert np.all(np.isfinite(report.information))
     assert np.all(report.information > 0.0)
     assert report.minimum_information <= report.median_information <= report.maximum_information
-    assert report.cramer_rao_minimum == pytest.approx(1.0 / report.minimum_information)
+    assert report.cramer_rao_minimum <= report.cramer_rao_median <= report.cramer_rao_maximum
+    assert report.cramer_rao_minimum == pytest.approx(1.0 / report.maximum_information)
     assert report.cramer_rao_median == pytest.approx(1.0 / report.median_information)
-    assert report.cramer_rao_maximum == pytest.approx(1.0 / report.maximum_information)
+    assert report.cramer_rao_maximum == pytest.approx(1.0 / report.minimum_information)
     allowed = config.fisher.absolute_tolerance + config.fisher.relative_tolerance * np.abs(
         report.finite_difference_derivatives
     )

@@ -106,9 +106,9 @@ def _fisher_record() -> dict[str, object]:
         "minimum_information": 1.0,
         "median_information": 2.0,
         "maximum_information": 3.0,
-        "cramer_rao_minimum": 1.0,
+        "cramer_rao_minimum": 1.0 / 3.0,
         "cramer_rao_median": 0.5,
-        "cramer_rao_maximum": 1.0 / 3.0,
+        "cramer_rao_maximum": 1.0,
         "maximum_derivative_error": 0.0,
         "failure_reasons": [],
     }
