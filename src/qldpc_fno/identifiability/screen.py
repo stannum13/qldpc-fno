@@ -515,11 +515,22 @@ def _default_forecast_sequence(
     deranged_histories: Mapping[str, DeployableHistory],
     process_cpu_deadline: float,
     include_grid_diagnostic: bool,
+    known_marginal_by_rounds: dict[int, ForecastResult] | None = None,
 ) -> Mapping[str, ForecastResult]:
-    normal: dict[str, ForecastResult] = {
-        "known_marginal": forecast_known_marginal(
+    rounds = sequence.deployable.syndromes.shape[0]
+    known_marginal = (
+        None if known_marginal_by_rounds is None else known_marginal_by_rounds.get(rounds)
+    )
+    if known_marginal is None:
+        known_marginal = forecast_known_marginal(
             sequence.deployable, checks, config, process_cpu_deadline=process_cpu_deadline
-        ),
+        )
+        if known_marginal_by_rounds is not None:
+            # ForecastResult owns read-only copies, so reuse cannot expose a
+            # sequence to mutable state from another sequence.
+            known_marginal_by_rounds[rounds] = known_marginal
+    normal: dict[str, ForecastResult] = {
+        "known_marginal": known_marginal,
         "empirical_stationary": _fitted_forecast("empirical_stationary", sequence, bundle),
         "ewma": _fitted_forecast("ewma", sequence, bundle),
         "logistic_ar32": _fitted_forecast("logistic_ar32", sequence, bundle),
@@ -724,8 +735,8 @@ def _evaluate_sequences(
     deadline: _CpuDeadline,
 ) -> list[dict[str, object]]:
     history_sources = _history_source_rows(rows, seed=config.seeds.derangement)
-    forecast_kernel = dependencies.forecast_sequence or _default_forecast_sequence
     score_kernel = dependencies.score_sequence or _default_score_sequence
+    known_marginal_by_rounds: dict[int, ForecastResult] = {}
     evidence: list[dict[str, object]] = []
     for row in rows:
         deadline.check()
@@ -735,15 +746,27 @@ def _evaluate_sequences(
             arm: _load_sequence(sequence_dir, source_row, code).deployable
             for arm, source_row in history_sources[key].items()
         }
-        forecasts = forecast_kernel(
-            sequence=sequence,
-            config=config,
-            checks=checks,
-            bundle=bundle,
-            deranged_histories=deranged_histories,
-            process_cpu_deadline=deadline.absolute,
-            include_grid_diagnostic=sequence.identity.role == "validation",
-        )
+        if dependencies.forecast_sequence is None:
+            forecasts = _default_forecast_sequence(
+                sequence=sequence,
+                config=config,
+                checks=checks,
+                bundle=bundle,
+                deranged_histories=deranged_histories,
+                process_cpu_deadline=deadline.absolute,
+                include_grid_diagnostic=sequence.identity.role == "validation",
+                known_marginal_by_rounds=known_marginal_by_rounds,
+            )
+        else:
+            forecasts = dependencies.forecast_sequence(
+                sequence=sequence,
+                config=config,
+                checks=checks,
+                bundle=bundle,
+                deranged_histories=deranged_histories,
+                process_cpu_deadline=deadline.absolute,
+                include_grid_diagnostic=sequence.identity.role == "validation",
+            )
         expected_forecasts = _forecast_keys(sequence.identity.role)
         if not isinstance(forecasts, Mapping) or tuple(forecasts) != expected_forecasts:
             raise ValueError("forecast kernel must return every canonical arm in exact order")

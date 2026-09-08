@@ -231,6 +231,74 @@ def _score_kernel(*, sequence, forecast, **_kwargs):
     }
 
 
+def test_default_evaluation_reuses_sequence_independent_known_marginal_per_round_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sequence_dir = tmp_path / "sequences"
+    manifest = _write_sequences(sequence_dir, ("validation",))
+    config = load_identifiability_config(CONFIG_PATH)
+    calls: list[tuple[int, float]] = []
+
+    def known_marginal(history, checks, received_config, *, process_cpu_deadline):
+        assert checks is retained_checks
+        assert received_config is config
+        rounds = history.syndromes.shape[0]
+        calls.append((rounds, process_cpu_deadline))
+        return ForecastResult("known_marginal", np.full(rounds, 0.0375), np.zeros(rounds), 4096)
+
+    def fitted(name, sequence, bundle):
+        del bundle
+        rounds = sequence.deployable.syndromes.shape[0]
+        return ForecastResult(name, np.full(rounds, 0.0375), np.zeros(rounds), None)
+
+    def causal_forecast(arm):
+        def forecast(history, _checks, _config, **_kwargs):
+            rounds = history.syndromes.shape[0]
+            return ForecastResult(arm, np.full(rounds, 0.0375), np.zeros(rounds), 8)
+
+        return forecast
+
+    def latent_forecast(history, _config, **_kwargs):
+        rounds = history.global_log_odds.shape[0]
+        return ForecastResult(
+            "latent_history_oracle", np.full(rounds, 0.0375), np.zeros(rounds), None
+        )
+
+    def contemporaneous_forecast(history, _config):
+        rounds = history.probabilities.shape[0]
+        return ForecastResult("contemporaneous_oracle", np.full(rounds, 0.0375), None, None)
+
+    monkeypatch.setattr(screen_module, "forecast_known_marginal", known_marginal)
+    monkeypatch.setattr(screen_module, "_fitted_forecast", fitted)
+    monkeypatch.setattr(
+        screen_module, "forecast_parity_moment", causal_forecast("parity_moment_ar")
+    )
+    monkeypatch.setattr(screen_module, "forecast_grid_bayes", causal_forecast("grid_bayes"))
+    monkeypatch.setattr(screen_module, "forecast_latent_history", latent_forecast)
+    monkeypatch.setattr(screen_module, "forecast_contemporaneous", contemporaneous_forecast)
+
+    retained_checks = screen_module.greedy_disjoint_rows(_FastCode.hx)
+    evidence = screen_module._evaluate_sequences(
+        sequence_dir=sequence_dir,
+        rows=manifest["sequences"],
+        staging=tmp_path / "staging",
+        config=config,
+        code=_FastCode,
+        checks=retained_checks,
+        bundle=_FakeBundle(),
+        dependencies=ScreenDependencies(
+            forecast_sequence=None,
+            score_sequence=_score_kernel,
+            process_time=lambda: 0.0,
+        ),
+        deadline=screen_module._CpuDeadline(started=0.0, limit=10.0, clock=lambda: 0.0),
+    )
+
+    assert calls == [(2, 10.0)]
+    assert len(evidence) == 16
+    assert len({row["arms"]["known_marginal"]["forecast"]["sha256"] for row in evidence}) == 1
+
+
 def _dependencies(events: list[str], cpu_values: list[float] | None = None) -> ScreenDependencies:
     clock = iter(cpu_values or [0.0] * 100_000)
     fitted: list[_FakeBundle] = []
