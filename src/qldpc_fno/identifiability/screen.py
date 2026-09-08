@@ -506,6 +506,21 @@ def _fitted_forecast(
     return ForecastResult(name, predicted, None, None)
 
 
+def _isolated_cached_forecast(
+    *,
+    cache: dict[str, ForecastResult] | None,
+    content_sha256: str | None,
+    compute: Callable[[], ForecastResult],
+    output_arm: str,
+) -> ForecastResult:
+    pristine = None if cache is None or content_sha256 is None else cache.get(content_sha256)
+    if pristine is None:
+        pristine = compute()
+        if cache is not None and content_sha256 is not None:
+            cache[content_sha256] = pristine
+    return dataclasses.replace(pristine, arm=output_arm)
+
+
 def _default_forecast_sequence(
     *,
     sequence: GeneratedSequence,
@@ -516,6 +531,10 @@ def _default_forecast_sequence(
     process_cpu_deadline: float,
     include_grid_diagnostic: bool,
     known_marginal_by_rounds: dict[int, ForecastResult] | None = None,
+    sequence_content_sha256: str | None = None,
+    deranged_content_sha256: Mapping[str, str] | None = None,
+    grid_bayes_by_content: dict[str, ForecastResult] | None = None,
+    parity_moment_by_content: dict[str, ForecastResult] | None = None,
 ) -> Mapping[str, ForecastResult]:
     rounds = sequence.deployable.syndromes.shape[0]
     known_marginal = (
@@ -535,15 +554,25 @@ def _default_forecast_sequence(
         "empirical_stationary": _fitted_forecast("empirical_stationary", sequence, bundle),
         "ewma": _fitted_forecast("ewma", sequence, bundle),
         "logistic_ar32": _fitted_forecast("logistic_ar32", sequence, bundle),
-        "parity_moment_ar": forecast_parity_moment(
-            sequence.deployable, checks, config, process_cpu_deadline=process_cpu_deadline
+        "parity_moment_ar": _isolated_cached_forecast(
+            cache=parity_moment_by_content,
+            content_sha256=sequence_content_sha256,
+            compute=lambda: forecast_parity_moment(
+                sequence.deployable, checks, config, process_cpu_deadline=process_cpu_deadline
+            ),
+            output_arm="parity_moment_ar",
         ),
-        "grid_bayes": forecast_grid_bayes(
-            sequence.deployable,
-            checks,
-            config,
-            interior_cells=config.grid.interior_cells,
-            process_cpu_deadline=process_cpu_deadline,
+        "grid_bayes": _isolated_cached_forecast(
+            cache=grid_bayes_by_content,
+            content_sha256=sequence_content_sha256,
+            compute=lambda: forecast_grid_bayes(
+                sequence.deployable,
+                checks,
+                config,
+                interior_cells=config.grid.interior_cells,
+                process_cpu_deadline=process_cpu_deadline,
+            ),
+            output_arm="grid_bayes",
         ),
         "latent_history_oracle": forecast_latent_history(
             sequence.latent_oracle, config, process_cpu_deadline=process_cpu_deadline
@@ -562,20 +591,35 @@ def _default_forecast_sequence(
         values[_GRID_DIAGNOSTIC] = dataclasses.replace(doubled, arm=_GRID_DIAGNOSTIC)
     for arm in DEPLOYABLE_HISTORY_ARMS:
         history = deranged_histories[arm]
+        key = f"{arm}{_DERANGED_SUFFIX}"
         if arm == "grid_bayes":
-            forecast = forecast_grid_bayes(
-                history, checks, config, process_cpu_deadline=process_cpu_deadline
+            forecast = _isolated_cached_forecast(
+                cache=grid_bayes_by_content,
+                content_sha256=(
+                    None if deranged_content_sha256 is None else deranged_content_sha256[arm]
+                ),
+                compute=lambda history=history: forecast_grid_bayes(
+                    history, checks, config, process_cpu_deadline=process_cpu_deadline
+                ),
+                output_arm=key,
             )
         elif arm == "parity_moment_ar":
-            forecast = forecast_parity_moment(
-                history, checks, config, process_cpu_deadline=process_cpu_deadline
+            forecast = _isolated_cached_forecast(
+                cache=parity_moment_by_content,
+                content_sha256=(
+                    None if deranged_content_sha256 is None else deranged_content_sha256[arm]
+                ),
+                compute=lambda history=history: forecast_parity_moment(
+                    history, checks, config, process_cpu_deadline=process_cpu_deadline
+                ),
+                output_arm=key,
             )
         else:
             forecast = _fitted_forecast(
                 arm, dataclasses.replace(sequence, deployable=history), bundle
             )
-        key = f"{arm}{_DERANGED_SUFFIX}"
-        values[key] = dataclasses.replace(forecast, arm=key)
+            forecast = dataclasses.replace(forecast, arm=key)
+        values[key] = forecast
     return values
 
 
@@ -738,14 +782,23 @@ def _evaluate_sequences(
     history_sources = _history_source_rows(rows, seed=config.seeds.derangement)
     score_kernel = dependencies.score_sequence or _default_score_sequence
     known_marginal_by_rounds: dict[int, ForecastResult] = {}
+    grid_bayes_by_content: dict[str, ForecastResult] = {}
+    parity_moment_by_content: dict[str, ForecastResult] = {}
     evidence: list[dict[str, object]] = []
     for row in rows:
         deadline.check()
         sequence = _load_sequence(sequence_dir, row, code)
         key = (sequence.identity.role, sequence.identity.regime, sequence.identity.sequence_index)
-        deranged_histories = {
-            arm: _load_sequence(sequence_dir, source_row, code).deployable
+        deranged_sequences = {
+            arm: _load_sequence(sequence_dir, source_row, code)
             for arm, source_row in history_sources[key].items()
+        }
+        deranged_histories = {
+            arm: source_sequence.deployable for arm, source_sequence in deranged_sequences.items()
+        }
+        deranged_content_sha256 = {
+            arm: source_sequence.identity.content_sha256
+            for arm, source_sequence in deranged_sequences.items()
         }
         if dependencies.forecast_sequence is None:
             forecasts = _default_forecast_sequence(
@@ -757,6 +810,10 @@ def _evaluate_sequences(
                 process_cpu_deadline=deadline.absolute,
                 include_grid_diagnostic=sequence.identity.role == "validation",
                 known_marginal_by_rounds=known_marginal_by_rounds,
+                sequence_content_sha256=sequence.identity.content_sha256,
+                deranged_content_sha256=deranged_content_sha256,
+                grid_bayes_by_content=grid_bayes_by_content,
+                parity_moment_by_content=parity_moment_by_content,
             )
         else:
             forecasts = dependencies.forecast_sequence(

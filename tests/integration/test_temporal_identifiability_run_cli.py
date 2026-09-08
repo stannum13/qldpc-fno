@@ -238,6 +238,7 @@ def test_default_evaluation_reuses_sequence_independent_known_marginal_per_round
     manifest = _write_sequences(sequence_dir, ("validation",))
     config = load_identifiability_config(CONFIG_PATH)
     calls: list[tuple[int, float]] = []
+    causal_calls: list[tuple[str, int]] = []
     for three_round_row in (
         row for row in manifest["sequences"] if row["regime"] == "temporal_uniform"
     ):
@@ -272,9 +273,17 @@ def test_default_evaluation_reuses_sequence_independent_known_marginal_per_round
         return ForecastResult(name, np.full(rounds, 0.0375), np.zeros(rounds), None)
 
     def causal_forecast(arm):
-        def forecast(history, _checks, _config, **_kwargs):
+        def forecast(history, _checks, received_config, **kwargs):
             rounds = history.syndromes.shape[0]
-            return ForecastResult(arm, np.full(rounds, 0.0375), np.zeros(rounds), 8)
+            interior_cells = kwargs.get("interior_cells", received_config.grid.interior_cells)
+            causal_calls.append((arm, interior_cells))
+            signature = int.from_bytes(history.syndromes.tobytes(), "little") % 100
+            return ForecastResult(
+                arm,
+                np.full(rounds, 0.03 + signature * 1e-5),
+                np.zeros(rounds),
+                interior_cells,
+            )
 
         return forecast
 
@@ -315,8 +324,32 @@ def test_default_evaluation_reuses_sequence_independent_known_marginal_per_round
     )
 
     assert calls == [(2, 10.0), (3, 10.0)]
+    assert causal_calls.count(("parity_moment_ar", config.grid.interior_cells)) == 16
+    assert causal_calls.count(("grid_bayes", config.grid.interior_cells)) == 16
+    assert causal_calls.count(("grid_bayes", config.grid.doubled_interior_cells)) == 16
     assert len(evidence) == 16
     assert len({row["arms"]["known_marginal"]["forecast"]["sha256"] for row in evidence}) == 2
+    by_identity = {(row["role"], row["regime"], row["sequence_index"]): row for row in evidence}
+    source_plan = screen_module._history_source_rows(
+        manifest["sequences"], seed=config.seeds.derangement
+    )
+    for target_key, target in by_identity.items():
+        with np.load(tmp_path / "staging" / target["path"], allow_pickle=False) as target_npz:
+            for arm in ("grid_bayes", "parity_moment_ar"):
+                source_row = source_plan[target_key][arm]
+                source_key = (
+                    source_row["role"],
+                    source_row["regime"],
+                    source_row["sequence_index"],
+                )
+                with np.load(
+                    tmp_path / "staging" / by_identity[source_key]["path"], allow_pickle=False
+                ) as source_npz:
+                    target_forecast = target_npz[f"{arm}__history_deranged__forecast"]
+                    source_forecast = source_npz[f"{arm}__forecast"]
+                    assert target_forecast.dtype == source_forecast.dtype
+                    assert target_forecast.shape == source_forecast.shape
+                    assert target_forecast.tobytes() == source_forecast.tobytes()
 
 
 def test_cached_known_marginal_is_isolated_from_a_mutating_score_kernel(
@@ -325,7 +358,14 @@ def test_cached_known_marginal_is_isolated_from_a_mutating_score_kernel(
     sequence_dir = tmp_path / "sequences"
     manifest = _write_sequences(sequence_dir, ("validation",))
     config = load_identifiability_config(CONFIG_PATH)
-    values_seen_by_scorer: list[float] = []
+    isolated_arms = {
+        "known_marginal",
+        "grid_bayes",
+        "grid_bayes__history_deranged",
+        "parity_moment_ar",
+        "parity_moment_ar__history_deranged",
+    }
+    values_seen_by_scorer: dict[str, list[float]] = {arm: [] for arm in isolated_arms}
 
     def known_marginal(history, _checks, _config, **_kwargs):
         rounds = history.syndromes.shape[0]
@@ -354,8 +394,8 @@ def test_cached_known_marginal_is_isolated_from_a_mutating_score_kernel(
         return ForecastResult("contemporaneous_oracle", np.full(rounds, 0.0375), None, None)
 
     def mutating_score(*, sequence, forecast, **kwargs):
-        if forecast.arm == "known_marginal":
-            values_seen_by_scorer.append(float(forecast.probabilities[0]))
+        if forecast.arm in isolated_arms:
+            values_seen_by_scorer[forecast.arm].append(float(forecast.probabilities[0]))
             forecast.probabilities.flags.writeable = True
             forecast.probabilities[:] = 0.04
         return _score_kernel(sequence=sequence, forecast=forecast, **kwargs)
@@ -385,7 +425,49 @@ def test_cached_known_marginal_is_isolated_from_a_mutating_score_kernel(
         deadline=screen_module._CpuDeadline(started=0.0, limit=10.0, clock=lambda: 0.0),
     )
 
-    assert values_seen_by_scorer == [0.0375] * 16
+    assert values_seen_by_scorer == {arm: [0.0375] * 16 for arm in isolated_arms}
+
+
+def test_built_in_forecast_caches_do_not_intercept_injected_kernel_calls(tmp_path: Path) -> None:
+    sequence_dir = tmp_path / "sequences"
+    manifest = _write_sequences(sequence_dir, ("validation",))
+    calls: list[tuple[tuple[str, ...], int]] = []
+
+    def injected_forecast(**kwargs):
+        calls.append((tuple(kwargs), kwargs["sequence"].identity.sequence_index))
+        return _forecast_kernel(**kwargs)
+
+    screen_module._evaluate_sequences(
+        sequence_dir=sequence_dir,
+        rows=manifest["sequences"],
+        staging=tmp_path / "staging",
+        config=load_identifiability_config(CONFIG_PATH),
+        code=_FastCode,
+        checks=screen_module.greedy_disjoint_rows(_FastCode.hx),
+        bundle=_FakeBundle(),
+        dependencies=ScreenDependencies(
+            forecast_sequence=injected_forecast,
+            score_sequence=_score_kernel,
+            process_time=lambda: 0.0,
+        ),
+        deadline=screen_module._CpuDeadline(started=0.0, limit=10.0, clock=lambda: 0.0),
+    )
+
+    assert len(calls) == 16
+    assert all(
+        names
+        == (
+            "sequence",
+            "config",
+            "checks",
+            "bundle",
+            "deranged_histories",
+            "process_cpu_deadline",
+            "include_grid_diagnostic",
+        )
+        for names, _index in calls
+    )
+    assert [index for _names, index in calls] == list(range(8)) * 2
 
 
 def _dependencies(events: list[str], cpu_values: list[float] | None = None) -> ScreenDependencies:
