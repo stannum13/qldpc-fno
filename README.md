@@ -99,6 +99,31 @@ scaled. See
 [Causal FNO–HiPPO results](docs/causal-fno-hippo-results.md) for the full evidence
 and interpretation.
 
+## Current frontier hypothesis
+
+The completed failures suggest a more disciplined role for learning: control a
+strong decoder rather than replace it. An FNO-derived prior can be a poor final
+answer while still steering BP-LSD to a different syndrome-valid candidate.
+That diversity matters only when the added candidate belongs to the correct
+logical class and a deployable rule can recognize it.
+
+The next program starts with a faithful reconstruction of the source paper's
+five-view BP-LSD ensemble and a tuned Relay-BP baseline. It asks three questions
+in order:
+
+1. Do the frozen FNO views add correct logical classes that the strong BP views
+   miss?
+2. Can a nonlearned minimum-cost or logical-coset vote select those classes?
+3. Can an anytime controller stop on easy syndromes and reserve extra decoder
+   views for the ambiguous tail without sacrificing logical accuracy?
+
+The earlier 2,048-shot test is used only to motivate this question; it is not
+reused for confirmation or selector training. FNO is retired if its incremental
+candidate headroom disappears. HiPPO remains behind a separate oracle gate that
+first requires spatially heterogeneous history to improve actual decoder work
+or block error rate. The frozen contract is in the
+[anytime logical-coset portfolio design](docs/superpowers/specs/2026-09-08-anytime-coset-portfolio-design.md).
+
 ## Experiment flow
 
 ```mermaid
