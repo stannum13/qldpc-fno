@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "policy_id": "two_view_chi4_consensus_v1",
+  "direct_action_by_distance": {
+    "3": "columns_chi4"
+  },
+  "consensus_by_distance": {
+    "5": {
+      "actions": ["columns_chi4", "rows_chi4"],
+      "fallback": "columns_chi8"
+    }
+  },
+  "fixed_fallback_action": "columns_chi8",
+  "required_data_seed_domain": "qldpc-fno/tensor-consensus-confirmation/v1",
+  "required_confirmation_per_stratum": 160,
+  "familywise_alpha": 0.05,
+  "familywise_comparisons": 12,
+  "maximum_unsafe_rate": 0.05,
+  "minimum_work_savings_fraction": 0.05,
+  "work_savings_confidence_alpha": 0.05,
+  "work_savings_bootstrap_replicates": 10000,
+  "work_savings_bootstrap_seed": 17608167868160228024
+}

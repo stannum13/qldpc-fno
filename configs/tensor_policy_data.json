@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "seed_domain": "qldpc-fno/tensor-policy-data/v1",
+  "campaign_seed": 14383523112461084556,
+  "code_distances": [3, 5],
+  "error_rates": [0.05, 0.1, 0.15],
+  "base_instances_per_stratum": {
+    "train": 64,
+    "calibration": 64,
+    "confirmation": 160
+  },
+  "actions": [
+    {"id": "columns_chi1", "mode": "columns", "chi": 1},
+    {"id": "rows_chi1", "mode": "rows", "chi": 1},
+    {"id": "columns_chi2", "mode": "columns", "chi": 2},
+    {"id": "rows_chi2", "mode": "rows", "chi": 2},
+    {"id": "columns_chi4", "mode": "columns", "chi": 4},
+    {"id": "rows_chi4", "mode": "rows", "chi": 4},
+    {"id": "average_chi4", "mode": "average", "chi": 4},
+    {"id": "columns_chi8", "mode": "columns", "chi": 8},
+    {"id": "rows_chi8", "mode": "rows", "chi": 8}
+  ],
+  "mass_log_ratio_tolerance": 0.05,
+  "reference_probability_tolerance": 1e-10,
+  "reference_log_ratio_tolerance": 1e-8,
+  "enumerate_distance3": true
+}
