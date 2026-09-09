@@ -272,6 +272,8 @@ that headroom survives.
   high-`chi` reference, without exposing that reference to policy features.
 - [x] Confirm a frozen two-view rule against fixed `chi=8` on an untouched seed
   domain at matched logical-class accuracy and estimated arithmetic work.
+- [x] Trace local singular spectra and test fixed-tolerance adaptive bond ranks
+  as a required nonlearned baseline on the discovery table.
 - [ ] Evaluate multistep adaptive rules at matched logical accuracy and compute,
   including peak memory and worst-case work.
 

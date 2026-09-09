@@ -186,6 +186,16 @@ comparison. Read the
 [locked tensor-consensus result](docs/tensor-consensus-confirmation-results.md)
 or inspect the [scored evidence](evidence/tensor-consensus-confirmation/tensor_consensus.json).
 
+A subsequent discovery sweep tested qecsim's native local-spectrum tolerance
+before introducing a learned bond controller. Tolerance-based truncation varied
+the retained rank by bond and separated logical decisions from posterior
+fidelity: row tolerance `0.01` kept the correct class on all 96 development
+cases while failing the strict log-ratio criterion on 87. A post-hoc two-view
+tolerance consensus retained zero development failures with a descriptive
+90.88% arithmetic-work saving. It now requires a separately frozen confirmation
+run. See the
+[local-spectrum discovery result](docs/tensor-tolerance-discovery-results.md).
+
 ## Experiment flow
 
 ```mermaid
