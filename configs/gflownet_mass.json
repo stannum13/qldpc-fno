@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "seed_domain": "qldpc-fno/gflownet-mass/v1",
+  "training_seeds": [
+    5433845746525267168,
+    3290885510840486326,
+    5680570015728835499
+  ],
+  "sampling_replicate_seeds": [
+    12922700759047819611,
+    14218994044941293520,
+    11575418541509343420
+  ],
+  "hidden_width": 64,
+  "training_steps": 2000,
+  "learning_rate": 0.002,
+  "training_syndrome_indices": [0, 1, 2, 3, 4, 5],
+  "heldout_syndrome_indices": [6, 7],
+  "sample_budgets": [32, 128, 512, 2048],
+  "training_fields": [
+    {"id": "uniform_004", "probabilities": [0.04, 0.04, 0.04, 0.04, 0.04, 0.04, 0.04]},
+    {"id": "uniform_016", "probabilities": [0.16, 0.16, 0.16, 0.16, 0.16, 0.16, 0.16]},
+    {"id": "smooth_forward", "probabilities": [0.04, 0.06, 0.09, 0.14, 0.18, 0.12, 0.07]},
+    {"id": "smooth_reverse", "probabilities": [0.07, 0.12, 0.18, 0.14, 0.09, 0.06, 0.04]},
+    {"id": "alternating", "probabilities": [0.05, 0.17, 0.06, 0.16, 0.07, 0.15, 0.08]}
+  ]
+}
