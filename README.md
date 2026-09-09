@@ -173,6 +173,19 @@ than a naive low-to-high cascade. Read the
 [adaptive tensor-network result and its claim boundary](docs/tensor-network-adaptive-results.md)
 or inspect the [complete action table](evidence/tensor-network-reference/tensor_network_reference.json).
 
+That oracle opportunity has now survived a locked policy test. A symbolic rule
+uses `chi=4` directly at distance 3 and, at distance 5, accepts only when row and
+column `chi=4` contractions agree; disagreement falls back to column `chi=8`.
+On 960 untouched independent channel draws, the rule and fixed comparator each
+made zero logical-class errors in every distance/rate stratum. The
+familywise-adjusted one-sided upper bound is 4.169% per stratum. The rule saved
+60.26% of estimated arithmetic work, with a paired-bootstrap one-sided 95% lower
+bound of 59.44%, and invoked the fallback four times. This is a planar
+code-capacity arithmetic result—not measured latency or an end-to-end decoder
+comparison. Read the
+[locked tensor-consensus result](docs/tensor-consensus-confirmation-results.md)
+or inspect the [scored evidence](evidence/tensor-consensus-confirmation/tensor_consensus.json).
+
 ## Experiment flow
 
 ```mermaid

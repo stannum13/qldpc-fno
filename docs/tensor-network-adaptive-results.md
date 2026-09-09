@@ -150,12 +150,13 @@ Not established:
 - FPGA latency, throughput, memory fit, or streaming backlog stability;
 - benefit from RL, attention, FNO, HiPPO, or a world model.
 
-The next experiment is therefore a prediction test, not a larger architecture.
-Using only information available before an action—syndrome geometry, channel
-rate, code distance, and cheap contraction diagnostics—we will compare a fixed
-cascade, a small calibrated classifier, and a shallow decision tree on untouched
-instances. A world model or RL controller becomes justified only if sequential
-actions add value beyond that contextual decision.
+The next experiment was therefore a prediction test, not a larger architecture.
+A two-view symbolic consensus rule was frozen on separate design data and then
+tested on an untouched seed domain. It passed its logical-class safety and work
+gates: see the
+[locked tensor-consensus confirmation](tensor-consensus-confirmation-results.md).
+A world model or RL controller remains unjustified until sequential contraction
+actions add value beyond that rule.
 
 ## Reproduce
 

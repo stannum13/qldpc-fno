@@ -262,13 +262,17 @@ that headroom survives.
 
 ### Task 20: implement adaptive coarse-graining and bond allocation
 
-- [ ] Define observable contraction states and finite actions for region/order,
+- [x] Define the first observable finite actions over contraction order and bond
+  dimension, with no reference-only policy features.
+- [ ] Extend observable contraction states and finite actions to region,
   scale factor, and next bond dimension.
 - [ ] Add fixed-`chi`, fixed geometric renormalization, and hyper-optimized
   contraction comparators.
-- [ ] Create complete action-outcome tables on small networks using the same
+- [x] Create complete action-outcome tables on small networks using the same
   high-`chi` reference, without exposing that reference to policy features.
-- [ ] Evaluate adaptive rules at matched logical accuracy and matched compute,
+- [x] Confirm a frozen two-view rule against fixed `chi=8` on an untouched seed
+  domain at matched logical-class accuracy and estimated arithmetic work.
+- [ ] Evaluate multistep adaptive rules at matched logical accuracy and compute,
   including peak memory and worst-case work.
 
 ## Phase F: world model, RL, and symbolic distillation
