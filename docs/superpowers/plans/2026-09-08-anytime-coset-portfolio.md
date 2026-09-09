@@ -17,40 +17,40 @@ that headroom survives.
 
 ### Task 0a: implement exact CSS posterior enumeration
 
-- [ ] Add a `qldpc_fno.decision` package with a canonical Steane Z-error
+- [x] Add a `qldpc_fno.decision` package with a canonical Steane Z-error
   problem, independent Bernoulli likelihoods, physical-MAP decoding, exact
   logical-coset posterior aggregation, and Bayes logical risk.
-- [ ] Test syndrome identities, stabilizer invariance, logical toggling,
+- [x] Test syndrome identities, stabilizer invariance, logical toggling,
   posterior normalization, and a frozen physical-MAP/coset-MAP counterexample
   before implementing each behavior.
-- [ ] Use only an independent stabilizer basis and assert one canonical
+- [x] Use only an independent stabilizer basis and assert one canonical
   coefficient representation per affine-space member.
 
 ### Task 0b: produce the sensitivity and exhaustive-action artifact
 
-- [ ] Add a deterministic CLI that evaluates nominal-uniform, correct-global,
+- [x] Add a deterministic CLI that evaluates nominal-uniform, correct-global,
   and correct-spatial priors under frozen uniform and heterogeneous true
   channels for every syndrome.
-- [ ] Store the true syndrome probability, selected physical error and logical
+- [x] Store the true syndrome probability, selected physical error and logical
   class, inferred class probabilities, conditional Bayes risk, operation count,
   input hashes, and code identity in JSON.
-- [ ] Summarize how often a better prior changes the physical error, logical
+- [x] Summarize how often a better prior changes the physical error, logical
   class, and Bayes risk. Label exact enumeration separately from any sampled
   logical-error estimate.
-- [ ] Run the artifact twice into different temporary directories and require
+- [x] Run the artifact twice into different temporary directories and require
   byte-identical JSON.
 
 ### Task 0c: decide which advanced branches have oracle headroom
 
-- [ ] Measure the best possible improvement from choosing among the frozen
+- [x] Measure the best possible improvement from choosing among the frozen
   inference actions with access to the true channel, and the improvement from
   exact coset aggregation over physical MAP.
-- [ ] Open GFlowNet work only if multiple physical configurations contribute
+- [x] Open GFlowNet work only if multiple physical configurations contribute
   material posterior mass and class aggregation changes at least one frozen
   decision.
-- [ ] Open adaptive contraction work only when a tensor-network reference on a
+- [x] Open adaptive contraction work only when a tensor-network reference on a
   local code exposes an accuracy-cost frontier across `chi`.
-- [ ] Open learned action selection only if action values vary across observable
+- [x] Open learned action selection only if action values vary across observable
   states; otherwise publish the invariance or constant-policy result.
 
 ## Phase A: cheapest disconfirmation on opened data

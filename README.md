@@ -124,6 +124,30 @@ first requires spatially heterogeneous history to improve actual decoder work
 or block error rate. The frozen contract is in the
 [anytime logical-coset portfolio design](docs/superpowers/specs/2026-09-08-anytime-coset-portfolio-design.md).
 
+### Exact decision gate
+
+The first new gate is deliberately small enough to solve without approximation.
+For the Steane `[[7,1,3]]` code, the repository enumerates all 128 Z-error
+patterns and computes both the most likely physical error and the total posterior
+mass of each logical class. This prevents a learned architecture from being
+credited before there is a decision it can improve.
+
+The frozen heterogeneous channel produces one syndrome where physical MAP and
+logical-coset MAP disagree. Across the whole channel, exact spatial reliabilities
+plus coset aggregation reduce expected logical failure from `0.298857` to
+`0.255921`; replacing the nominal rate with only the correct global mean changes
+nothing. The same exhaustive table finds zero oracle headroom for an
+action-selection policy: one constant action is optimal for every observable
+syndrome. Probability-mass approximation therefore advances to the next gate,
+while RL does not.
+
+Read the [exact results and claim boundary](docs/prediction-to-decision-exact-results.md)
+or inspect the tracked [96-row action table](evidence/prediction-to-decision-exact/action_table.json).
+The broader plan now treats GFlowNet sampling and adaptive tensor contraction as
+competing mass-estimation engines. A hypergraph world model and RL controller are
+opened only if later sequential contraction experiments demonstrate nonzero
+state-dependent policy value.
+
 ## Experiment flow
 
 ```mermaid

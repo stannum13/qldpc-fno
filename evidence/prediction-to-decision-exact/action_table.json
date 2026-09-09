@@ -1,0 +1,4858 @@
+{
+  "action_table": [
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.004579739341275979,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.5606374399999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "true_max_physical_posterior": 0.9950220257078801
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.004579739341275979,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.5606374399999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "true_max_physical_posterior": 0.9950220257078801
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.004579739341275979,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.5606374399999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "true_max_physical_posterior": 0.9950220257078801
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.004579739341275979,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.5606374399999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "true_max_physical_posterior": 0.9950220257078801
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.004579739341275979,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.5606374399999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "true_max_physical_posterior": 0.9950220257078801
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.004579739341275979,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.5606374399999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "true_max_physical_posterior": 0.9950220257078801
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999997,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999994,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000002,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999983,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276607999999999,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "true_max_physical_posterior": 0.7728441876172609
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.20364799999999972,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.06276608000000004,
+      "true_channel": "uniform",
+      "true_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "true_max_physical_posterior": 0.772844187617261
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.0744434240085402,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.2527407672568721,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.9255565759914598,
+        0.07444342400854011
+      ],
+      "true_max_physical_posterior": 0.9152243395910197
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.0744434240085402,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.995420260658724,
+        0.004579739341275525
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.2527407672568721,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.9255565759914598,
+        0.07444342400854011
+      ],
+      "true_max_physical_posterior": 0.9152243395910197
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.0744434240085402,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.9303468743655952,
+        0.06965312563440473
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.2527407672568721,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.9255565759914598,
+        0.07444342400854011
+      ],
+      "true_max_physical_posterior": 0.9152243395910197
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.0744434240085402,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.9303468743655952,
+        0.06965312563440473
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.2527407672568721,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.9255565759914598,
+        0.07444342400854011
+      ],
+      "true_max_physical_posterior": 0.9152243395910197
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.0744434240085402,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.9255565759914598,
+        0.07444342400854011
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.2527407672568721,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.9255565759914598,
+        0.07444342400854011
+      ],
+      "true_max_physical_posterior": 0.9152243395910197
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.0744434240085402,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.9255565759914598,
+        0.07444342400854011
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.2527407672568721,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.9255565759914598,
+        0.07444342400854011
+      ],
+      "true_max_physical_posterior": 0.9152243395910197
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.39020960460023746,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.11193534413976436,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.39020960460023746,
+        0.6097903953997625
+      ],
+      "true_max_physical_posterior": 0.5394371194431304
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.39020960460023746,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.11193534413976436,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.39020960460023746,
+        0.6097903953997625
+      ],
+      "true_max_physical_posterior": 0.5394371194431304
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.39020960460023746,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561874,
+        0.6294129837643815
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.11193534413976436,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.39020960460023746,
+        0.6097903953997625
+      ],
+      "true_max_physical_posterior": 0.5394371194431304
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.39020960460023746,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561874,
+        0.6294129837643815
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.11193534413976436,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.39020960460023746,
+        0.6097903953997625
+      ],
+      "true_max_physical_posterior": 0.5394371194431304
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.39020960460023746,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.39020960460023746,
+        0.6097903953997625
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.11193534413976436,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.39020960460023746,
+        0.6097903953997625
+      ],
+      "true_max_physical_posterior": 0.5394371194431304
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.39020960460023746,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.39020960460023746,
+        0.6097903953997625
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        0
+      ],
+      "syndrome_probability": 0.11193534413976436,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.39020960460023746,
+        0.6097903953997625
+      ],
+      "true_max_physical_posterior": 0.5394371194431304
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.2906338643068739,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.13971797040301792,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.2906338643068739,
+        0.7093661356931261
+      ],
+      "true_max_physical_posterior": 0.68769496996029
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.2906338643068739,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.13971797040301792,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.2906338643068739,
+        0.7093661356931261
+      ],
+      "true_max_physical_posterior": 0.68769496996029
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.2906338643068739,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.3705870162356187,
+        0.6294129837643813
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.13971797040301792,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.2906338643068739,
+        0.7093661356931261
+      ],
+      "true_max_physical_posterior": 0.68769496996029
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.2906338643068739,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.3705870162356187,
+        0.6294129837643813
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.13971797040301792,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.2906338643068739,
+        0.7093661356931261
+      ],
+      "true_max_physical_posterior": 0.68769496996029
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.2906338643068739,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.2906338643068739,
+        0.7093661356931261
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.13971797040301792,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.2906338643068739,
+        0.7093661356931261
+      ],
+      "true_max_physical_posterior": 0.68769496996029
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.2906338643068739,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.2906338643068739,
+        0.7093661356931261
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.13971797040301792,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.2906338643068739,
+        0.7093661356931261
+      ],
+      "true_max_physical_posterior": 0.68769496996029
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.2453117615756195,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.12895793763339777,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.24531176157561954,
+        0.7546882384243805
+      ],
+      "true_max_physical_posterior": 0.7101706054498287
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.2453117615756195,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.12895793763339777,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.24531176157561954,
+        0.7546882384243805
+      ],
+      "true_max_physical_posterior": 0.7101706054498287
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.2453117615756195,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561874,
+        0.6294129837643815
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.12895793763339777,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.24531176157561954,
+        0.7546882384243805
+      ],
+      "true_max_physical_posterior": 0.7101706054498287
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.2453117615756195,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561874,
+        0.6294129837643815
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.12895793763339777,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.24531176157561954,
+        0.7546882384243805
+      ],
+      "true_max_physical_posterior": 0.7101706054498287
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.2453117615756195,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.24531176157561954,
+        0.7546882384243805
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.12895793763339777,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.24531176157561954,
+        0.7546882384243805
+      ],
+      "true_max_physical_posterior": 0.7101706054498287
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.2453117615756195,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.24531176157561954,
+        0.7546882384243805
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        0
+      ],
+      "syndrome_probability": 0.12895793763339777,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.24531176157561954,
+        0.7546882384243805
+      ],
+      "true_max_physical_posterior": 0.7101706054498287
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.1899746009055433,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.12629490771975127,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.1899746009055433,
+        0.8100253990944567
+      ],
+      "true_max_physical_posterior": 0.7650549346669075
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.1899746009055433,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999975,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.12629490771975127,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.1899746009055433,
+        0.8100253990944567
+      ],
+      "true_max_physical_posterior": 0.7650549346669075
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.1899746009055433,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561857,
+        0.6294129837643814
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.12629490771975127,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.1899746009055433,
+        0.8100253990944567
+      ],
+      "true_max_physical_posterior": 0.7650549346669075
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.1899746009055433,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561857,
+        0.6294129837643814
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.12629490771975127,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.1899746009055433,
+        0.8100253990944567
+      ],
+      "true_max_physical_posterior": 0.7650549346669075
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.1899746009055433,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.1899746009055433,
+        0.8100253990944567
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.12629490771975127,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.1899746009055433,
+        0.8100253990944567
+      ],
+      "true_max_physical_posterior": 0.7650549346669075
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.1899746009055433,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.1899746009055433,
+        0.8100253990944567
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        0,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.12629490771975127,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.1899746009055433,
+        0.8100253990944567
+      ],
+      "true_max_physical_posterior": 0.7650549346669075
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.6132125554559459,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.0702094121480287,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.613212555455946,
+        0.3867874445440541
+      ],
+      "true_max_physical_posterior": 0.35924301235442324
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.6132125554559459,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999997,
+        0.7963520000000001
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.0702094121480287,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.613212555455946,
+        0.3867874445440541
+      ],
+      "true_max_physical_posterior": 0.35924301235442324
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.6132125554559459,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561874,
+        0.6294129837643815
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.0702094121480287,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.613212555455946,
+        0.3867874445440541
+      ],
+      "true_max_physical_posterior": 0.35924301235442324
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.6132125554559459,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561874,
+        0.6294129837643815
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.0702094121480287,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.613212555455946,
+        0.3867874445440541
+      ],
+      "true_max_physical_posterior": 0.35924301235442324
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.386787444544054,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.613212555455946,
+        0.3867874445440541
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.0702094121480287,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.613212555455946,
+        0.3867874445440541
+      ],
+      "true_max_physical_posterior": 0.35924301235442324
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.386787444544054,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.613212555455946,
+        0.3867874445440541
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        1,
+        0,
+        1
+      ],
+      "syndrome_probability": 0.0702094121480287,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.613212555455946,
+        0.3867874445440541
+      ],
+      "true_max_physical_posterior": 0.35924301235442324
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.4840792474834329,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.09517797080711253,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.48407924748343273,
+        0.5159207525165671
+      ],
+      "true_max_physical_posterior": 0.42168414719473796
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.4840792474834329,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999988,
+        0.7963520000000002
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.09517797080711253,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.48407924748343273,
+        0.5159207525165671
+      ],
+      "true_max_physical_posterior": 0.42168414719473796
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.4840792474834329,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561874,
+        0.6294129837643813
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.09517797080711253,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.48407924748343273,
+        0.5159207525165671
+      ],
+      "true_max_physical_posterior": 0.42168414719473796
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.4840792474834329,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.37058701623561874,
+        0.6294129837643813
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.09517797080711253,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.48407924748343273,
+        0.5159207525165671
+      ],
+      "true_max_physical_posterior": 0.42168414719473796
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.5159207525165672,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.48407924748343273,
+        0.5159207525165671
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.09517797080711253,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.48407924748343273,
+        0.5159207525165671
+      ],
+      "true_max_physical_posterior": 0.42168414719473796
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.4840792474834329,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.48407924748343273,
+        0.5159207525165671
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "syndrome": [
+        0,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.09517797080711253,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.48407924748343273,
+        0.5159207525165671
+      ],
+      "true_max_physical_posterior": 0.42168414719473796
+    },
+    {
+      "action_id": "nominal_uniform/physical_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.6803402420485054,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.07496568989205535,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.6803402420485055,
+        0.31965975795149454
+      ],
+      "true_max_physical_posterior": 0.5102979566316318
+    },
+    {
+      "action_id": "nominal_uniform/coset_map",
+      "assumed_probabilities": [
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08,
+        0.08
+      ],
+      "conditional_bayes_risk": 0.6803402420485054,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.20364799999999986,
+        0.7963520000000003
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "nominal_uniform",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.07496568989205535,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.6803402420485055,
+        0.31965975795149454
+      ],
+      "true_max_physical_posterior": 0.5102979566316318
+    },
+    {
+      "action_id": "correct_global/physical_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.6803402420485054,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.3705870162356187,
+        0.6294129837643815
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.07496568989205535,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.6803402420485055,
+        0.31965975795149454
+      ],
+      "true_max_physical_posterior": 0.5102979566316318
+    },
+    {
+      "action_id": "correct_global/coset_map",
+      "assumed_probabilities": [
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806,
+        0.18135584751301806
+      ],
+      "conditional_bayes_risk": 0.6803402420485054,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.3705870162356187,
+        0.6294129837643815
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_global",
+      "selected_logical_class": 1,
+      "selected_physical_error": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.07496568989205535,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.6803402420485055,
+        0.31965975795149454
+      ],
+      "true_max_physical_posterior": 0.5102979566316318
+    },
+    {
+      "action_id": "correct_spatial/physical_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.3196597579514945,
+      "decoder": "physical_map",
+      "inferred_logical_class_probabilities": [
+        0.6803402420485055,
+        0.31965975795149454
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.07496568989205535,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.6803402420485055,
+        0.31965975795149454
+      ],
+      "true_max_physical_posterior": 0.5102979566316318
+    },
+    {
+      "action_id": "correct_spatial/coset_map",
+      "assumed_probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ],
+      "conditional_bayes_risk": 0.3196597579514945,
+      "decoder": "coset_map",
+      "inferred_logical_class_probabilities": [
+        0.6803402420485055,
+        0.31965975795149454
+      ],
+      "operation_breakdown": {
+        "likelihood_evaluations": 16,
+        "logical_class_additions": 16,
+        "logical_signature_evaluations": 16,
+        "syndrome_checks": 128
+      },
+      "operation_count": 176,
+      "prior_id": "correct_spatial",
+      "selected_logical_class": 0,
+      "selected_physical_error": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "syndrome": [
+        1,
+        1,
+        1
+      ],
+      "syndrome_probability": 0.07496568989205535,
+      "true_channel": "heterogeneous_counterexample",
+      "true_logical_class_probabilities": [
+        0.6803402420485055,
+        0.31965975795149454
+      ],
+      "true_max_physical_posterior": 0.5102979566316318
+    }
+  ],
+  "actions": [
+    "nominal_uniform/physical_map",
+    "nominal_uniform/coset_map",
+    "correct_global/physical_map",
+    "correct_global/coset_map",
+    "correct_spatial/physical_map",
+    "correct_spatial/coset_map"
+  ],
+  "claim_boundary": "Exact independent-Z posterior calculation on one Steane-code instance; not a sampled logical-error rate, threshold, qLDPC, circuit-level, or latency result.",
+  "code": {
+    "checks": 3,
+    "hx": [
+      [
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        0
+      ],
+      [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ]
+    ],
+    "identity_sha256": "d2e99bf25f2fa5ee808f4dd6b0137521eed241e0d1edd8169961a0ba9436e128",
+    "logical_qubits": 1,
+    "logical_x": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "logical_z": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "n": 7,
+    "name": "steane_z_7_1_3",
+    "z_stabilizers": [
+      [
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        0
+      ],
+      [
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1
+      ]
+    ]
+  },
+  "exact_enumeration": true,
+  "gates": {
+    "adaptive_contraction_requires_separate_local_code_frontier": true,
+    "aggregation_changed_decision_count": 1,
+    "best_constant_action": "correct_spatial/coset_map",
+    "best_constant_expected_logical_failure": 0.17398191275405664,
+    "material_two_class_state_count": 14,
+    "observable_policy_common_optimal_actions": [
+      "correct_spatial/coset_map"
+    ],
+    "observable_policy_oracle_absolute_improvement": 0.0,
+    "observable_policy_oracle_expected_logical_failure": 0.17398191275405667,
+    "observable_policy_requires_state_dependent_action": false,
+    "observable_policy_state": "syndrome_only_with_equal_true_channel_mixture",
+    "open_learned_action_selection": false,
+    "open_probability_mass_inference": true,
+    "thresholds": {
+      "decision_variation_tolerance": 1e-12,
+      "material_configuration_probability_ceiling": 0.9,
+      "material_logical_class_probability_floor": 0.05
+    }
+  },
+  "operation_count_model": {
+    "claim_boundary": "A deterministic algorithmic proxy shared by all exact actions; not a latency, FLOP, or executed-instruction measurement.",
+    "excluded": [
+      "per-qubit arithmetic",
+      "normalization",
+      "argmax",
+      "allocation"
+    ],
+    "included": [
+      "one parity-check-vector comparison per enumerated physical error",
+      "one likelihood evaluation per syndrome-compatible physical error",
+      "one logical-signature evaluation per compatible physical error",
+      "one class-mass accumulation per compatible physical error"
+    ],
+    "name": "declared_exact_primitive_count/v1"
+  },
+  "provenance": {
+    "config_path": "configs/prediction_to_decision.json",
+    "config_sha256": "9cf1d0fada74545aa77c53778c73122d9a453d5550d5189150da773b45be53a4",
+    "implementation": "exact_css_enumeration/v1",
+    "source_sha256": {
+      "exact_css.py": "c46cc901f1eb8d9c58309293bcca129e42c2779626b8a8b99db571b3909c45f6",
+      "study.py": "7aafd57f993285d2e54e05eb56d135f8000a4fc2941e88caa17dd069619b0738"
+    }
+  },
+  "schema_version": 1,
+  "summaries": [
+    {
+      "baseline_action": "nominal_uniform/physical_map",
+      "baseline_expected_logical_failure": 0.09204287995904019,
+      "best_fixed_absolute_improvement": 0.0,
+      "best_fixed_action": "correct_global/coset_map",
+      "best_fixed_expected_logical_failure": 0.09204287995904019,
+      "expected_logical_failure_by_action": {
+        "correct_global/coset_map": 0.09204287995904019,
+        "correct_global/physical_map": 0.09204287995904019,
+        "correct_spatial/coset_map": 0.09204287995904019,
+        "correct_spatial/physical_map": 0.09204287995904019,
+        "nominal_uniform/coset_map": 0.09204287995904019,
+        "nominal_uniform/physical_map": 0.09204287995904019
+      },
+      "per_syndrome_oracle_absolute_improvement": 0.0,
+      "per_syndrome_oracle_expected_logical_failure": 0.09204287995904019,
+      "prior_effects_against_nominal": [
+        {
+          "conditional_bayes_risk_change_count": 0,
+          "decoder": "physical_map",
+          "expected_logical_failure_improvement": 0.0,
+          "logical_class_change_count": 0,
+          "physical_correction_change_count": 0,
+          "prior_id": "correct_global"
+        },
+        {
+          "conditional_bayes_risk_change_count": 0,
+          "decoder": "coset_map",
+          "expected_logical_failure_improvement": 0.0,
+          "logical_class_change_count": 0,
+          "physical_correction_change_count": 0,
+          "prior_id": "correct_global"
+        },
+        {
+          "conditional_bayes_risk_change_count": 0,
+          "decoder": "physical_map",
+          "expected_logical_failure_improvement": 0.0,
+          "logical_class_change_count": 0,
+          "physical_correction_change_count": 0,
+          "prior_id": "correct_spatial"
+        },
+        {
+          "conditional_bayes_risk_change_count": 0,
+          "decoder": "coset_map",
+          "expected_logical_failure_improvement": 0.0,
+          "logical_class_change_count": 0,
+          "physical_correction_change_count": 0,
+          "prior_id": "correct_spatial"
+        }
+      ],
+      "true_channel": "uniform"
+    },
+    {
+      "baseline_action": "nominal_uniform/physical_map",
+      "baseline_expected_logical_failure": 0.2988567808026822,
+      "best_fixed_absolute_improvement": 0.042935835253609056,
+      "best_fixed_action": "correct_spatial/coset_map",
+      "best_fixed_expected_logical_failure": 0.25592094554907313,
+      "expected_logical_failure_by_action": {
+        "correct_global/coset_map": 0.2988567808026822,
+        "correct_global/physical_map": 0.2988567808026822,
+        "correct_spatial/coset_map": 0.25592094554907313,
+        "correct_spatial/physical_map": 0.2589515553855713,
+        "nominal_uniform/coset_map": 0.2988567808026822,
+        "nominal_uniform/physical_map": 0.2988567808026822
+      },
+      "per_syndrome_oracle_absolute_improvement": 0.042935835253609056,
+      "per_syndrome_oracle_expected_logical_failure": 0.25592094554907313,
+      "prior_effects_against_nominal": [
+        {
+          "conditional_bayes_risk_change_count": 0,
+          "decoder": "physical_map",
+          "expected_logical_failure_improvement": 0.0,
+          "logical_class_change_count": 0,
+          "physical_correction_change_count": 0,
+          "prior_id": "correct_global"
+        },
+        {
+          "conditional_bayes_risk_change_count": 0,
+          "decoder": "coset_map",
+          "expected_logical_failure_improvement": 0.0,
+          "logical_class_change_count": 0,
+          "physical_correction_change_count": 0,
+          "prior_id": "correct_global"
+        },
+        {
+          "conditional_bayes_risk_change_count": 3,
+          "decoder": "physical_map",
+          "expected_logical_failure_improvement": 0.03990522541711089,
+          "logical_class_change_count": 3,
+          "physical_correction_change_count": 3,
+          "prior_id": "correct_spatial"
+        },
+        {
+          "conditional_bayes_risk_change_count": 2,
+          "decoder": "coset_map",
+          "expected_logical_failure_improvement": 0.042935835253609056,
+          "logical_class_change_count": 2,
+          "physical_correction_change_count": 2,
+          "prior_id": "correct_spatial"
+        }
+      ],
+      "true_channel": "heterogeneous_counterexample"
+    }
+  ]
+}
