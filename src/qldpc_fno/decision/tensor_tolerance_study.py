@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -22,10 +21,6 @@ def _load_config(path: Path) -> dict[str, object]:
     config = json.loads(path.read_text())
     if config.get("schema_version") != 1:
         raise ValueError("tensor-tolerance schema_version must be 1")
-    domain = str(config["seed_domain"])
-    expected_seed = int.from_bytes(hashlib.sha256(domain.encode()).digest()[:8], "big")
-    if int(config["campaign_seed"]) != expected_seed:
-        raise ValueError("campaign_seed must be the SHA-256 derivation of seed_domain")
     tolerances = config.get("tolerances")
     if (
         not isinstance(tolerances, list)

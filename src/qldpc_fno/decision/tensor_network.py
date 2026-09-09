@@ -234,7 +234,7 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
                 {
                     "matrix_rows": int(m),
                     "matrix_columns": int(n),
-                    "full_rank": int(singular_values.size),
+                    "singular_value_count": int(singular_values.size),
                     "retained_rank": retained_rank,
                     "requested_chi": requested_chi,
                     "requested_tol": requested_tol,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -16,11 +15,8 @@ def test_tolerance_study_uses_locked_reference_and_records_local_spectra(
     reference_dir = tmp_path / "reference"
     run_tensor_network_study(reference_config(tmp_path), reference_dir)
     reference_path = reference_dir / "tensor_network_reference.json"
-    domain = "qldpc-fno/tensor-tolerance-test/v1"
     config = {
         "schema_version": 1,
-        "seed_domain": domain,
-        "campaign_seed": int.from_bytes(hashlib.sha256(domain.encode()).digest()[:8], "big"),
         "expected_reference_sha256": sha256_file(reference_path),
         "tolerances": [0.001, 0.01],
         "contraction_modes": ["columns", "rows"],
