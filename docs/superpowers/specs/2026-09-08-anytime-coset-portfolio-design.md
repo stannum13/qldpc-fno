@@ -1,6 +1,6 @@
 # Anytime Logical-Coset Portfolio: Experiment Design
 
-**Status:** design frozen before implementation. No result is claimed here.
+**Status:** extended before implementation on 9 September 2026. No result is claimed here.
 
 ## Purpose
 
@@ -95,7 +95,8 @@ serial scheduling, 100 iterations, `ms_scaling_factor=0`, `LSD_E`, and order 5.
 Perturbed probabilities are clipped to `[1e-5, 0.5-1e-5]`. The thermal field is
 resampled once per shot and remains fixed for all BP/LSD work on that shot. The
 randomized arm constructs one decoder per shot and uses only `ldpc==2.4.1`'s
-native `random_schedule_seed`; it does not pass `serial_schedule_order`. A
+native `random_schedule_seed` with `random_serial_schedule=True`; it does not
+pass `serial_schedule_order`. A
 deterministic fixture must characterize whether the native order changes across
 iterations and prove identical corrections, convergence, and iteration counts
 under replay before the first development decode. Random schedule seeds and
@@ -196,16 +197,15 @@ not block the cheaper source-five disconfirmation. Its adapter must use the same
 replay deterministically; and receive tuning effort on development data before
 confirmation.
 
-The frozen Relay development search uses 4,096 new development shots and the 16
-Cartesian configurations formed by `gamma0 in {0.05, 0.10}`,
-`pre_iter in {40, 80}`, `num_sets in {30, 60}`, and
-`gamma_dist_interval in {(-0.24, 0.66), (-0.18, 0.54)}`, with
-`set_max_iter=60` and `stop_nconv=1`. Selection minimizes BLER, then mean BP
-iterations, then the listed lexicographic parameter order. Confirmation compares
-against the better, under this frozen development rule, of the selected
-configuration and the documented default
-`(0.10, 80, 60, (-0.24, 0.66), 60, 1)`. The implementation version, trial count,
-sample role, metric, compute consumed, and all results are retained even when
+Relay-BP integration begins by reproducing the released implementation's
+documented examples. Its development search includes `stop_nconv` values that
+retain 1, 5, and 9 valid solutions, rather than treating the cheapest one-solution
+setting as a strong ensemble baseline. The exact grid, its compute cap, and the
+documented default are frozen only after the adapter reproduces reference cases
+and a development timing slice establishes the affordable number of configurations.
+Selection minimizes BLER, then mean graph-message updates, then the frozen
+lexicographic parameter order. The implementation version, trial count, sample
+role, metric, compute consumed, and every attempted result are retained even when
 tuning makes performance worse.
 
 Gate 1b asks whether FNO adds oracle headroom beyond source-five plus tuned
@@ -295,6 +295,152 @@ logical error or BP work. At that point FNO may estimate low-frequency spatial
 modes and HiPPO may carry their causal temporal state. A global scalar drift
 forecast alone is insufficient justification because it mostly changes common
 LLR scale rather than reliability ordering.
+
+## Extension: prediction-to-decision and adaptive inference
+
+The portfolio gates now sit inside a broader causal sequence:
+
+```text
+syndrome history -> estimated noise -> inferred logical mass
+                 -> next computation -> correction and work
+```
+
+Each arrow receives its own oracle test. A downstream architecture opens only
+when its oracle information changes the logical decision or reduces work.
+Forecast NLL, candidate count, contraction accuracy, controller confidence, and
+logical failure remain separate endpoints.
+
+### Gate 0: exact logical sensitivity
+
+Before approximate qLDPC decoding, enumerate every Z-error pattern of the Steane
+`[[7,1,3]]` CSS code. For every syndrome and declared independent Bernoulli
+field, compute the normalized physical posterior, the most likely physical
+error, exact probability mass in each relative logical class, and the
+maximum-posterior logical class.
+
+The implementation uses a fixed canonical `Hx`, an independent row basis for Z
+stabilizers, and a logical-X action. It validates that stabilizer additions
+preserve syndrome and logical signature and that adding logical Z preserves
+syndrome while toggling the signature. It enumerates all 128 errors, so it has no
+sampling or optimization error.
+
+Gate 0 sweeps uniform priors and deterministic heterogeneous fields. It includes
+at least one frozen counterexample where the class of the most likely physical
+error differs from the class with the greatest total posterior mass. It reports
+how often three assumed priors—nominal uniform, correct global mean, and correct
+heterogeneous field—change the physical correction, logical class, and Bayes
+logical risk under each true channel. This distinguishes prediction accuracy
+from decision sensitivity.
+
+Gate 0 also publishes an exhaustive action table. A row contains the syndrome,
+assumed-prior identity, chosen correction, chosen class, class posterior, Bayes
+risk under the true channel, and deterministic operation count. The true channel
+may label training and evaluation rows but is not an inference-time input. This
+table is the reference environment for symbolic policies, contextual action
+selection, GFlowNet sampling, and adaptive contraction.
+
+### Gate 4: probability-directed generative search
+
+A GFlowNet is evaluated as an alternative inference engine only after Gate 0
+finds a distribution with meaningful mass in multiple physical configurations
+or logical classes. Its state is a partial assignment of coefficients in a
+unique algebraic parameterization of the syndrome-consistent affine space. Every
+terminal object is a syndrome-valid error. The reward is the declared error
+likelihood, and terminal objects are aggregated by logical signature.
+
+The unique parameterization is mandatory. If several action sequences or
+redundant stabilizer generators represent the same physical error, the flow
+objective would learn trajectory multiplicity in addition to physical
+probability. The implementation must either prove one terminal representation
+per error or correct the reward by the known representation count.
+
+On the exact code, compare estimated class probabilities with enumeration using
+total variation distance, worst-class absolute error, top-class accuracy,
+effective sample size, coverage, and wall-clock work. Baselines are direct
+ancestral sampling from the physical channel followed by syndrome rejection,
+Metropolis sampling over an independent affine basis, and deterministic
+enumeration. A GFlowNet proceeds to the LP code only if it improves logical-class
+posterior error at matched generated and evaluated terminal objects. Diversity
+alone does not pass the gate.
+
+### Gate 5: adaptive tensor-network and renormalization inference
+
+Tensor-network decoding represents each logical-coset probability as a partition
+function. Approximate contraction introduces choices about contraction order,
+coarse-graining layout, truncation tolerance, and retained bond dimension `chi`.
+Gate 5 tests whether those choices should vary by syndrome and scale.
+
+The first experiment uses a planar surface-code tensor network with a high-`chi`
+reference. A state at contraction step `u` records the current coarse graph,
+scale, local tensor shapes, singular-value spectra available from completed
+decompositions, accumulated discarded weight, current log-partition estimates
+for competing logical classes, elapsed work, and peak memory. Valid actions
+choose the next region or bond, a coarse-graining factor from a finite set, and
+the next `chi` from a frozen ladder. No action observes the high-`chi` answer.
+
+The primary decision is the winning logical class. Secondary endpoints are error
+in log coset-mass ratios, FLOPs, peak elements, and latency. Fixed-`chi`, fixed
+geometric renormalization, and established hyper-optimized contraction
+strategies are required baselines. The adaptive method is compared at equal
+logical error and equal compute budgets.
+
+For nonplanar qLDPC Tanner graphs, “renormalization scale” means a recorded
+hierarchy from hypergraph partitioning, rather than Euclidean distance. The LP
+branch opens only after treewidth and intermediate-rank diagnostics show that the
+tested contractions are tractable. Failure to meet this diagnostic scopes Gate 5
+to local topological codes.
+
+### Gate 6: action-conditioned hypergraph world model
+
+The world model predicts the consequences of inference actions. Its latent state
+compresses observable solver state. Given an action, it predicts a distribution
+over the change in logical-coset log-mass gaps, change in an independently
+measured approximation-error bound, probability that the selected logical class
+changes, extra FLOPs and memory, and the next observable solver state.
+
+A sparse multiscale transformer may encode nodes, checks, contraction regions,
+and current logical candidates. Cross-scale attention is restricted to the
+recorded partition hierarchy and Tanner incidences. FNO features are optional
+for periodic real-valued fields; HiPPO or another state-space memory is optional
+for physical syndrome time. Contraction-step history and physical time have
+separate encoders and ablation labels.
+
+Model size grows only after an interaction-order ladder—scalar summaries, node
+and check statistics, short-cycle motifs, hypergraph regions, then cross-scale
+attention—shows held-out value at the previous level. The model is evaluated on
+future-step calibration, logical-class transition prediction, and cost
+prediction, including code sizes, noise regimes, and syndromes outside its
+training split.
+
+### Gate 7: RL and symbolic policy
+
+For one independent action, the controller is evaluated as a contextual ranker.
+It is called reinforcement learning only when an action changes the solver state
+used by later actions. Training initially uses exhaustive logged action outcomes
+so that each policy decision can be compared with counterfactual alternatives on
+the same problem instance.
+
+The reward is logical success minus separately reported compute and backlog
+costs. Entropy reduction is not a reward because an approximate solver can become
+more confident while becoming less correct. A fixed cascade, syndrome-weight
+threshold, myopic calibrated value model, and limited-depth search through the
+learned world model are required comparators. Results report the full
+accuracy-work frontier rather than one scalar reward.
+
+The best learned controller is distilled into a small rule list over deployable
+features. Symbolic search enforces syndrome validity, a worst-case work budget,
+and declared code symmetries by construction. The rule list is compared with the
+learned policy on untouched data and exhaustively verified on Gate 0. Symbolic
+distillation passes only if its accuracy-work loss relative to the learned policy
+lies within a frozen tolerance while retaining its hard constraints.
+
+### Relationship among the advanced engines
+
+GFlowNet sampling and adaptive tensor contraction are competing ways to estimate
+logical probability mass. The hypergraph world model predicts the value and cost
+of their next operations. The controller selects operations or stops.
+Enumeration, sampling, contraction, transition prediction, and policy value each
+retain an independent metric and oracle.
 
 ## Final stop rule
 

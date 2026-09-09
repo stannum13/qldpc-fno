@@ -1,11 +1,57 @@
 # Anytime Logical-Coset Portfolio Implementation Plan
 
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> `subagent-driven-development` or `executing-plans` to implement this plan
+> task by task. Steps use checkbox syntax for tracking.
+
 **Goal:** test whether FNO-derived BP views add useful logical-coset diversity
 beyond fair qLDPC baselines, then build a calibrated anytime selector only if
 that headroom survives.
 
 **Design:**
 `docs/superpowers/specs/2026-09-08-anytime-coset-portfolio-design.md`
+
+**Tech stack:** Python 3.14, NumPy, SciPy, Stim, ldpc, PyTorch, pytest.
+
+## Phase 0: exact prediction-to-decision gate
+
+### Task 0a: implement exact CSS posterior enumeration
+
+- [ ] Add a `qldpc_fno.decision` package with a canonical Steane Z-error
+  problem, independent Bernoulli likelihoods, physical-MAP decoding, exact
+  logical-coset posterior aggregation, and Bayes logical risk.
+- [ ] Test syndrome identities, stabilizer invariance, logical toggling,
+  posterior normalization, and a frozen physical-MAP/coset-MAP counterexample
+  before implementing each behavior.
+- [ ] Use only an independent stabilizer basis and assert one canonical
+  coefficient representation per affine-space member.
+
+### Task 0b: produce the sensitivity and exhaustive-action artifact
+
+- [ ] Add a deterministic CLI that evaluates nominal-uniform, correct-global,
+  and correct-spatial priors under frozen uniform and heterogeneous true
+  channels for every syndrome.
+- [ ] Store the true syndrome probability, selected physical error and logical
+  class, inferred class probabilities, conditional Bayes risk, operation count,
+  input hashes, and code identity in JSON.
+- [ ] Summarize how often a better prior changes the physical error, logical
+  class, and Bayes risk. Label exact enumeration separately from any sampled
+  logical-error estimate.
+- [ ] Run the artifact twice into different temporary directories and require
+  byte-identical JSON.
+
+### Task 0c: decide which advanced branches have oracle headroom
+
+- [ ] Measure the best possible improvement from choosing among the frozen
+  inference actions with access to the true channel, and the improvement from
+  exact coset aggregation over physical MAP.
+- [ ] Open GFlowNet work only if multiple physical configurations contribute
+  material posterior mass and class aggregation changes at least one frozen
+  decision.
+- [ ] Open adaptive contraction work only when a tensor-network reference on a
+  local code exposes an accuracy-cost frontier across `chi`.
+- [ ] Open learned action selection only if action values vary across observable
+  states; otherwise publish the invariance or constant-policy result.
 
 ## Phase A: cheapest disconfirmation on opened data
 
@@ -29,9 +75,9 @@ that headroom survives.
 ### Task 2: reproduce the source-paper five views
 
 - Extend BP-LSD construction with the pinned package's native
-  `random_schedule_seed`, one decoder seed per shot, and no explicit serial
-  order. Characterize and freeze the package's across-iteration behavior in a
-  deterministic fixture.
+  `random_schedule_seed`, `random_serial_schedule=True`, one decoder seed per
+  shot, and no explicit serial order. Characterize and freeze the package's
+  across-iteration behavior in a deterministic fixture.
 - Implement deterministic per-shot thermal priors and `0.8p`/`1.2p` views.
 - Verify every correction against the common syndrome.
 - Record exact setup and decoding work without making a speed claim.
@@ -96,8 +142,10 @@ that headroom survives.
 - Pin Relay-BP as an optional dependency and document its license/version.
 - Implement a code-capacity adapter with common syndrome and logical scoring.
 - Reproduce a documented default configuration first.
-- Run the design's fixed 16-configuration search on exactly 4,096 development
-  shots; select by BLER, mean iterations, then fixed parameter order.
+- Reproduce released reference examples, measure a development timing slice,
+  then freeze an affordable search that includes `stop_nconv` values 1, 5, and
+  9. Use exactly 4,096 development shots; select by BLER, mean graph-message
+  updates, then fixed parameter order.
 - Retain the documented default and compare against the better of default and
   development-selected configurations under the frozen rule.
 - Require deterministic replay, validity, and matched-information review.
@@ -175,6 +223,92 @@ that headroom survives.
   FNO-plus-HiPPO/S4 estimators.
 - Keep drift estimation, candidate generation, and anytime selection as
   separately ablated components.
+
+## Phase E: probability-mass inference engines
+
+### Task 17: implement exact-space sampling baselines
+
+- [ ] Express each syndrome-consistent Steane error through one affine-basis
+  coefficient vector and test the bijection exhaustively.
+- [ ] Add conditional rejection sampling and Metropolis sampling baselines with
+  exact operation counters and deterministic seed domains.
+- [ ] Compare sampled logical-class probabilities against Task 0a enumeration
+  using total variation, worst-class error, top-class accuracy, coverage, and
+  effective sample size over a frozen sample-budget ladder.
+
+### Task 18: test a trajectory-balance GFlowNet
+
+- [ ] Build a binary coefficient-assignment environment whose terminal state is
+  a unique syndrome-valid physical error and whose reward is its exact channel
+  probability.
+- [ ] Test terminal validity, trajectory multiplicity, reward identity, and
+  logical aggregation before training.
+- [ ] Train on development channels and compare on held-out syndromes and
+  spatial fields at each budget in Task 17.
+- [ ] Stop the branch unless it improves logical-class posterior estimation at
+  matched evaluated terminal objects; diversity without posterior accuracy is
+  recorded as a negative result.
+
+### Task 19: establish a tensor-network reference
+
+- [ ] Construct or adapt a surface-code coset partition-function tensor network
+  with exact small-distance and high-`chi` references.
+- [ ] Sweep fixed contraction orders and a frozen `chi` ladder while recording
+  logical class, log-mass-ratio error, FLOPs, peak elements, and latency.
+- [ ] Verify monotonicity is measured rather than assumed: a larger `chi` may
+  change numerical error nonmonotonically under different contraction orders.
+- [ ] Stop before RL if no meaningful per-instance accuracy-cost variation is
+  present.
+
+### Task 20: implement adaptive coarse-graining and bond allocation
+
+- [ ] Define observable contraction states and finite actions for region/order,
+  scale factor, and next bond dimension.
+- [ ] Add fixed-`chi`, fixed geometric renormalization, and hyper-optimized
+  contraction comparators.
+- [ ] Create complete action-outcome tables on small networks using the same
+  high-`chi` reference, without exposing that reference to policy features.
+- [ ] Evaluate adaptive rules at matched logical accuracy and matched compute,
+  including peak memory and worst-case work.
+
+## Phase F: world model, RL, and symbolic distillation
+
+### Task 21: fit an action-conditioned hypergraph world model
+
+- [ ] Encode Tanner nodes, checks, partition regions, scale, singular spectra,
+  discarded weight, current logical gaps, and remaining budget with masks tied
+  to the hypergraph partition hierarchy.
+- [ ] Predict next observable solver state, logical-gap change, selected-class
+  change, approximation error, FLOPs, and memory with calibrated uncertainty.
+- [ ] Compare scalar, node/check, short-cycle, regional, and cross-scale models
+  in that order; stop increasing interaction order when held-out action-value
+  prediction does not improve.
+- [ ] Test transfer across syndrome distributions, noise fields, code distances,
+  and unseen code instances where the underlying inference engine is defined.
+
+### Task 22: train and confirm the computation policy
+
+- [ ] Start with supervised counterfactual action values from complete logged
+  action tables; compare a fixed cascade, syndrome-weight rule, and calibrated
+  myopic value model.
+- [ ] Add limited-depth model-based planning only when earlier actions alter the
+  state and value of later actions.
+- [ ] Evaluate logical error, regret to the per-instance oracle, mean and tail
+  work, peak memory, latency, and continuous-arrival backlog over the complete
+  accuracy-work frontier.
+- [ ] Never reward predicted entropy reduction by itself; score realized
+  logical outcomes and reference approximation error.
+
+### Task 23: distill and verify a symbolic policy
+
+- [ ] Search a bounded rule grammar over deployable state features with hard
+  syndrome-validity, work-budget, and declared symmetry constraints.
+- [ ] Freeze the rule list on calibration data and compare with the learned
+  controller on untouched confirmation data.
+- [ ] Exhaustively verify every reachable Gate 0 state and report the rule's
+  accuracy-work loss relative to the learned policy.
+- [ ] Retain the symbolic policy only if it satisfies the frozen approximation
+  tolerance and every hard constraint.
 
 ## Verification at every task boundary
 
