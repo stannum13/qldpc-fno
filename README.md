@@ -148,6 +148,13 @@ competing mass-estimation engines. A hypergraph world model and RL controller ar
 opened only if later sequential contraction experiments demonstrate nonzero
 state-dependent policy value.
 
+The first mass-estimation baseline is also complete. See the
+[rejection-versus-Metropolis results](docs/logical-mass-sampling-results.md) and
+their [tracked evidence](evidence/mass-sampling-baselines/mass_sampling.json).
+The study reports separate retained-sample and complete-proposal ladders, plus
+noninterchangeable primitive counts, so it does not turn a sampling result into
+an unsupported speed claim.
+
 ## Experiment flow
 
 ```mermaid

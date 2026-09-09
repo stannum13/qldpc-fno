@@ -228,11 +228,11 @@ that headroom survives.
 
 ### Task 17: implement exact-space sampling baselines
 
-- [ ] Express each syndrome-consistent Steane error through one affine-basis
+- [x] Express each syndrome-consistent Steane error through one affine-basis
   coefficient vector and test the bijection exhaustively.
-- [ ] Add conditional rejection sampling and Metropolis sampling baselines with
+- [x] Add conditional rejection sampling and Metropolis sampling baselines with
   exact operation counters and deterministic seed domains.
-- [ ] Compare sampled logical-class probabilities against Task 0a enumeration
+- [x] Compare sampled logical-class probabilities against Task 0a enumeration
   using total variation, worst-class error, top-class accuracy, coverage, and
   effective sample size over a frozen sample-budget ladder.
 
