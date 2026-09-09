@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "seed_domain": "qldpc-fno/tensor-tolerance-discovery/v1",
+  "campaign_seed": 6912115548104844556,
+  "expected_reference_sha256": "8631af9cdbfb467fe8160f6c2b9a8394b702a68f489e9dd33c18930ae082475d",
+  "tolerances": [1e-8, 1e-6, 1e-4, 1e-3, 1e-2, 5e-2, 1e-1, 2e-1, 5e-1],
+  "contraction_modes": ["columns", "rows"],
+  "logical_class_required": true,
+  "log_mass_ratio_tolerance": 0.05,
+  "fixed_comparator": {
+    "mode": "columns",
+    "chi": 8
+  }
+}
