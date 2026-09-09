@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "nominal_probability": 0.08,
+  "decision_variation_tolerance": 1e-12,
+  "material_configuration_probability_ceiling": 0.9,
+  "material_logical_class_probability_floor": 0.05,
+  "true_channels": [
+    {
+      "id": "uniform",
+      "probabilities": [0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08]
+    },
+    {
+      "id": "heterogeneous_counterexample",
+      "probabilities": [
+        0.026361097715701522,
+        0.2836267887058967,
+        0.02571400281063941,
+        0.2070030417064569,
+        0.13867272654068594,
+        0.2934758009664783,
+        0.29463747414526753
+      ]
+    }
+  ]
+}
