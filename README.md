@@ -155,6 +155,13 @@ The study reports separate retained-sample and complete-proposal ladders, plus
 noninterchangeable primitive counts, so it does not turn a sampling result into
 an unsupported speed claim.
 
+A first [trajectory-balance discovery run](docs/gflownet-mass-discovery-results.md)
+then failed for a more basic reason: its learned terminal distribution remained
+biased even as the number of generated samples increased. The run is published
+as nonconfirmatory evidence, not rescued through post-hoc tuning. This narrows the
+next useful control to direct autoregressive distillation or symmetry-aware
+features before any larger-code GFlowNet experiment.
+
 ## Experiment flow
 
 ```mermaid

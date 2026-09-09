@@ -238,10 +238,10 @@ that headroom survives.
 
 ### Task 18: test a trajectory-balance GFlowNet
 
-- [ ] Build a binary coefficient-assignment environment whose terminal state is
+- [x] Build a binary coefficient-assignment environment whose terminal state is
   a unique syndrome-valid physical error and whose reward is its exact channel
   probability.
-- [ ] Test terminal validity, trajectory multiplicity, reward identity, and
+- [x] Test terminal validity, trajectory multiplicity, reward identity, and
   logical aggregation before training.
 - [ ] Train on development channels and compare on held-out syndromes and
   spatial fields at each budget in Task 17.
