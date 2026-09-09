@@ -109,6 +109,15 @@ wheels = [
 ]
 
 [[package]]
+name = "click"
+version = "8.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/0e/7fa0ef50764b67090eca4114772a2abf8b6148198475e54c660b97caeee6/click-8.5.0.tar.gz", hash = "sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34", size = 382235, upload-time = "2026-08-26T13:33:14.56Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl", hash = "sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360", size = 125251, upload-time = "2026-08-26T13:33:12.928Z" },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -934,6 +943,22 @@ wheels = [
 ]
 
 [[package]]
+name = "qecsim"
+version = "1.0b9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "mpmath" },
+    { name = "networkx" },
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6a/ea/73311df8eb1143d5d20d636f62a9c8b4c4cfa5cafb7ed88043f25f040997/qecsim-1.0b9.tar.gz", hash = "sha256:ca13b6c74cd801f2aefcc14baf1217086f5cef446402376eeb378aec6ce885da", size = 119474, upload-time = "2021-02-10T02:16:15.005Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bf/e5/469fd5bfdc447ce80895fd2370b5001d5c879c4099b9f8607615c6aea831/qecsim-1.0b9-py3-none-any.whl", hash = "sha256:71a53803ae382953a792618a212e6a4dbc0e0d60de7df039e1c32118b52e445b", size = 148041, upload-time = "2021-02-10T02:16:10.787Z" },
+]
+
+[[package]]
 name = "qldpc-fno"
 version = "0.1.0"
 source = { editable = "." }
@@ -941,6 +966,7 @@ dependencies = [
     { name = "google-cloud-storage" },
     { name = "ldpc" },
     { name = "numpy" },
+    { name = "qecsim" },
     { name = "scipy" },
     { name = "stim" },
     { name = "torch" },
@@ -957,6 +983,7 @@ requires-dist = [
     { name = "google-cloud-storage", specifier = "==3.13.1" },
     { name = "ldpc", specifier = "==2.4.1" },
     { name = "numpy", specifier = "==2.4.1" },
+    { name = "qecsim", specifier = "==1.0b9" },
     { name = "scipy", specifier = "==1.17.1" },
     { name = "stim", specifier = "==1.16.0" },
     { name = "torch", specifier = "==2.11.0" },

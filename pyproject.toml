@@ -6,6 +6,7 @@ dependencies = [
   "google-cloud-storage==3.13.1",
   "ldpc==2.4.1",
   "numpy==2.4.1",
+  "qecsim==1.0b9",
   "scipy==1.17.1",
   "stim==1.16.0",
   "torch==2.11.0",

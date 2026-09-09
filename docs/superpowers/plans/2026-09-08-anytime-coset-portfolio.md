@@ -251,13 +251,13 @@ that headroom survives.
 
 ### Task 19: establish a tensor-network reference
 
-- [ ] Construct or adapt a surface-code coset partition-function tensor network
+- [x] Construct or adapt a surface-code coset partition-function tensor network
   with exact small-distance and high-`chi` references.
-- [ ] Sweep fixed contraction orders and a frozen `chi` ladder while recording
+- [x] Sweep fixed contraction orders and a frozen `chi` ladder while recording
   logical class, log-mass-ratio error, FLOPs, peak elements, and latency.
-- [ ] Verify monotonicity is measured rather than assumed: a larger `chi` may
+- [x] Verify monotonicity is measured rather than assumed: a larger `chi` may
   change numerical error nonmonotonically under different contraction orders.
-- [ ] Stop before RL if no meaningful per-instance accuracy-cost variation is
+- [x] Stop before RL if no meaningful per-instance accuracy-cost variation is
   present.
 
 ### Task 20: implement adaptive coarse-graining and bond allocation

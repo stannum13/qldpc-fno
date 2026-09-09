@@ -162,6 +162,17 @@ as nonconfirmatory evidence, not rescued through post-hoc tuning. This narrows t
 next useful control to direct autoregressive distillation or symmetry-aware
 features before any larger-code GFlowNet experiment.
 
+The competing tensor-network gate produced the first positive adaptive-compute
+signal. On 96 paired distance-3/5 planar-code syndromes, an exact-reference
+oracle chose contraction order and bond dimension per instance while preserving
+the frozen logical-class and log-mass-ratio criterion. It used 30.25% fewer
+estimated arithmetic FLOPs than the cheapest universally feasible fixed action.
+The same run exposed eight invalid low-rank contractions and measurable
+nonmonotonicity, so the result motivates a calibrated safe controller rather
+than a naive low-to-high cascade. Read the
+[adaptive tensor-network result and its claim boundary](docs/tensor-network-adaptive-results.md)
+or inspect the [complete action table](evidence/tensor-network-reference/tensor_network_reference.json).
+
 ## Experiment flow
 
 ```mermaid

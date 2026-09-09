@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "seed_domain": "qldpc-fno/tensor-network-reference/v1",
+  "campaign_seed": 6550373459000682169,
+  "code_distances": [3, 5],
+  "error_rates": [0.05, 0.1, 0.15],
+  "instances_per_point": 16,
+  "chi_ladder": [1, 2, 4, 8, 16],
+  "contraction_modes": ["columns", "rows", "average"],
+  "unrestricted_reference_max_distance": 5,
+  "high_chi_reference": 32,
+  "timing_warmups": 1,
+  "timing_repetitions": 3,
+  "log_mass_ratio_tolerance": 0.05,
+  "log_mass_ratio_tolerance_sweep": [0.001, 0.01, 0.05, 0.1, 0.5, 1.0],
+  "minimum_oracle_work_savings_fraction": 0.05
+}
