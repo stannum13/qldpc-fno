@@ -196,6 +196,17 @@ tolerance consensus retained zero development failures with a descriptive
 run. See the
 [local-spectrum discovery result](docs/tensor-tolerance-discovery-results.md).
 
+That stronger rule has now passed a separate locked confirmation. On 960 fresh
+independent planar-code cases, a row/column tolerance-`0.01` vote with fixed
+`chi=8` fallback made no exact-reference logical-class errors in any of six
+strata. Its estimated arithmetic saving was 89.02%, with a preregistered
+one-sided 95% paired-bootstrap lower bound of 87.46%; 22 cases escalated. The
+adjusted one-sided unsafe-rate upper bound is 4.169% in each stratum. The rule
+does *not* estimate calibrated posterior masses: 868 of 960 selected outputs
+fail the strict log-ratio fidelity criterion. Read the
+[locked local-spectrum confirmation](docs/tensor-tolerance-confirmation-results.md)
+for the construction, evidence, and limits.
+
 ## Experiment flow
 
 ```mermaid

@@ -274,6 +274,9 @@ that headroom survives.
   domain at matched logical-class accuracy and estimated arithmetic work.
 - [x] Trace local singular spectra and test fixed-tolerance adaptive bond ranks
   as a required nonlearned baseline on the discovery table.
+- [x] Confirm a frozen two-view tolerance rule on a fresh seed domain, with
+  exact-reference class safety and paired arithmetic-work bounds; retain mass
+  fidelity as a separate failed endpoint.
 - [ ] Evaluate multistep adaptive rules at matched logical accuracy and compute,
   including peak memory and worst-case work.
 

@@ -76,6 +76,10 @@ interval, and paired work test before new data are generated. A failure on that
 new domain falsifies the frozen rule. Passing would establish a stronger simple
 baseline for subsequent learned allocation.
 
+The rule was subsequently frozen and passed its fresh class-only gate. See the
+[locked confirmation](tensor-tolerance-confirmation-results.md); the discovery
+table remains nonconfirmatory and should not be pooled with the new data.
+
 No world model or RL claim opens here. qecsim's current API supplies deterministic
 fixed-tolerance sweeps, not a state in which an intervention changes later
 available actions. A separately audited resumable contraction engine is required
