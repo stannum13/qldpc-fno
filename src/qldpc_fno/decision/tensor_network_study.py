@@ -9,6 +9,7 @@ from pathlib import Path
 from time import perf_counter
 
 import numpy as np
+from qecsim import paulitools as pt
 from qecsim.models.generic import DepolarizingErrorModel
 from qecsim.models.planar import PlanarCode
 
@@ -349,7 +350,7 @@ def run_tensor_network_study(config_path: Path, output_dir: Path) -> dict[str, o
                     int(config["campaign_seed"]), int(distance), error_rate, instance_index
                 )
                 error = model.generate(code, error_rate, np.random.default_rng(seed))
-                syndrome = np.asarray(error @ code.stabilizers.T % 2, dtype=np.uint8)
+                syndrome = np.asarray(pt.bsp(error, code.stabilizers.T), dtype=np.uint8)
                 instance_id = f"d{distance}/p{error_rate:.6f}/i{instance_index:04d}"
                 if int(distance) <= int(config["unrestricted_reference_max_distance"]):
                     reference_chi = None

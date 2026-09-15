@@ -1,5 +1,11 @@
 # Locked confirmation of two-view tensor consensus
 
+> **Syndrome pairing erratum:** these stored syndromes have the intended marginal
+> distribution under symmetric depolarizing noise, but generally do not match
+> the original seeded physical errors. This page establishes conditional
+> logical-class agreement and arithmetic work, not shot-level BLER. See the
+> [full erratum](symplectic-syndrome-erratum.md).
+
 ## Result in one sentence
 
 A rule frozen before sampling selected the exact-reference logical class on all
@@ -43,7 +49,7 @@ does not inspect the high-accuracy reference.
 
 The separate confirmation seed domain is
 `qldpc-fno/tensor-consensus-confirmation/v1`. It contains 160 independent
-physical-channel draws in each of six strata:
+independent syndrome draws with the depolarizing-channel marginal in each of six strata:
 
 | Distance | Physical error rates | Independent draws per rate |
 |---:|---|---:|
@@ -64,13 +70,15 @@ Reference safeguards passed:
 - maximum distance-3 enumeration log-ratio discrepancy `2.81e-13`;
 - zero solver-validity or mass-feasibility transpose mismatches.
 
-The data artifact records the exact config and source hashes. The evaluator also
-regenerates every physical error, syndrome, transpose, feature vector, action
-identity, and deterministic seed before scoring the policy.
+The data artifact records the exact config and source hashes. The historical
+evaluator replays the deterministic seeds and the original generator convention,
+then checks the syndrome, transpose, features, action identities, and solver
+outcomes. That replay did not check the correct symplectic pairing to the
+original physical error; the erratum above narrows its interpretation.
 
 ## Accuracy gate
 
-The independent unit is the original physical-channel draw. In every stratum,
+The independent unit is the original syndrome draw. In every stratum,
 both the adaptive policy and the fixed `chi=8` comparator had zero logical-class
 failures out of 160 draws.
 
@@ -146,8 +154,12 @@ Not established:
 
 ## Reproduce
 
-The policy freeze is commit `9ff1fa2`. From that source state, generate the locked
-data and evaluate it with:
+The policy freeze is commit `9ff1fa2`. Use that exact source state to replay
+the **historical scientific result**. Current HEAD uses corrected symplectic
+syndrome extraction and cannot recertify the revealed v1 domain. The JSON
+embeds absolute source paths; a checkout at a different path can match the
+numerical results without matching byte-identical artifact hashes. At the
+frozen commit, generate and evaluate with:
 
 ```bash
 uv sync --frozen

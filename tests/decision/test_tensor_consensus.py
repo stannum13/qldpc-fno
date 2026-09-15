@@ -7,6 +7,7 @@ from qldpc_fno.decision.tensor_consensus import (
     _CANONICAL_POLICY,
     _apply_policy,
     _data_integrity,
+    _historical_freeze_source_present,
     _load_policy,
     run_tensor_consensus_study,
     wilson_upper,
@@ -106,6 +107,10 @@ def test_invalid_fallback_is_an_explicit_policy_failure(tmp_path: Path) -> None:
 
 def test_tracked_policy_is_the_exact_frozen_canonical_policy() -> None:
     assert _load_policy(Path("configs/tensor_consensus_policy.json")) == _CANONICAL_POLICY
+
+
+def test_revealed_v1_seed_domain_cannot_be_refrozen_on_current_source() -> None:
+    assert not _historical_freeze_source_present()
 
 
 def test_integrity_replays_seeds_and_rejects_relabelled_draws(tmp_path: Path) -> None:

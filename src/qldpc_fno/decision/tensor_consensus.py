@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from qecsim import paulitools as pt
 from qecsim.models.generic import DepolarizingErrorModel
 from qecsim.models.planar import PlanarCode
 from scipy.stats import norm
@@ -16,6 +17,16 @@ from qldpc_fno.decision.tensor_policy_data import (
     _seed,
     _transpose_syndrome,
 )
+
+_HISTORICAL_GENERATOR_SHA256 = "a9901e2e64c38dae204dd9db4634ca2bb432d6ed905de306d8db24d35c25577c"
+
+
+def _historical_freeze_source_present() -> bool:
+    """Prevent a corrected rerun from reusing the revealed v1 confirmation domain."""
+    return (
+        sha256_file(Path(__file__).with_name("tensor_policy_data.py"))
+        == _HISTORICAL_GENERATOR_SHA256
+    )
 
 _CANONICAL_POLICY: dict[str, object] = {
     "schema_version": 1,
@@ -253,7 +264,7 @@ def _data_integrity(
                         index=index,
                     )
                     error = model.generate(code, error_rate, np.random.default_rng(seed))
-                    syndrome = np.asarray(error @ code.stabilizers.T % 2, dtype=np.uint8)
+                    syndrome = np.asarray(pt.bsp(error, code.stabilizers.T), dtype=np.uint8)
                     if base != {
                         "group_id": group_id,
                         "split": split,
@@ -401,6 +412,7 @@ def run_tensor_consensus_study(
     expected_count = int(policy["required_confirmation_per_stratum"])
     canonical_data = (
         policy == _CANONICAL_POLICY
+        and _historical_freeze_source_present()
         and _data_integrity(data, _CANONICAL_DATA_CONFIG, _CANONICAL_TRANSPOSE_ACTION_MAP)
         and counts == {"train": 0, "calibration": 0, "confirmation": expected_count}
         and all(row["independent_base_groups"] == expected_count for row in policy_safety)

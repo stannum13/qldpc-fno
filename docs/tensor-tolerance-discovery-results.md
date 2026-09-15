@@ -1,5 +1,11 @@
 # Local-spectrum bond-allocation discovery
 
+> **Syndrome pairing erratum:** this development sweep reuses historical
+> syndromes whose marginal law is correct under symmetric depolarizing noise,
+> although the original sampled physical errors are generally not paired with
+> them. It measures conditional solver decisions and work only. See the
+> [full erratum](symplectic-syndrome-erratum.md).
+
 ## Question
 
 The confirmed two-view policy reduced estimated arithmetic work by deciding when

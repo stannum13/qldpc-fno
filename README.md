@@ -1,5 +1,11 @@
 # qLDPC-FNO
 
+> **Planar tensor-study erratum:** historical syndrome samples have the right
+> marginal law under the symmetric depolarizing model, but are not generally
+> paired with their original sampled physical errors. The locked class-agreement
+> and estimated-work results below are not shot-level decoder accuracy results.
+> See the [symplectic syndrome erratum](docs/symplectic-syndrome-erratum.md).
+
 An accuracy-first research harness for testing learned priors and causal noise
 forecasting with a fixed BP-LSD decoder on a cyclic qLDPC code.
 

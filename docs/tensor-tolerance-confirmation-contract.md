@@ -1,5 +1,12 @@
 # Two-view tolerance confirmation contract
 
+> **Post-confirmation audit:** the locked generator and evaluator replayed a
+> non-symplectic error-to-syndrome convention. Under the specified symmetric
+> depolarizing channel, the syndrome marginal remains correct, so this contract's
+> conditional class/work endpoints remain interpretable. It does not certify
+> original-error shot pairing or BLER. See the
+> [symplectic syndrome erratum](symplectic-syndrome-erratum.md).
+
 The development sweep found that local-spectrum truncation can preserve the
 winning logical class even when it distorts posterior mass ratios. This contract
 tests only that decision-specific property. It does not test whether the output
@@ -39,12 +46,14 @@ bound on equal-stratum mixture savings relative to fixed `chi=8`; that bound
 must be at least `0.05`. Host wall time, FPGA cycles, throughput, and backlog
 are outside this gate.
 
-Canonical status additionally requires the exact policy and data config,
-deterministic seed/syndrome replay, complete original/transpose pairs, action
+The original canonical status additionally required the exact policy and data config,
+deterministic seed/generator-syndrome replay, complete original/transpose pairs, action
 metadata, reconcilable primitive and total work counters, matching generation
 source hashes, independent replay of reference and action probabilities/work,
 no invalid references, and zero transpose class/work mismatches.
-The policy and evaluator must be committed before any samples from the locked
-domain are generated. If a methodological defect is found after sampling, the
-artifact is invalidated and a new seed domain is required; this one is never
-retuned against its own result.
+The policy and evaluator were committed before any samples from the locked
+domain were generated. The later syndrome-pairing defect narrows the physical
+interpretation, but the symmetric-channel syndrome-marginal class/work endpoint
+survives by the explicit X/Z-swap argument in the erratum. A physical-shot
+accuracy test needs a new locked seed domain; this one will not be retuned or
+rebranded as such a test.

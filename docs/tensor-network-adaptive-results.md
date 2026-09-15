@@ -1,5 +1,11 @@
 # Adaptive tensor-network discovery result
 
+> **Syndrome pairing erratum:** the historical generator's syndromes have the
+> intended marginal law for symmetric depolarizing noise, but generally do not
+> match the original sampled physical errors. This is a conditional solver
+> study, not an end-to-end decoder-error study. See the
+> [full erratum](symplectic-syndrome-erratum.md).
+
 ## Why this experiment exists
 
 Maximum-likelihood decoding chooses the logical error class with the largest
@@ -52,8 +58,9 @@ It contains:
 - `chi = 1, 2, 4, 8, 16`;
 - one warm-up and three unbatched timing repetitions per action.
 
-Every action sees the same syndrome and channel rate. The physical error that
-generated the syndrome is never used by the contraction or action oracle.
+Every action sees the same syndrome and channel rate. The sampled physical
+error is never used by the contraction or action oracle; under the historical
+generator convention it is not generally the error paired with that syndrome.
 Repeated syndromes are retained because they are repeated draws from the stated
 channel distribution, not independent code instances invented after inspection.
 
@@ -159,6 +166,12 @@ A world model or RL controller remains unjustified until sequential contraction
 actions add value beyond that rule.
 
 ## Reproduce
+
+To replay the **historical scientific result**, use source commit `683a3e7`,
+not current HEAD. The latter uses corrected symplectic syndrome generation and
+creates a different table from the same seeds. The JSON also embeds absolute
+source paths; a checkout at a different path can reproduce the numerical
+results without reproducing the byte-identical artifact hash.
 
 ```bash
 uv sync --frozen

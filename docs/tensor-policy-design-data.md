@@ -1,5 +1,10 @@
 # Tensor policy design data
 
+> **Syndrome pairing erratum:** the stored syndromes have the intended marginal
+> law under symmetric depolarizing noise, but generally do not match the
+> original seeded physical errors. See the
+> [full erratum](symplectic-syndrome-erratum.md).
+
 This artifact is the development table used to define the first adaptive
 tensor-contraction rule. It is not confirmation evidence.
 

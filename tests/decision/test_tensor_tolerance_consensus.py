@@ -10,6 +10,7 @@ from qldpc_fno.decision.tensor_tolerance_consensus import (
     _CANONICAL_POLICY,
     _action_metadata_integrity,
     _generation_provenance_integrity,
+    _historical_freeze_source_present,
     _outcome_replay_integrity,
     run_tensor_tolerance_consensus_study,
 )
@@ -37,6 +38,10 @@ def test_tracked_tolerance_policy_and_data_contract_are_exact() -> None:
     assert json.loads(Path("configs/tensor_tolerance_confirmation_data.json").read_text()) == (
         _CANONICAL_DATA_CONFIG
     )
+
+
+def test_revealed_tolerance_v1_domain_cannot_be_refrozen_on_current_source() -> None:
+    assert not _historical_freeze_source_present()
 
 
 def test_reduced_tolerance_consensus_is_scored_but_not_confirmed(tmp_path: Path) -> None:

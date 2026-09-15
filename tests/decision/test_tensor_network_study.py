@@ -4,6 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
+from qecsim import paulitools as pt
+from qecsim.models.generic import DepolarizingErrorModel
+from qecsim.models.planar import PlanarCode
+
 from qldpc_fno.decision.tensor_network_study import run_tensor_network_study
 
 
@@ -50,3 +55,16 @@ def test_study_uses_paired_syndromes_and_explicit_reference_labels(tmp_path: Pat
     assert "per_instance_oracle" in payload["adaptive_signal"]
     assert [row["tolerance"] for row in payload["criterion_sensitivity"]] == [0.01, 0.05]
     assert (tmp_path / "out" / "tensor_network_reference.json").exists()
+
+
+def test_study_instances_replay_the_physical_symplectic_syndrome(tmp_path: Path) -> None:
+    payload = run_tensor_network_study(_config(tmp_path), tmp_path / "out")
+    model = DepolarizingErrorModel()
+    for instance in payload["instances"]:
+        code = PlanarCode(instance["distance"], instance["distance"])
+        error = model.generate(
+            code,
+            instance["error_rate"],
+            np.random.default_rng(instance["sampler_seed"]),
+        )
+        assert pt.bsp(error, code.stabilizers.T).tolist() == instance["syndrome"]

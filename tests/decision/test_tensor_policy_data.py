@@ -4,6 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
+from qecsim import paulitools as pt
+from qecsim.models.generic import DepolarizingErrorModel
+from qecsim.models.planar import PlanarCode
+
 from qldpc_fno.decision.tensor_policy_data import generate_tensor_policy_data
 
 
@@ -132,3 +137,18 @@ def test_policy_data_supports_transpose_paired_tolerance_actions_and_compact_wor
             assert "estimated_arithmetic_flops" in outcome["work"]
             assert "truncation_events" not in outcome["work"]
             assert "contraction_sweeps" not in outcome["work"]
+
+
+def test_seeded_physical_errors_have_the_recorded_symplectic_syndrome(tmp_path: Path) -> None:
+    payload = generate_tensor_policy_data(_config(tmp_path), tmp_path / "symplectic")
+    model = DepolarizingErrorModel()
+
+    for base in payload["base_instances"]:
+        code = PlanarCode(base["distance"], base["distance"])
+        error = model.generate(
+            code,
+            base["error_rate"],
+            np.random.default_rng(base["sampler_seed"]),
+        )
+        actual_syndrome = pt.bsp(error, code.stabilizers.T)
+        assert actual_syndrome.tolist() == base["syndrome"]

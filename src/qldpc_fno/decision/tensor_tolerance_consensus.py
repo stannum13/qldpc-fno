@@ -22,6 +22,16 @@ from qldpc_fno.decision.tensor_network import (
 )
 from qldpc_fno.decision.tensor_policy_data import _log_ratio_error
 
+_HISTORICAL_GENERATOR_SHA256 = "f6c9d5d8c08b6c8ea5074c056c3ca6b1d1b98659fc8b40661c2c1ca65c67e19c"
+
+
+def _historical_freeze_source_present() -> bool:
+    """Prevent a corrected rerun from reusing the revealed v1 confirmation domain."""
+    return (
+        sha256_file(Path(__file__).with_name("tensor_policy_data.py"))
+        == _HISTORICAL_GENERATOR_SHA256
+    )
+
 _CANONICAL_POLICY: dict[str, object] = {
     "schema_version": 1,
     "policy_id": "two_view_tol001_consensus_v1",
@@ -416,6 +426,7 @@ def run_tensor_tolerance_consensus_study(
     expected_count = int(policy["required_confirmation_per_stratum"])
     canonical = (
         policy == _CANONICAL_POLICY
+        and _historical_freeze_source_present()
         and _data_integrity(data, _CANONICAL_DATA_CONFIG, _CANONICAL_ACTION_MAP)
         and _action_metadata_integrity(data)
         and _generation_provenance_integrity(data)

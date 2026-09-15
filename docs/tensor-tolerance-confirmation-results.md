@@ -1,5 +1,11 @@
 # Locked confirmation: local-spectrum consensus
 
+> **Syndrome pairing erratum:** under symmetric depolarizing noise, the stored
+> syndromes have the intended marginal law but generally do not match the
+> original seeded physical errors. This is a conditional logical-class and
+> estimated-work result, not shot-level decoder BLER. See the
+> [full erratum](symplectic-syndrome-erratum.md).
+
 ## Result
 
 A two-view rule frozen before sampling selected the same logical class as the
@@ -45,13 +51,15 @@ views and any fallback are charged to the policy's work. There is no learned
 controller, early terminal result from a partial tensor, or state-dependent
 change of tolerance within a sweep.
 
-The untouched seed domain contains 160 independent physical-channel draws for
+The untouched seed domain contains 160 independent syndromes with the
+depolarizing-channel marginal for
 each distance/error-rate point: distances 3 and 5 crossed with `p=0.05`,
 `0.10`, and `0.15`. Each base syndrome has a transposed companion for symmetry
 auditing, not a second independent statistical unit. The resulting artifact
 contains 960 base draws, 1,920 orientations, and 7,680 action outcomes.
 
-The scorer replays deterministic seeds and syndromes, independently recomputes
+The historical scorer replays deterministic seeds and the original generator's
+syndrome convention, independently recomputes
 the row/column unrestricted reference and every action's probabilities and
 primitive work counters, checks the declared reference tolerances, and
 exhaustively enumerates stabilizer cosets for every distance-3 context. All
@@ -137,6 +145,13 @@ The complete fresh data are
 The scored decisions and statistics are
 [`evidence/tensor-tolerance-confirmation/tensor_tolerance_consensus.json`](../evidence/tensor-tolerance-confirmation/tensor_tolerance_consensus.json)
 (SHA-256 `7a84b5431f9326e491c3bf5ddfb4185405353523959872bea8a992e7c3d29359`).
+
+To replay the **historical scientific result**, use the pre-sampling freeze
+commit `78166f8`, not current HEAD. Current generation uses corrected
+symplectic syndrome extraction; the revealed v1 domain cannot be certified
+again under new source code. The JSON embeds absolute source paths, so a
+checkout at another path can reproduce numerical results without reproducing
+these byte-identical hashes.
 
 ```bash
 uv sync --frozen

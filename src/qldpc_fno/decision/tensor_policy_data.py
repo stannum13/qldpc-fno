@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from qecsim import paulitools as pt
 from qecsim.models.generic import DepolarizingErrorModel
 from qecsim.models.planar import PlanarCode
 
@@ -404,7 +405,7 @@ def generate_tensor_policy_data(config_path: Path, output_dir: Path) -> dict[str
                         index=index,
                     )
                     error = model.generate(code, error_rate, np.random.default_rng(seed))
-                    syndrome = np.asarray(error @ code.stabilizers.T % 2, dtype=np.uint8)
+                    syndrome = np.asarray(pt.bsp(error, code.stabilizers.T), dtype=np.uint8)
                     group_id = f"{split}/d{distance}/p{error_rate:.6f}/i{index:04d}"
                     base_instances.append(
                         {
