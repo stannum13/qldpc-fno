@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "seed_domain": "qldpc-fno/tensor-tolerance-consensus-confirmation/v1",
+  "campaign_seed": 2908693450883826828,
+  "code_distances": [3, 5],
+  "error_rates": [0.05, 0.1, 0.15],
+  "base_instances_per_stratum": {
+    "train": 0,
+    "calibration": 0,
+    "confirmation": 160
+  },
+  "actions": [
+    {"id": "columns_tol001", "mode": "columns", "tol": 0.01},
+    {"id": "rows_tol001", "mode": "rows", "tol": 0.01},
+    {"id": "columns_chi8", "mode": "columns", "chi": 8},
+    {"id": "rows_chi8", "mode": "rows", "chi": 8}
+  ],
+  "work_trace_detail": "aggregate",
+  "mass_log_ratio_tolerance": 0.05,
+  "reference_probability_tolerance": 1e-10,
+  "reference_log_ratio_tolerance": 1e-8,
+  "enumerate_distance3": true
+}

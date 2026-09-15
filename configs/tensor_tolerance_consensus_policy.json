@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "policy_id": "two_view_tol001_consensus_v1",
+  "direct_action_by_distance": {},
+  "consensus_by_distance": {
+    "3": {
+      "actions": ["columns_tol001", "rows_tol001"],
+      "fallback": "columns_chi8"
+    },
+    "5": {
+      "actions": ["columns_tol001", "rows_tol001"],
+      "fallback": "columns_chi8"
+    }
+  },
+  "fixed_fallback_action": "columns_chi8",
+  "required_data_seed_domain": "qldpc-fno/tensor-tolerance-consensus-confirmation/v1",
+  "required_confirmation_per_stratum": 160,
+  "familywise_alpha": 0.05,
+  "familywise_comparisons": 12,
+  "maximum_unsafe_rate": 0.05,
+  "minimum_work_savings_fraction": 0.05,
+  "work_savings_confidence_alpha": 0.05,
+  "work_savings_bootstrap_replicates": 10000,
+  "work_savings_bootstrap_seed": 13145023807022351235,
+  "class_only_endpoint": true
+}

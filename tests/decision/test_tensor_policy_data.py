@@ -98,3 +98,37 @@ def test_confirmation_only_config_does_not_invent_development_draws(tmp_path: Pa
 
     assert len(payload["base_instances"]) == 1
     assert {row["split"] for row in payload["contexts"]} == {"confirmation"}
+
+
+def test_policy_data_supports_transpose_paired_tolerance_actions_and_compact_work(
+    tmp_path: Path,
+) -> None:
+    config = json.loads(_config(tmp_path).read_text())
+    config["actions"] = [
+        {"id": "columns_tol001", "mode": "columns", "tol": 0.01},
+        {"id": "rows_tol001", "mode": "rows", "tol": 0.01},
+        {"id": "columns_chi8", "mode": "columns", "chi": 8},
+        {"id": "rows_chi8", "mode": "rows", "chi": 8},
+    ]
+    config["work_trace_detail"] = "aggregate"
+    path = tmp_path / "tolerance-actions.json"
+    path.write_text(json.dumps(config))
+
+    payload = generate_tensor_policy_data(path, tmp_path / "tolerance-actions")
+
+    assert payload["transpose_action_map"] == {
+        "columns_tol001": "rows_tol001",
+        "rows_tol001": "columns_tol001",
+        "columns_chi8": "rows_chi8",
+        "rows_chi8": "columns_chi8",
+    }
+    for context in payload["contexts"]:
+        outcomes = {row["action_id"]: row for row in context["outcomes"]}
+        assert outcomes["columns_tol001"]["chi"] is None
+        assert outcomes["columns_tol001"]["tol"] == 0.01
+        assert outcomes["columns_chi8"]["chi"] == 8
+        assert outcomes["columns_chi8"]["tol"] is None
+        for outcome in outcomes.values():
+            assert "estimated_arithmetic_flops" in outcome["work"]
+            assert "truncation_events" not in outcome["work"]
+            assert "contraction_sweeps" not in outcome["work"]

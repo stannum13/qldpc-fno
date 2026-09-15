@@ -56,25 +56,44 @@ def _load_config(path: Path) -> dict[str, object]:
     if not isinstance(actions, list) or not actions:
         raise ValueError("actions must be a nonempty list")
     action_ids: set[str] = set()
-    action_keys: set[tuple[str, int]] = set()
+    action_keys: set[tuple[str, int | None, float | None]] = set()
     for action in actions:
         if not isinstance(action, dict):
             raise TypeError("each action must be an object")
         action_id = str(action.get("id"))
         mode = str(action.get("mode"))
         chi = action.get("chi")
-        if action_id in action_ids or mode not in _MODES or type(chi) is not int or chi <= 0:
-            raise ValueError("actions need unique ids, supported modes, and positive integer chi")
-        if (mode, chi) in action_keys:
-            raise ValueError("actions must have unique mode/chi pairs")
+        tol = action.get("tol")
+        chi_valid = type(chi) is int and chi > 0
+        tol_valid = tol is not None and np.isfinite(tol) and float(tol) > 0
+        if (
+            action_id in action_ids
+            or mode not in _MODES
+            or chi_valid == tol_valid
+        ):
+            raise ValueError(
+                "actions need unique ids, supported modes, and exactly one positive chi or tol"
+            )
+        key = (mode, int(chi) if chi_valid else None, float(tol) if tol_valid else None)
+        if key in action_keys:
+            raise ValueError("actions must have unique mode/control pairs")
         action_ids.add(action_id)
-        action_keys.add((mode, chi))
+        action_keys.add(key)
     for action in actions:
         counterpart = {"columns": "rows", "rows": "columns", "average": "average"}[
             str(action["mode"])
         ]
-        if (counterpart, int(action["chi"])) not in action_keys:
-            raise ValueError("every action requires its transpose counterpart at the same chi")
+        key = (
+            counterpart,
+            int(action["chi"]) if "chi" in action else None,
+            float(action["tol"]) if "tol" in action else None,
+        )
+        if key not in action_keys:
+            raise ValueError(
+                "every action requires its transpose counterpart at the same control"
+            )
+    if config.get("work_trace_detail", "full") not in {"full", "aggregate"}:
+        raise ValueError("work_trace_detail must be full or aggregate")
     for key in ("reference_probability_tolerance", "reference_log_ratio_tolerance"):
         if float(config.get(key, -1)) <= 0:
             raise ValueError(f"{key} must be positive")
@@ -171,6 +190,13 @@ def _log_ratio_error(candidate: np.ndarray, reference: np.ndarray) -> float:
     )
 
 
+def _work_payload(work: dict[str, object], detail: str) -> dict[str, object]:
+    omitted = {"single_shot_wall_seconds"}
+    if detail == "aggregate":
+        omitted |= {"truncation_events", "contraction_sweeps"}
+    return {key: value for key, value in work.items() if key not in omitted}
+
+
 def _context(
     *,
     config: dict[str, object],
@@ -244,18 +270,17 @@ def _context(
                     columns=code.size[1],
                     syndrome=syndrome,
                     error_rate=error_rate,
-                    chi=int(action["chi"]),
+                    chi=int(action["chi"]) if "chi" in action else None,
                     mode=str(action["mode"]),
+                    tol=float(action["tol"]) if "tol" in action else None,
                     trace_work=True,
                 )
                 probabilities = result.probabilities
                 selected_class = result.selected_class
                 valid = True
-                work = {
-                    key: value
-                    for key, value in result.work.items()
-                    if key != "single_shot_wall_seconds"
-                }
+                work = _work_payload(
+                    result.work, str(config.get("work_trace_detail", "full"))
+                )
                 log_error = _log_ratio_error(probabilities, reference_probabilities)
                 decision_regret = float(
                     reference_probabilities.max() - reference_probabilities[selected_class]
@@ -264,18 +289,17 @@ def _context(
                 probabilities = None
                 selected_class = None
                 valid = False
-                work = {
-                    key: value
-                    for key, value in failure.work.items()
-                    if key != "single_shot_wall_seconds"
-                }
+                work = _work_payload(
+                    failure.work, str(config.get("work_trace_detail", "full"))
+                )
                 log_error = decision_regret = None
             class_correct = valid and selected_class == int(np.argmax(reference_probabilities))
             outcomes.append(
                 {
                     "action_id": str(action["id"]),
                     "mode": str(action["mode"]),
-                    "chi": int(action["chi"]),
+                    "chi": int(action["chi"]) if "chi" in action else None,
+                    "tol": float(action["tol"]) if "tol" in action else None,
                     "solver_valid": valid,
                     "selected_class": selected_class,
                     "selected_class_correct": class_correct,
@@ -423,7 +447,11 @@ def generate_tensor_policy_data(config_path: Path, output_dir: Path) -> dict[str
                             )
 
     actions_by_key = {
-        (str(action["mode"]), int(action["chi"])): str(action["id"])
+        (
+            str(action["mode"]),
+            int(action["chi"]) if "chi" in action else None,
+            float(action["tol"]) if "tol" in action else None,
+        ): str(action["id"])
         for action in config["actions"]
     }
     transpose_action_map = {
@@ -432,7 +460,8 @@ def generate_tensor_policy_data(config_path: Path, output_dir: Path) -> dict[str
                 {"columns": "rows", "rows": "columns", "average": "average"}[
                     str(action["mode"])
                 ],
-                int(action["chi"]),
+                int(action["chi"]) if "chi" in action else None,
+                float(action["tol"]) if "tol" in action else None,
             )
         ]
         for action in config["actions"]
