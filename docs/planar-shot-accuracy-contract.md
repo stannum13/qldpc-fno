@@ -86,8 +86,9 @@ that harmless difference an error.
 Instead, for sampled error `e` and decoder recovery `r`, the evaluator forms
 `residual = (e + r) mod 2`. It first requires the recovery to reproduce the
 observed syndrome. It then computes the residual's commutation signature with
-the code logical operators. An all-zero signature means the residual differs
-from a harmless stabilizer effect; any nonzero entry means a logical failure.
+the code logical operators. With syndrome validity established, an all-zero
+residual logical signature means the residual is a stabilizer and has no
+logical effect; any nonzero entry means a logical failure.
 An invalid recovery is both an integrity error and a counted failure. CMWPM or
 MWPM exceptions remain explicit baseline failures. A failed policy fallback, or
 an invalid exact reference, prevents canonical certification rather than
