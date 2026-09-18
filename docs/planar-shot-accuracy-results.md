@@ -195,6 +195,65 @@ The frozen matching backend was NetworkX 3.6.1, with Blossom5 unavailable.
 Recorded versions were Python 3.14.6, qecsim 1.0b9, NumPy 2.4.1 and SciPy
 1.17.1. These identities and the lockfile digest were checked across stages.
 
+## Reproduce the full verification
+
+Run this block from the repository root with Git, curl, gzip, shasum, and uv
+available. The decompressed JSON is approximately 745 MiB; allow several GiB of
+RAM for parsing and replay, plus space for a temporary environment. The
+independent review replay took 822.97 seconds on the review machine; runtime
+depends on hardware. Verification checks the frozen dependency/backend identity
+as well as every scored row and aggregate.
+
+The download stays outside the detached worktree so input eligibility remains
+clean. On success, cleanup removes only the newly created temporary checkout,
+its environment, and the two downloaded/decompressed files. On failure, the
+printed temporary directory remains available for inspection.
+
+```sh
+(
+  set -eu
+  planar_replay_dir="$(mktemp -d "${TMPDIR:-/tmp}/planar-shot-replay.XXXXXX")"
+  printf 'Temporary replay directory: %s\n' "$planar_replay_dir"
+  curl --fail --location \
+    'https://storage.googleapis.com/project-1178f0de-10fb-4e7e-8e4-qldpc-fno-artifacts/planar-shot-accuracy/v1/b56fecd64497fb4aa1204027820543411bcab4dc4f2979deb2db52d00ff49769/planar_shot_accuracy.json.gz?generation=1789705238581848' \
+    --output "$planar_replay_dir/planar_shot_accuracy.json.gz"
+  printf 'd6268f928eef4dd2c5e17013b5ce6ecd67f0e94f6752de9f52594416d2d3c7b3  %s\n' \
+    "$planar_replay_dir/planar_shot_accuracy.json.gz" | shasum -a 256 --check
+  gzip --decompress --stdout "$planar_replay_dir/planar_shot_accuracy.json.gz" \
+    > "$planar_replay_dir/planar_shot_accuracy.json"
+  printf 'b56fecd64497fb4aa1204027820543411bcab4dc4f2979deb2db52d00ff49769  %s\n' \
+    "$planar_replay_dir/planar_shot_accuracy.json" | shasum -a 256 --check
+  git worktree add --detach "$planar_replay_dir/repo" \
+    19af0a3e4381f0f4414ec2ca2af1692d3f3424c9
+  (
+    cd "$planar_replay_dir/repo"
+    uv sync --frozen --python 3.14.6
+    test -z "$(git status --porcelain)"
+    PLANAR_REPLAY_ARTIFACT="$planar_replay_dir/planar_shot_accuracy.json" \
+      uv run --frozen python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+from qldpc_fno.decision.planar_shot_accuracy import verify_screen_result
+
+result = json.loads(Path(os.environ["PLANAR_REPLAY_ARTIFACT"]).read_text())
+verify_screen_result(
+    result,
+    Path("configs/planar_shot_accuracy_policy.json"),
+    Path("evidence/planar-shot-screen/planar_shots.json"),
+    Path("evidence/planar-cmwpm-calibration/planar_cmwpm_selection.json"),
+)
+print("Full verification passed:", result["status"])
+PY
+  )
+  git worktree remove --force "$planar_replay_dir/repo"
+  rm -- "$planar_replay_dir/planar_shot_accuracy.json.gz" \
+    "$planar_replay_dir/planar_shot_accuracy.json"
+  rmdir -- "$planar_replay_dir"
+)
+```
+
 ## Claim boundary
 
 The evidence supports the reported distance-5, two-rate, i.i.d.-depolarizing
