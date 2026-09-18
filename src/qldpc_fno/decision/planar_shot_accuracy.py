@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import platform
 import re
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -13,7 +12,6 @@ from pathlib import Path
 
 import numpy as np
 import qecsim
-import scipy
 from qecsim import paulitools as pt
 from qecsim.models.generic import DepolarizingErrorModel
 from qecsim.models.planar import (
@@ -25,6 +23,15 @@ from qecsim.models.planar import (
 from scipy.stats import norm
 
 from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.decision.planar_shot_data import (
+    _SOURCE_LABELS,
+    _file_binding,
+    _repository_root,
+    _runtime_provenance,
+    _validate_binding,
+    _validate_producer,
+    _validate_shot_manifest,
+)
 from qldpc_fno.decision.tensor_network import (
     InvalidCosetMassError,
     PlanarCosetMasses,
@@ -50,10 +57,7 @@ _PLANAR_SHOT_CONFIG_KEYS = {
 }
 _PLANAR_ERROR_RATES = (0.1, 0.15)
 _PLANAR_NOISE_MODEL = "qecsim_iid_depolarizing_code_capacity"
-_PLANAR_SHOT_SOURCE_LABELS = (
-    "src/qldpc_fno/decision/planar_shot_accuracy.py",
-    "src/qldpc_fno/decision/planar_shot_data.py",
-)
+_PLANAR_SHOT_SOURCE_LABELS = _SOURCE_LABELS
 _CMWPM_SOURCE_LABELS = (
     "experiments/32_calibrate_planar_cmwpm.py",
     *_PLANAR_SHOT_SOURCE_LABELS,
@@ -219,7 +223,7 @@ def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
 
-def _validate_shot_provenance(payload: Mapping[str, object]) -> None:
+def _validate_shot_provenance(payload: Mapping[str, object]) -> bool:
     provenance = payload.get("provenance")
     if not isinstance(provenance, Mapping):
         raise TypeError("planar calibration artifact is missing provenance")
@@ -234,6 +238,7 @@ def _validate_shot_provenance(payload: Mapping[str, object]) -> None:
         or type(provenance.get("git_dirty")) is not bool
     ):
         raise ValueError("planar calibration artifact has malformed provenance")
+    return _validate_shot_manifest(dict(payload), _repository_root())
 
 
 def _validated_calibration_shots(
@@ -340,18 +345,13 @@ def _git_provenance(repository_root: Path) -> tuple[str, bool]:
 
 
 def _cmwpm_provenance() -> dict[str, object]:
-    repository_root = Path(__file__).resolve().parents[3]
+    repository_root = _repository_root()
     git_commit, git_dirty = _git_provenance(repository_root)
     return {
         "source_sha256": {
             label: sha256_file(repository_root / label) for label in _CMWPM_SOURCE_LABELS
         },
-        "dependencies": {
-            "python": platform.python_version(),
-            "numpy": np.__version__,
-            "scipy": scipy.__version__,
-            "qecsim": qecsim.__version__,
-        },
+        **_runtime_provenance(repository_root),
         "git_commit": git_commit,
         "git_dirty": git_dirty,
     }
@@ -492,6 +492,13 @@ def calibrate_cmwpm(grid_path: Path, data_path: Path, output_dir: Path) -> dict[
         raise FileExistsError(f"refusing to overwrite CMWPM selection: {output_path}")
     candidates = cmwpm_grid(grid_path)
     calibration_data_config, shots = _validated_calibration_shots(data_path)
+    calibration_payload = json.loads(data_path.read_text())
+    calibration_eligible = _validate_shot_provenance(calibration_payload)
+    provenance = _cmwpm_provenance()
+    input_bindings = {
+        "calibration_data": _file_binding(_repository_root(), data_path, provenance["git_commit"]),
+        "grid": _file_binding(_repository_root(), grid_path, provenance["git_commit"]),
+    }
 
     candidate_rows: list[dict[str, object]] = []
     for parameters in candidates:
@@ -512,7 +519,13 @@ def calibrate_cmwpm(grid_path: Path, data_path: Path, output_dir: Path) -> dict[
         "calibration_data_config": calibration_data_config,
         "grid_sha256": sha256_file(grid_path),
         "data_sha256": sha256_file(data_path),
-        "provenance": _cmwpm_provenance(),
+        "provenance": provenance,
+        "calibration_data_provenance": calibration_payload["provenance"],
+        "calibration_data_eligible": calibration_eligible,
+        "input_bindings": input_bindings,
+        "producer_inputs_committed": all(
+            binding["committed"] for binding in input_bindings.values()
+        ),
         "candidates": candidate_rows,
         "selected": selected,
         "mwpm_reference": {"per_rate": mwpm_per_rate, "pooled": mwpm_pooled},
@@ -543,8 +556,6 @@ _ACCURACY_POLICY = {
 }
 _ACCURACY_SOURCE_LABELS = (
     *_CMWPM_SOURCE_LABELS,
-    "src/qldpc_fno/decision/tensor_network.py",
-    "src/qldpc_fno/metrics/paired.py",
     "experiments/33_run_planar_shot_accuracy.py",
 )
 
@@ -618,7 +629,7 @@ def certify_reference(columns: np.ndarray, rows: np.ndarray) -> dict[str, object
 
 
 def _current_sources(provenance: Mapping[str, object], labels: Sequence[str]) -> None:
-    root = Path(__file__).resolve().parents[3]
+    root = _repository_root()
     expected = {label: sha256_file(root / label) for label in labels}
     if provenance.get("source_sha256") != expected:
         raise ValueError("stale or malformed source hashes")
@@ -654,12 +665,46 @@ def _validate_selection(selection: dict[str, object]) -> tuple[dict[str, object]
     if not isinstance(provenance, dict):
         raise TypeError("selection provenance missing")
     _current_sources(provenance, _CMWPM_SOURCE_LABELS)
-    if provenance.get("dependencies") != _cmwpm_provenance()["dependencies"]:
-        raise ValueError("selection dependency versions do not match")
+    clean_selection = _validate_producer(provenance, _repository_root(), _CMWPM_SOURCE_LABELS)
     if type(provenance.get("git_dirty")) is not bool or not isinstance(
         provenance.get("git_commit"), str
     ):
         raise ValueError("selection git provenance is malformed")
+    calibration_eligible = _validate_shot_provenance(
+        {"config": config, "provenance": selection.get("calibration_data_provenance")}
+    )
+    if selection.get("calibration_data_eligible") is not calibration_eligible:
+        raise ValueError("selection calibration eligibility provenance mismatch")
+    bindings = selection.get("input_bindings")
+    if not isinstance(bindings, dict) or set(bindings) != {"calibration_data", "grid"}:
+        raise ValueError("selection input provenance bindings missing")
+    committed = [
+        _validate_binding(
+            bindings[name], _repository_root(), provenance["git_commit"], selection[digest_key]
+        )
+        for name, digest_key in (("calibration_data", "data_sha256"), ("grid", "grid_sha256"))
+    ]
+    if selection.get("producer_inputs_committed") is not all(committed):
+        raise ValueError("selection input commit provenance mismatch")
+    if committed[0]:
+        original = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(_repository_root()),
+                "show",
+                f"{provenance['git_commit']}:{bindings['calibration_data']['path']}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        calibration_artifact = json.loads(original.stdout)
+        if (
+            calibration_artifact.get("config") != config
+            or calibration_artifact.get("provenance") != selection["calibration_data_provenance"]
+        ):
+            raise ValueError("calibration artifact provenance does not match committed input")
     candidates = selection.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         raise ValueError("selection candidates missing")
@@ -701,6 +746,9 @@ def _validate_selection(selection: dict[str, object]) -> tuple[dict[str, object]
         and config["shots_per_rate"] == 512
         and set(observed) == allowed
         and provenance["git_dirty"] is False
+        and clean_selection
+        and calibration_eligible
+        and all(committed)
     )
     return config, canonical
 
@@ -713,6 +761,7 @@ def _screen_inputs(policy_path: Path, screen_path: Path, selection_path: Path) -
     calibration_config, calibration_canonical = _validate_selection(selection)
     config, replayed = _validated_calibration_shots(screen_path, role="screen")
     screen = json.loads(screen_path.read_text())
+    screen_eligible = _validate_shot_provenance(screen)
     _current_sources(screen["provenance"], _PLANAR_SHOT_SOURCE_LABELS)
     if screen["provenance"]["qecsim_version"] != qecsim.__version__:
         raise ValueError("screen dependency version does not match")
@@ -731,14 +780,25 @@ def _screen_inputs(policy_path: Path, screen_path: Path, selection_path: Path) -
     if calibration_seeds & {shot["sampler_seed"] for shot in screen["shots"]}:
         raise ValueError("screen/calibration sampler seed collision")
     current = _cmwpm_provenance()
+    input_bindings = {
+        name: _file_binding(_repository_root(), path, current["git_commit"])
+        for name, path in (
+            ("policy", policy_path),
+            ("screen", screen_path),
+            ("selection", selection_path),
+        )
+    }
+    inputs_committed = all(binding["committed"] for binding in input_bindings.values())
     canonical = bool(
         calibration_canonical
         and config["shots_per_rate"] == 2048
         and domain == policy["required_screen_domain"]
         and not screen["provenance"]["git_dirty"]
         and not current["git_dirty"]
+        and screen_eligible
+        and inputs_committed
     )
-    root = Path(__file__).resolve().parents[3]
+    root = _repository_root()
     # Canonical config hashes bind actual frozen bytes; temporary reduced configs
     # remain available for integration tests and cannot acquire canonical status.
     if canonical:
@@ -759,6 +819,7 @@ def _screen_inputs(policy_path: Path, screen_path: Path, selection_path: Path) -
         "screen": screen,
         "replayed": replayed,
         "canonical": canonical,
+        "producer_inputs_committed": inputs_committed,
         "input_sha256": {
             "policy": sha256_file(policy_path),
             "screen": sha256_file(screen_path),
@@ -1080,7 +1141,11 @@ def verify_screen_result(
     """Replay the complete artifact; only the runner accepts an unfinished replay flag."""
     inputs = _screen_inputs(Path(policy_path), Path(screen_path), Path(selection_path))
     expected_provenance = _screen_provenance(inputs)
-    expected_integrity = {"independent_replay": not prepublication, "seed_domains_disjoint": True}
+    expected_integrity = {
+        "independent_replay": not prepublication,
+        "seed_domains_disjoint": True,
+        "producer_inputs_committed": inputs["producer_inputs_committed"],
+    }
     if (
         result.get("provenance") != expected_provenance
         or result.get("integrity") != expected_integrity
@@ -1098,7 +1163,7 @@ def verify_screen_result(
 
 def _screen_provenance(inputs: dict[str, object]) -> dict[str, object]:
     """Bind the producer freeze, independent of later documentation-only commits."""
-    root = Path(__file__).resolve().parents[3]
+    root = _repository_root()
     provenance = _cmwpm_provenance()
     for field in ("git_commit", "git_dirty"):
         provenance[field] = inputs["screen"]["provenance"][field]
@@ -1124,7 +1189,11 @@ def _screen_result(
         "selected_cmwpm_parameters": inputs["selection"]["selected"]["parameters"],
         "shots": rows,
         "provenance": _screen_provenance(inputs),
-        "integrity": {"independent_replay": independent_replay, "seed_domains_disjoint": True},
+        "integrity": {
+            "independent_replay": independent_replay,
+            "seed_domains_disjoint": True,
+            "producer_inputs_committed": inputs["producer_inputs_committed"],
+        },
         **_summarize_screen(rows, canonical=inputs["canonical"]),
     }
 

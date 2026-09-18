@@ -15,6 +15,9 @@
 > [configs](configs/planar_shot_accuracy_policy.json), and the
 > [erratum](docs/symplectic-syndrome-erratum.md) define the boundary; future
 > artifacts are not yet present.
+> Canonical execution requires four commit-and-push barriers: calibration shots,
+> matching selection, held-out screen shots, then scored results. Each producer
+> starts clean with committed inputs; see the contract's exact command sequence.
 
 An accuracy-first research harness for testing learned priors and causal noise
 forecasting with a fixed BP-LSD decoder on a cyclic qLDPC code.

@@ -143,6 +143,14 @@ classes, recoveries, logical outcomes, aggregate counts, and work totals.
 
 Canonical status additionally requires a clean committed tree, the exact frozen
 configs, unseen screen domain, expected shot counts, and matching source hashes.
+Each producer must consume committed input artifacts: generate calibration shots
+then commit and push; run selection then commit and push; generate screen shots
+then commit and push; evaluate then commit and push the result. Each stage begins
+with a clean tree. Shot manifests freeze generator, evaluator, tensor, paired
+metric, and artifact-writer sources before sampling. Calibration provenance,
+config bytes/path/digest, committed input identities, dependency versions,
+NetworkX/Blossom5 backend identity, lockfile digest, and any native Blossom5
+binary digest are validated and propagated through selection to the screen.
 Existing v1 tensor-confirmation domains are forbidden. Partial, reduced, or
 tampered data are scored only as nonconfirmatory diagnostics.
 

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
+import networkx as nx
 import numpy as np
 import pytest
 import qecsim
@@ -12,6 +15,7 @@ from qecsim import paulitools as pt
 from qecsim.models.planar import PlanarCode, PlanarMPSDecoder
 
 from qldpc_fno.decision import planar_shot_accuracy as accuracy
+from qldpc_fno.decision import planar_shot_data as shot_data
 from qldpc_fno.decision.planar_shot_accuracy import (
     calibrate_cmwpm,
     cmwpm_grid,
@@ -344,6 +348,7 @@ def test_cmwpm_calibration_records_one_shared_selection_and_mwpm_reference(
         "python": provenance["dependencies"]["python"],
         "qecsim": qecsim.__version__,
         "scipy": scipy.__version__,
+        "networkx": nx.__version__,
     }
     assert isinstance(provenance["git_commit"], str)
     assert isinstance(provenance["git_dirty"], bool)
@@ -353,6 +358,9 @@ def test_cmwpm_calibration_records_one_shared_selection_and_mwpm_reference(
         "experiments/32_calibrate_planar_cmwpm.py",
         "src/qldpc_fno/decision/planar_shot_accuracy.py",
         "src/qldpc_fno/decision/planar_shot_data.py",
+        "src/qldpc_fno/decision/tensor_network.py",
+        "src/qldpc_fno/metrics/paired.py",
+        "src/qldpc_fno/artifacts.py",
     }
     assert source_hashes == {
         label: hashlib.sha256((root / label).read_bytes()).hexdigest() for label in source_hashes
@@ -559,7 +567,7 @@ def test_screen_integrity_rejects_tampering(
         label = next(iter(payload["provenance"]["source_sha256"]))
         payload["provenance"]["source_sha256"][label] = "0" * 64
     path.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="replay|selection|domain|source"):
+    with pytest.raises(ValueError, match="replay|selection|domain|source|config"):
         accuracy.run_planar_shot_accuracy(policy, screen, selection, tmp_path / "result")
 
 
@@ -866,3 +874,172 @@ def test_screen_provenance_is_bound_to_producer_across_later_git_commits(
     accuracy.verify_screen_result(result, *reduced_screen_inputs, prepublication=True)
     with pytest.raises(ValueError, match="replay"):
         accuracy.verify_screen_result(result, *reduced_screen_inputs)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "source",
+        "tensor_source",
+        "paired_source",
+        "config_digest",
+        "config_content",
+        "config_path",
+        "qecsim",
+        "dependencies",
+        "backend",
+        "lockfile",
+        "commit",
+    ],
+)
+def test_calibration_authenticates_presampling_provenance(tmp_path: Path, tamper: str) -> None:
+    config = _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1")
+    payload = generate_planar_shots(config, tmp_path / "data")
+    provenance = payload["provenance"]
+    if tamper in {"source", "tensor_source", "paired_source"}:
+        label = {
+            "source": "src/qldpc_fno/decision/planar_shot_data.py",
+            "tensor_source": "src/qldpc_fno/decision/tensor_network.py",
+            "paired_source": "src/qldpc_fno/metrics/paired.py",
+        }[tamper]
+        provenance["source_sha256"][label] = "0" * 64
+    elif tamper == "config_digest":
+        provenance["config_sha256"] = "0" * 64
+    elif tamper == "config_content":
+        provenance["config_content"] = "{}"
+    elif tamper == "config_path":
+        provenance["config_path"] = "../bad.json"
+    elif tamper == "qecsim":
+        provenance["qecsim_version"] = "0.0"
+    elif tamper == "dependencies":
+        provenance.setdefault("dependencies", {})["networkx"] = "0.0"
+    elif tamper == "backend":
+        provenance.setdefault("matching_backend", {})["name"] = "tampered"
+    elif tamper == "lockfile":
+        provenance.setdefault("matching_backend", {})["lockfile_sha256"] = "0" * 64
+    else:
+        provenance["git_commit"] = "0" * 40
+    path = tmp_path / "data/planar_shots.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="source|config|provenance|dependency|backend|commit"):
+        calibrate_cmwpm(_cmwpm_grid(tmp_path / "grid.json"), path, tmp_path / "selection")
+
+
+@pytest.mark.parametrize("barriers", [True, False])
+def test_temporary_git_pipeline_requires_each_producer_commit_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    barriers: bool,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    root = Path(__file__).resolve().parents[2]
+    labels = {
+        "src/qldpc_fno/decision/planar_shot_data.py",
+        "src/qldpc_fno/decision/planar_shot_accuracy.py",
+        "src/qldpc_fno/decision/tensor_network.py",
+        "src/qldpc_fno/metrics/paired.py",
+        "src/qldpc_fno/artifacts.py",
+        "experiments/32_calibrate_planar_cmwpm.py",
+        "experiments/33_run_planar_shot_accuracy.py",
+        "configs/planar_shot_accuracy_policy.json",
+        "configs/planar_cmwpm_grid.json",
+        "uv.lock",
+    }
+    for label in labels:
+        target = repository / label
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / label, target)
+    for role in ("calibration", "screen"):
+        config = _shot_config(repository, f"qldpc-fno/planar-shot-test/{role}/v1")
+        config.rename(repository / f"configs/{role}.json")
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repository), *args], check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-b", "test-freeze")
+    git("config", "user.name", "Planar Test")
+    git("config", "user.email", "planar-test@example.invalid")
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    git("remote", "add", "origin", str(remote))
+
+    def barrier(label: str) -> None:
+        git("add", ".")
+        git("commit", "-m", label)
+        git("push", "-u", "origin", "test-freeze")
+        assert git("status", "--porcelain") == ""
+
+    barrier("freeze reduced inputs")
+    monkeypatch.setattr(shot_data, "_repository_root", lambda: repository, raising=False)
+    monkeypatch.setattr(accuracy, "_repository_root", lambda: repository, raising=False)
+    grid = repository / "configs/planar_cmwpm_grid.json"
+    candidates = cmwpm_grid(grid)[:2]
+    monkeypatch.setattr(accuracy, "cmwpm_grid", lambda _: candidates)
+    calibration = generate_planar_shots(
+        repository / "configs/calibration.json", repository / "calibration"
+    )
+    assert calibration["provenance"]["git_dirty"] is False
+    if barriers:
+        barrier("calibration shots")
+    selection = calibrate_cmwpm(
+        grid, repository / "calibration/planar_shots.json", repository / "selection"
+    )
+    assert selection["provenance"]["git_dirty"] is (not barriers)
+    assert selection["producer_inputs_committed"] is barriers
+    assert selection["calibration_data_provenance"] == calibration["provenance"]
+    if barriers:
+        barrier("matching selection")
+    screen = generate_planar_shots(repository / "configs/screen.json", repository / "screen")
+    assert screen["provenance"]["git_dirty"] is (not barriers)
+    if barriers:
+        barrier("screen shots")
+    result = accuracy.run_planar_shot_accuracy(
+        repository / "configs/planar_shot_accuracy_policy.json",
+        repository / "screen/planar_shots.json",
+        repository / "selection/planar_cmwpm_selection.json",
+        repository / "result",
+    )
+    assert result["integrity"]["producer_inputs_committed"] is barriers
+    assert result["canonical"] is False  # reduced domains stay diagnostic even with clean barriers
+    assert result["status"] == "unresolved_noncanonical_data"
+    if barriers:
+        barrier("scored result")
+        # A self-consistent metadata transplant must still disagree with the
+        # original calibration blob authenticated by the selection producer.
+        transplanted = json.loads(json.dumps(selection))
+        transplanted["calibration_data_provenance"]["git_dirty"] = True
+        transplanted["calibration_data_eligible"] = False
+        with pytest.raises(ValueError, match="calibration.*provenance"):
+            accuracy._validate_selection(transplanted)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "calibration_eligibility",
+        "calibration_commit",
+        "calibration_backend",
+        "selection_backend",
+        "input_commit_flag",
+    ],
+)
+def test_selection_propagated_provenance_cannot_be_tampered(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tamper: str,
+) -> None:
+    selection = json.loads(reduced_screen_inputs[2].read_text())
+    if tamper == "calibration_eligibility":
+        selection["calibration_data_eligible"] = not selection["calibration_data_eligible"]
+    elif tamper == "calibration_commit":
+        selection["calibration_data_provenance"]["git_commit"] = "0" * 40
+    elif tamper == "calibration_backend":
+        selection["calibration_data_provenance"]["matching_backend"]["name"] = "wrong"
+    elif tamper == "selection_backend":
+        selection["provenance"]["matching_backend"]["name"] = "wrong"
+    else:
+        selection["producer_inputs_committed"] = not selection["producer_inputs_committed"]
+    with pytest.raises(ValueError, match="provenance|backend|commit"):
+        accuracy._validate_selection(selection)

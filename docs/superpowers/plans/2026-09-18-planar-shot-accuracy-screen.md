@@ -361,9 +361,14 @@ step succeeds.**
 uv run python experiments/31_generate_planar_shots.py \
   --config configs/planar_shot_calibration.json \
   --out evidence/planar-shot-calibration
+git add evidence/planar-shot-calibration
+git commit -m "data: freeze planar calibration shots"
+git push origin research/adaptive-inference-world-model
 ```
 
 Expected: 1,024 correctly paired calibration shots and zero replay failures.
+The calibration data must be committed and pushed before selection starts;
+confirm the working tree is clean at this first barrier.
 
 - [ ] **Step 2: Select and freeze calibrated CMWPM**
 
@@ -372,11 +377,14 @@ uv run python experiments/32_calibrate_planar_cmwpm.py \
   --grid configs/planar_cmwpm_grid.json \
   --data evidence/planar-shot-calibration/planar_shots.json \
   --out evidence/planar-cmwpm-calibration
+git add evidence/planar-cmwpm-calibration
+git commit -m "calibration: freeze planar matching selection"
+git push origin research/adaptive-inference-world-model
 ```
 
 Review candidate counts and verify that the selected tuple follows the declared
-ordering. Commit and push the calibration data and selection before screen
-generation so the baseline cannot be changed after screen inspection.
+ordering. The second barrier commits and pushes selection before screen
+generation, with all selection inputs already committed at the first barrier.
 
 - [ ] **Step 3: Generate untouched screen shots**
 
@@ -384,9 +392,13 @@ generation so the baseline cannot be changed after screen inspection.
 uv run python experiments/31_generate_planar_shots.py \
   --config configs/planar_shot_screen.json \
   --out evidence/planar-shot-screen
+git add evidence/planar-shot-screen
+git commit -m "data: freeze held-out planar screen shots"
+git push origin research/adaptive-inference-world-model
 ```
 
 Expected: 4,096 correctly paired screen shots from the distinct screen domain.
+The third barrier commits and pushes these shots before evaluation starts.
 
 - [ ] **Step 4: Run the held-out screen**
 
@@ -396,10 +408,15 @@ uv run python experiments/33_run_planar_shot_accuracy.py \
   --screen evidence/planar-shot-screen/planar_shots.json \
   --selection evidence/planar-cmwpm-calibration/planar_cmwpm_selection.json \
   --out evidence/planar-shot-accuracy
+git add evidence/planar-shot-accuracy
+git commit -m "results: freeze planar shot accuracy evaluation"
+git push origin research/adaptive-inference-world-model
 ```
 
 Expected: a canonical status determined only by the frozen gate, with complete
 per-rate failures, paired discordances, and work totals.
+The fourth barrier publishes the scored result; subsequent interpretation and
+documentation commits do not replace any of the four producer barriers.
 
 - [ ] **Step 5: Independently review the evidence before writing conclusions**
 

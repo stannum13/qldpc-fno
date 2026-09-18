@@ -124,27 +124,45 @@ arithmetic estimate, not a timing measurement.
 
 ## Expected artifacts and commands
 
-After the freeze is pushed, use fresh output directories in this order:
+After the freeze is pushed, start each producer from a clean tree with its
+inputs already committed. Use four commit-and-push barriers in this order;
+running a consumer while the preceding artifact is untracked is noncanonical.
 
 ```bash
 uv run python experiments/31_generate_planar_shots.py \
   --config configs/planar_shot_calibration.json \
   --out evidence/planar-shot-calibration
 
+git add evidence/planar-shot-calibration
+git commit -m "data: freeze planar calibration shots"
+git push origin research/adaptive-inference-world-model
+
 uv run python experiments/32_calibrate_planar_cmwpm.py \
   --grid configs/planar_cmwpm_grid.json \
   --data evidence/planar-shot-calibration/planar_shots.json \
   --out evidence/planar-cmwpm-calibration
 
+git add evidence/planar-cmwpm-calibration
+git commit -m "calibration: freeze planar matching selection"
+git push origin research/adaptive-inference-world-model
+
 uv run python experiments/31_generate_planar_shots.py \
   --config configs/planar_shot_screen.json \
   --out evidence/planar-shot-screen
+
+git add evidence/planar-shot-screen
+git commit -m "data: freeze held-out planar screen shots"
+git push origin research/adaptive-inference-world-model
 
 uv run python experiments/33_run_planar_shot_accuracy.py \
   --policy configs/planar_shot_accuracy_policy.json \
   --screen evidence/planar-shot-screen/planar_shots.json \
   --selection evidence/planar-cmwpm-calibration/planar_cmwpm_selection.json \
   --out evidence/planar-shot-accuracy
+
+git add evidence/planar-shot-accuracy
+git commit -m "results: freeze planar shot accuracy evaluation"
+git push origin research/adaptive-inference-world-model
 ```
 
 The expected future immutable files are
@@ -159,6 +177,22 @@ provenance, per-shot errors, syndromes, classes, recoveries, failures, and work,
 then independently replays the complete result. Canonical status additionally
 requires exact frozen configs, expected counts, matching current source hashes,
 disjoint domains, and clean producer/evaluator provenance.
+
+Before sampling, each shot artifact freezes the relative source paths and
+SHA-256 hashes for the generator, evaluator, tensor contractions, paired metrics,
+and artifact writer. Config provenance includes exact embedded bytes, digest,
+relative path and scope, and whether those bytes exist in the producer commit.
+Consumers check the current scientific sources, producer commit and committed
+blobs, config content, and dependency identity. Selection carries the verified
+calibration provenance and eligibility forward; dirty or external diagnostic
+inputs cannot become canonical after a later clean commit.
+
+Every stage also records the NetworkX version, qecsim Blossom5 availability,
+selected matching backend, lockfile digest, and native Blossom5 binary digest
+when available. Consumers require the same identity, so a backend change cannot
+silently alter matching tie-break behavior during replay. The Git checks verify
+local commits; pushing and retaining the untouched-domain boundary remain
+explicit campaign steps.
 
 ## Explicit nonclaims
 
