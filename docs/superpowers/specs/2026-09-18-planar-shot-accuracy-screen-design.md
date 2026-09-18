@@ -35,8 +35,13 @@ only after this screen and a new preregistration.
 
 ## Fixed sample roles
 
-All seeds are derived from the SHA-256 digest of their literal domain strings.
-The source/config freeze is committed and pushed before either domain is opened.
+All seeds are derived independently as the unsigned big-endian integer encoded
+by the first eight bytes of
+`SHA256("{domain}|d5|p{error_rate:.6f}|i{shot_index:06d}")`. The generator
+requires every child seed to be unique within an artifact and disjoint across
+the calibration and screen artifacts. The evaluator reconstructs the literal
+identity string and seed for every role/rate/index. The source/config freeze is
+committed and pushed before either domain is opened.
 
 - calibration domain: `qldpc-fno/planar-shot-accuracy/calibration/v1`;
 - screen domain: `qldpc-fno/planar-shot-accuracy/screen/v1`;
@@ -57,7 +62,12 @@ reader regenerates the error and requires
 ### Unrestricted tensor reference
 
 The existing unrestricted MPS contraction returns four logical-coset masses in
-qecsim's `I, X, Y, Z` order. The highest-mass class is converted to a recovery by
+qecsim's `I, X, Y, Z` order. Both unrestricted row and column contractions must
+select the same winner, differ by at most `1e-10` in normalized probability and
+`1e-8` in maximum pairwise log-mass ratio, and each top-versus-runner-up
+probability margin must exceed twice the maximum row/column probability
+discrepancy. Otherwise the shot invalidates canonical evaluation as numerically
+ambiguous. The certified highest-mass class is converted to a recovery by
 starting from `PlanarMPSDecoder.sample_recovery` and applying no logical, logical
 X, logical X then Z, or logical Z respectively. Finite positive masses and a
 unique maximum are required; an invalid or tied reference invalidates the shot.
@@ -93,8 +103,11 @@ For sampled error `e` and recovery `r`, form `residual = (e + r) mod 2`.
 - logical success requires `bsp(residual, logicals.T)` to be all zero;
 - any invalid recovery is a logical failure and an integrity error.
 
-Raw correction-string equality is never used. X and Z are decoded jointly by
-all arms because the depolarizing channel is correlated at the Pauli level.
+Raw correction-string equality is never used. Every arm returns one joint
+binary-symplectic recovery. Tensor inference models the depolarizing Pauli
+distribution directly and CMWPM iteratively couples primal and dual matches;
+ordinary MWPM is retained as a conventional factorized reference and does not
+exploit the X/Z correlation.
 
 ## Endpoints and interpretation
 
