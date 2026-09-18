@@ -6,6 +6,16 @@
 > and estimated-work results below are not shot-level decoder accuracy results.
 > See the [symplectic syndrome erratum](docs/symplectic-syndrome-erratum.md).
 
+> **Planar physical-shot screen: frozen, not run.** No result exists and neither
+> canonical seed domain has opened. The next study uses correctly paired
+> physical errors and symplectic syndromes to test the tolerance policy against
+> an unrestricted tensor reference, with CMWPM calibrated only on separate
+> calibration shots. Its [frozen contract](docs/planar-shot-accuracy-contract.md),
+> [design](docs/superpowers/specs/2026-09-18-planar-shot-accuracy-screen-design.md),
+> [configs](configs/planar_shot_accuracy_policy.json), and the
+> [erratum](docs/symplectic-syndrome-erratum.md) define the boundary; future
+> artifacts are not yet present.
+
 An accuracy-first research harness for testing learned priors and causal noise
 forecasting with a fixed BP-LSD decoder on a cyclic qLDPC code.
 
@@ -20,6 +30,13 @@ constraints were disturbed. Decoding is the classical task of turning that
 fingerprint into a correction. The correction must reproduce the measured
 syndrome and preserve the encoded logical information; merely resembling another
 decoder's bit string is not enough.
+
+For the frozen planar physical-shot screen, this is tested modulo stabilizers:
+two raw correction strings may differ by a stabilizer and still be equally
+correct. The scorer therefore combines the sampled error with a recovery and
+checks the residual's commutation signature with the logical operators. A
+nonzero residual logical signature is decisive because it means encoded
+information changed; raw correction-string equality is never the criterion.
 
 Surface-code architectures are the standard local-check reference point, but
 their low encoding rate can make physical-qubit overhead important when many
