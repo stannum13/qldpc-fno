@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "planar_shot_accuracy_publication_manifest",
+  "status": "falsified_exact_outcome_preservation",
+  "canonical": true,
+  "artifact_binding": {
+    "raw": {
+      "filename": "planar_shot_accuracy.json",
+      "sha256": "b56fecd64497fb4aa1204027820543411bcab4dc4f2979deb2db52d00ff49769",
+      "size_bytes": 780670635
+    },
+    "compressed": {
+      "filename": "planar_shot_accuracy.json.gz",
+      "format": "gzip",
+      "deterministic": true,
+      "sha256": "d6268f928eef4dd2c5e17013b5ce6ecd67f0e94f6752de9f52594416d2d3c7b3",
+      "size_bytes": 44451709
+    },
+    "storage": {
+      "gcs_uri": "gs://project-1178f0de-10fb-4e7e-8e4-qldpc-fno-artifacts/planar-shot-accuracy/v1/b56fecd64497fb4aa1204027820543411bcab4dc4f2979deb2db52d00ff49769/planar_shot_accuracy.json.gz",
+      "https_url": "https://storage.googleapis.com/project-1178f0de-10fb-4e7e-8e4-qldpc-fno-artifacts/planar-shot-accuracy/v1/b56fecd64497fb4aa1204027820543411bcab4dc4f2979deb2db52d00ff49769/planar_shot_accuracy.json.gz",
+      "generation_pinned_https_url": "https://storage.googleapis.com/project-1178f0de-10fb-4e7e-8e4-qldpc-fno-artifacts/planar-shot-accuracy/v1/b56fecd64497fb4aa1204027820543411bcab4dc4f2979deb2db52d00ff49769/planar_shot_accuracy.json.gz?generation=1789705238581848",
+      "generation": "1789705238581848",
+      "crc32c_base64": "SbnIbw==",
+      "md5_base64": "Dw4H11znjR6DMv3sj9Offw==",
+      "bucket_versioning_enabled": true,
+      "public_round_trip_raw_sha256_verified": true
+    }
+  },
+  "summary_path": "summary.json",
+  "results_document": "../../docs/planar-shot-accuracy-results.md",
+  "campaign_commits": {
+    "scientific_freeze": "8ecda1f3d4a70e0ae3678a2d5eaf44384739813e",
+    "calibration_shots": "e21a7623058d9b5869ed69a692a187ac03c61c28",
+    "cmwpm_selection": "dbaec2297eea30079300680c83d28d7b5afcdc00",
+    "screen_shots_and_evaluator_launch": "19af0a3e4381f0f4414ec2ca2af1692d3f3424c9"
+  },
+  "provenance_interpretation": "The raw artifact provenance.git_commit is the screen producer commit dbaec2297eea30079300680c83d28d7b5afcdc00 by the frozen implementation's binding. The evaluator actually launched from clean, pushed commit 19af0a3e4381f0f4414ec2ca2af1692d3f3424c9. The raw bytes have not been corrected or regenerated.",
+  "publication_note": "The original immutable JSON exceeds ordinary Git file-size limits. Git tracks this manifest and a derived summary; the complete original JSON is stored without content changes inside a deterministic gzip object in a versioned public GCS bucket. Source/config freezes and the three input commit-and-push barriers remain unchanged.",
+  "input_sha256": {
+    "policy": "0a362cfeb376feb813c941bffff7a8201e9e038ab9590b33ed91728b1c092b44",
+    "screen": "3bc31b5c24667ea68a411833d28740d57fb812752bd5c5a13426da2831eb801f",
+    "selection": "8e02236b01e77f4363a086ae2702c0893061d98b10889d6fd77dd7eba4094093"
+  },
+  "calibration_data_sha256": "630daa4254bd8cc9c58f5e6edc7d0fee1df846bfd33590cf3bf868bfe97a7cb2",
+  "integrity": {
+    "independent_replay": true,
+    "producer_inputs_committed": true,
+    "seed_domains_disjoint": true
+  },
+  "nonclaims": [
+    "Exact-policy decision or outcome preservation; the frozen gate was falsified.",
+    "Accuracy-preserving arithmetic savings, measured speed, latency, throughput, hardware or FPGA resource fit, or backlog stability.",
+    "Calibrated posterior probability masses.",
+    "Globally optimal CMWPM or superiority over matching decoders beyond the declared calibrated configuration and sample.",
+    "Circuit-level noise, thresholds, other distances, other physical rates, or qLDPC transfer.",
+    "FNO, HiPPO, learned-controller, world-model or reinforcement-learning value.",
+    "State-of-the-art decoding."
+  ]
+}

@@ -4,3 +4,5 @@ artifacts/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+/evidence/planar-shot-accuracy/planar_shot_accuracy.json
+/evidence/planar-shot-accuracy/planar_shot_accuracy.json.gz

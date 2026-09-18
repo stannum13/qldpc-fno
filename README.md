@@ -6,18 +6,18 @@
 > and estimated-work results below are not shot-level decoder accuracy results.
 > See the [symplectic syndrome erratum](docs/symplectic-syndrome-erratum.md).
 
-> **Planar physical-shot screen: frozen, not run.** No result exists and neither
-> canonical seed domain has opened. The next study uses correctly paired
-> physical errors and symplectic syndromes to test the tolerance policy against
-> an unrestricted tensor reference, with CMWPM calibrated only on separate
-> calibration shots. Its [frozen contract](docs/planar-shot-accuracy-contract.md),
-> [design](docs/superpowers/specs/2026-09-18-planar-shot-accuracy-screen-design.md),
-> [configs](configs/planar_shot_accuracy_policy.json), and the
-> [erratum](docs/symplectic-syndrome-erratum.md) define the boundary; future
-> artifacts are not yet present.
-> Canonical execution requires four commit-and-push barriers: calibration shots,
-> matching selection, held-out screen shots, then scored results. Each producer
-> starts clean with committed inputs; see the contract's exact command sequence.
+> **Planar physical-shot screen: FALSIFIED.** Row/column tolerance agreement is
+> not a safe certificate of exact-reference outcome preservation in this frozen
+> distance-5 screen. On 2,048 correctly paired physical shots per rate, the
+> policy disagreed with the unrestricted tensor reference on 2 shots at p=0.10
+> and 6 at p=0.15; all eight were accepted agreements and changed the logical
+> outcome. Both strata fail the predeclared gate, with zero invalid references
+> or final recoveries. Read the [results](docs/planar-shot-accuracy-results.md),
+> [summary](evidence/planar-shot-accuracy/summary.json), and
+> [public full-evidence manifest](evidence/planar-shot-accuracy/manifest.json).
+> The [frozen contract](docs/planar-shot-accuracy-contract.md) and
+> [erratum](docs/symplectic-syndrome-erratum.md) define the scope. Estimated
+> arithmetic reductions are not accuracy-preserving savings or measured speed.
 
 An accuracy-first research harness for testing learned priors and causal noise
 forecasting with a fixed BP-LSD decoder on a cyclic qLDPC code.
@@ -232,6 +232,16 @@ does *not* estimate calibrated posterior masses: 868 of 960 selected outputs
 fail the strict log-ratio fidelity criterion. Read the
 [locked local-spectrum confirmation](docs/tensor-tolerance-confirmation-results.md)
 for the construction, evidence, and limits.
+
+The subsequent correctly paired physical-shot screen **falsified** this
+tolerance policy's exact-outcome preservation gate at distance 5: 2/2,048 and
+6/2,048 held-out decisions disagreed with the certified reference at p=0.10 and
+p=0.15, respectively. Exact/policy failure counts were 109/107 and 323/325;
+calibrated CMWPM had 148 and 416 failures on the same strata. These observations
+apply to the declared configuration and sample. The eight accepted agreements
+that changed outcomes prevent an accuracy-preserving work-saving claim. See
+the [physical-shot results](docs/planar-shot-accuracy-results.md) for paired
+comparisons, intervals, complete evidence, and all nonclaims.
 
 ## Experiment flow
 
