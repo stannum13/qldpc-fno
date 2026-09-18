@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 from qecsim import paulitools as pt
 from qecsim.models.planar import PlanarCode, PlanarMPSDecoder
 
 from qldpc_fno.decision.planar_shot_accuracy import (
+    calibrate_cmwpm,
+    cmwpm_grid,
     logical_class_recovery,
     score_recovery,
+    select_cmwpm_candidate,
     two_view_tolerance_decision,
 )
+from qldpc_fno.decision.planar_shot_data import generate_planar_shots
 from qldpc_fno.decision.tensor_network import PlanarCosetMasses
 
 
@@ -229,3 +237,154 @@ def test_two_view_tolerance_rejects_invalid_policy_inputs(
 ) -> None:
     with pytest.raises(ValueError):
         two_view_tolerance_decision(syndrome, error_rate)
+
+
+def _cmwpm_grid(path: Path) -> Path:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "factors": [1, 2, 3, 4],
+                "max_iterations": [2, 4, 8],
+                "box_shapes": ["t", "r"],
+                "distance_algorithms": [2, 4],
+            }
+        )
+    )
+    return path
+
+
+def _shot_config(tmp_path: Path, domain: str) -> Path:
+    config = {
+        "schema_version": 1,
+        "seed_domain": domain,
+        "campaign_seed": int.from_bytes(hashlib.sha256(domain.encode()).digest()[:8], "big"),
+        "code_distance": 5,
+        "error_rates": [0.1, 0.15],
+        "shots_per_rate": 1,
+        "noise_model": "qecsim_iid_depolarizing_code_capacity",
+    }
+    path = tmp_path / "shots.json"
+    path.write_text(json.dumps(config))
+    return path
+
+
+def _candidate(
+    parameters: tuple[int, int, str, int], *, failures: tuple[int, int]
+) -> dict[str, object]:
+    factor, max_iterations, box_shape, distance_algorithm = parameters
+    return {
+        "parameters": {
+            "factor": factor,
+            "max_iterations": max_iterations,
+            "box_shape": box_shape,
+            "distance_algorithm": distance_algorithm,
+        },
+        "per_rate": [
+            {"error_rate": 0.1, "failures": failures[0]},
+            {"error_rate": 0.15, "failures": failures[1]},
+        ],
+        "pooled": {"failures": sum(failures)},
+    }
+
+
+def test_cmwpm_selection_uses_pooled_then_worst_rate_then_parameter_tuple() -> None:
+    pooled_loser = _candidate((1, 2, "t", 2), failures=(0, 3))
+    worst_rate_loser = _candidate((1, 2, "t", 4), failures=(0, 2))
+    lexical_loser = _candidate((2, 2, "r", 2), failures=(1, 1))
+    expected = _candidate((1, 4, "r", 4), failures=(1, 1))
+
+    assert select_cmwpm_candidate([pooled_loser, worst_rate_loser, lexical_loser, expected]) == expected
+
+
+def test_cmwpm_grid_is_frozen_to_one_shared_48_candidate_policy(tmp_path: Path) -> None:
+    grid = cmwpm_grid(_cmwpm_grid(tmp_path / "grid.json"))
+
+    assert len(grid) == 48
+    assert len({tuple(candidate.values()) for candidate in grid}) == 48
+    assert grid[0] == {
+        "factor": 1,
+        "max_iterations": 2,
+        "box_shape": "t",
+        "distance_algorithm": 2,
+    }
+
+
+def test_cmwpm_calibration_records_one_shared_selection_and_mwpm_reference(
+    tmp_path: Path,
+) -> None:
+    shots_dir = tmp_path / "calibration-shots"
+    generate_planar_shots(
+        _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1"), shots_dir
+    )
+
+    result = calibrate_cmwpm(
+        _cmwpm_grid(tmp_path / "grid.json"),
+        shots_dir / "planar_shots.json",
+        tmp_path / "selection",
+    )
+
+    assert len(result["candidates"]) == 48
+    assert result["selected"] in result["candidates"]
+    assert len(result["selected"]["per_rate"]) == 2
+    assert result["mwpm_reference"] not in result["candidates"]
+    assert (tmp_path / "selection" / "planar_cmwpm_selection.json").exists()
+
+
+@pytest.mark.parametrize("domain", ["qldpc-fno/planar-shot-test/screen/v1"])
+def test_cmwpm_calibration_rejects_screen_domain(tmp_path: Path, domain: str) -> None:
+    shots_dir = tmp_path / "shots"
+    generate_planar_shots(_shot_config(tmp_path, domain), shots_dir)
+
+    with pytest.raises(ValueError, match="calibration"):
+        calibrate_cmwpm(
+            _cmwpm_grid(tmp_path / "grid.json"), shots_dir / "planar_shots.json", tmp_path / "out"
+        )
+
+
+def test_cmwpm_calibration_rejects_unreplayable_physical_error(tmp_path: Path) -> None:
+    shots_dir = tmp_path / "shots"
+    generate_planar_shots(
+        _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1"), shots_dir
+    )
+    artifact_path = shots_dir / "planar_shots.json"
+    artifact = json.loads(artifact_path.read_text())
+    artifact["shots"][0]["error_bsf"][0] ^= 1
+    artifact_path.write_text(json.dumps(artifact))
+
+    with pytest.raises(ValueError, match="replay"):
+        calibrate_cmwpm(_cmwpm_grid(tmp_path / "grid.json"), artifact_path, tmp_path / "out")
+
+
+def test_cmwpm_calibration_counts_decoder_exceptions_and_invalid_recoveries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class BrokenCMWPMDecoder:
+        def __init__(self, **_: object) -> None:
+            self.calls = 0
+
+        def decode(self, _: PlanarCode, __: np.ndarray) -> np.ndarray:
+            self.calls += 1
+            if self.calls == 1:
+                return np.zeros(1, dtype=np.uint8)
+            raise RuntimeError("decoder failed")
+
+    shots_dir = tmp_path / "shots"
+    generate_planar_shots(
+        _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1"), shots_dir
+    )
+    monkeypatch.setattr(
+        "qldpc_fno.decision.planar_shot_accuracy.PlanarCMWPMDecoder", BrokenCMWPMDecoder
+    )
+
+    result = calibrate_cmwpm(
+        _cmwpm_grid(tmp_path / "grid.json"),
+        shots_dir / "planar_shots.json",
+        tmp_path / "selection",
+    )
+
+    for candidate in result["candidates"]:
+        pooled = candidate["pooled"]
+        assert pooled["failures"] == 2
+        assert pooled["invalid_recoveries"] == 1
+        assert pooled["decode_exceptions"] == 1

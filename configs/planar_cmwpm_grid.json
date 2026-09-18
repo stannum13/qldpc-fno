@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "factors": [1, 2, 3, 4],
+  "max_iterations": [2, 4, 8],
+  "box_shapes": ["t", "r"],
+  "distance_algorithms": [2, 4]
+}
