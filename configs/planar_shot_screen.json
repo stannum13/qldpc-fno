@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "seed_domain": "qldpc-fno/planar-shot-accuracy/screen/v1",
+  "campaign_seed": 10662168810357808346,
+  "code_distance": 5,
+  "error_rates": [0.1, 0.15],
+  "shots_per_rate": 2048,
+  "noise_model": "qecsim_iid_depolarizing_code_capacity"
+}
