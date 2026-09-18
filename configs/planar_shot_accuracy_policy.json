@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "policy_id": "planar_shot_accuracy_v1",
+  "required_screen_domain": "qldpc-fno/planar-shot-accuracy/screen/v1",
+  "required_calibration_domain": "qldpc-fno/planar-shot-accuracy/calibration/v1",
+  "screen_shots_per_rate": 2048,
+  "calibration_shots_per_rate": 512,
+  "code_distance": 5,
+  "error_rates": [0.1, 0.15],
+  "noise_model": "qecsim_iid_depolarizing_code_capacity",
+  "tolerance": 0.01,
+  "fallback_chi": 8,
+  "reference_probability_tolerance": 1e-10,
+  "reference_log_ratio_tolerance": 1e-8,
+  "familywise_alpha": 0.05,
+  "comparisons": 2,
+  "maximum_class_mismatch_rate": 0.005,
+  "work_bootstrap_replicates": 10000,
+  "work_bootstrap_seed": 13158893872079179326
+}

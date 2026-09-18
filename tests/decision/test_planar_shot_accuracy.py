@@ -11,6 +11,7 @@ import scipy
 from qecsim import paulitools as pt
 from qecsim.models.planar import PlanarCode, PlanarMPSDecoder
 
+from qldpc_fno.decision import planar_shot_accuracy as accuracy
 from qldpc_fno.decision.planar_shot_accuracy import (
     calibrate_cmwpm,
     cmwpm_grid,
@@ -20,7 +21,7 @@ from qldpc_fno.decision.planar_shot_accuracy import (
     two_view_tolerance_decision,
 )
 from qldpc_fno.decision.planar_shot_data import generate_planar_shots
-from qldpc_fno.decision.tensor_network import PlanarCosetMasses
+from qldpc_fno.decision.tensor_network import InvalidCosetMassError, PlanarCosetMasses
 
 
 def test_class_recoveries_reproduce_syndrome_and_are_stabilizer_invariant() -> None:
@@ -296,7 +297,10 @@ def test_cmwpm_selection_uses_pooled_then_worst_rate_then_parameter_tuple() -> N
     lexical_loser = _candidate((2, 2, "r", 2), failures=(1, 1))
     expected = _candidate((1, 4, "r", 4), failures=(1, 1))
 
-    assert select_cmwpm_candidate([pooled_loser, worst_rate_loser, lexical_loser, expected]) == expected
+    assert (
+        select_cmwpm_candidate([pooled_loser, worst_rate_loser, lexical_loser, expected])
+        == expected
+    )
 
 
 def test_cmwpm_grid_is_frozen_to_one_shared_48_candidate_policy(tmp_path: Path) -> None:
@@ -317,9 +321,7 @@ def test_cmwpm_calibration_records_one_shared_selection_and_mwpm_reference(
 ) -> None:
     shots_dir = tmp_path / "calibration-shots"
     shot_config = _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1")
-    generate_planar_shots(
-        shot_config, shots_dir
-    )
+    generate_planar_shots(shot_config, shots_dir)
     grid_path = _cmwpm_grid(tmp_path / "grid.json")
 
     result = calibrate_cmwpm(
@@ -353,8 +355,7 @@ def test_cmwpm_calibration_records_one_shared_selection_and_mwpm_reference(
         "src/qldpc_fno/decision/planar_shot_data.py",
     }
     assert source_hashes == {
-        label: hashlib.sha256((root / label).read_bytes()).hexdigest()
-        for label in source_hashes
+        label: hashlib.sha256((root / label).read_bytes()).hexdigest() for label in source_hashes
     }
 
 
@@ -379,9 +380,9 @@ def test_cmwpm_calibration_rejects_malformed_data_provenance(tmp_path: Path) -> 
     )
     artifact_path = shots_dir / "planar_shots.json"
     artifact = json.loads(artifact_path.read_text())
-    artifact["provenance"]["source_sha256"][
-        "src/qldpc_fno/decision/planar_shot_data.py"
-    ] = "not-a-sha256"
+    artifact["provenance"]["source_sha256"]["src/qldpc_fno/decision/planar_shot_data.py"] = (
+        "not-a-sha256"
+    )
     artifact_path.write_text(json.dumps(artifact))
 
     with pytest.raises(ValueError, match="provenance"):
@@ -445,3 +446,281 @@ def test_cmwpm_calibration_counts_decoder_exceptions_and_invalid_recoveries(
         assert pooled["failures"] == 2
         assert pooled["invalid_recoveries"] == 1
         assert pooled["decode_exceptions"] == 1
+
+
+def test_gate_adjusted_wilson_and_zero_mismatch_requirement() -> None:
+    assert accuracy.adjusted_wilson_upper(0, 2048, alpha=0.05 / 2) < 0.005
+    assert accuracy.status_for_strata([0, 0], shots=2048) == "passed_exact_outcome_preservation"
+    assert accuracy.status_for_strata([0, 1], shots=2048) == "falsified_exact_outcome_preservation"
+    assert accuracy.status_for_strata([0, 0], shots=2) == "unresolved_insufficient_precision"
+
+
+@pytest.mark.parametrize(
+    "probabilities",
+    [
+        [0.4, 0.4, 0.1, 0.1],
+        [0.7, 0.2, 0.1, 0.0],
+        [float("nan"), 0.2, 0.2, 0.2],
+    ],
+)
+def test_screen_reference_rejects_tied_or_invalid_masses(probabilities: list[float]) -> None:
+    with pytest.raises(ValueError, match="reference"):
+        accuracy.certify_reference(np.array(probabilities), np.array(probabilities))
+
+
+def test_screen_reference_requires_both_numerical_metrics_and_robust_margin() -> None:
+    good = np.array([0.4, 0.3, 0.2, 0.1])
+    assert accuracy.certify_reference(good, good)["selected_class"] == 0
+    with pytest.raises(ValueError, match="reference"):
+        accuracy.certify_reference(good, good + np.array([1e-9, -1e-9, 0, 0]))
+    tiny = np.array([0.6, 0.3, 0.1 - 1e-12, 1e-12])
+    with pytest.raises(ValueError, match="reference"):
+        accuracy.certify_reference(tiny, tiny + np.array([0, 0, -1e-13, 1e-13]))
+    near_tie = np.array([0.4 + 1e-12, 0.4, 0.1, 0.1])
+    with pytest.raises(ValueError, match="reference"):
+        accuracy.certify_reference(near_tie, near_tie + np.array([0, 0, 1e-12, -1e-12]))
+
+
+@pytest.fixture
+def reduced_screen_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, Path]:
+    calibration_config = _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1")
+    value = json.loads(calibration_config.read_text())
+    value["shots_per_rate"] = 2
+    calibration_config.write_text(json.dumps(value))
+    generate_planar_shots(calibration_config, tmp_path / "calibration")
+    grid_path = _cmwpm_grid(tmp_path / "grid.json")
+    candidates = cmwpm_grid(grid_path)[:2]
+    with monkeypatch.context() as patch:
+        patch.setattr(accuracy, "cmwpm_grid", lambda _: candidates)
+        calibrate_cmwpm(
+            grid_path, tmp_path / "calibration/planar_shots.json", tmp_path / "selection"
+        )
+    screen_config = _shot_config(tmp_path, "qldpc-fno/planar-shot-test/screen/v1")
+    value = json.loads(screen_config.read_text())
+    value["shots_per_rate"] = 2
+    screen_config.write_text(json.dumps(value))
+    generate_planar_shots(screen_config, tmp_path / "screen")
+    return (
+        Path(__file__).resolve().parents[2] / "configs/planar_shot_accuracy_policy.json",
+        tmp_path / "screen/planar_shots.json",
+        tmp_path / "selection/planar_cmwpm_selection.json",
+    )
+
+
+def test_screen_reduced_pipeline_paired_tables_work_and_relative_provenance(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    assert result["status"] == "unresolved_noncanonical_data"
+    assert result["canonical"] is False
+    assert result["integrity"]["independent_replay"] is True
+    assert len(result["shots"]) == 4
+    for row in result["shots"]:
+        assert set(row["arms"]) == {"exact", "policy", "cmwpm", "mwpm"}
+        assert all(arm["syndrome_valid"] for arm in row["arms"].values())
+        assert row["work"]["policy"] > 0
+        assert row["work"]["exact"] > 0
+    for stratum in result["per_rate"]:
+        paired = stratum["paired"]["exact_vs_cmwpm"]
+        rows = [row for row in result["shots"] if row["error_rate"] == stratum["error_rate"]]
+        exact = np.array([row["arms"]["exact"]["failure"] for row in rows])
+        matching = np.array([row["arms"]["cmwpm"]["failure"] for row in rows])
+        assert paired["baseline_only_failure"] == int(np.sum(exact & ~matching))
+        assert paired["hybrid_only_failure"] == int(np.sum(~exact & matching))
+        assert paired["both_fail"] == int(np.sum(exact & matching))
+    assert result["work"]["bootstrap_replicates"] == 10000
+    assert result["work"]["bootstrap_seed"] == 13158893872079179326
+    assert all(not Path(label).is_absolute() for label in result["provenance"]["source_sha256"])
+    assert str(tmp_path) not in json.dumps(result)
+    assert json.loads((tmp_path / "result/planar_shot_accuracy.json").read_text()) == result
+    with pytest.raises(FileExistsError):
+        accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+
+
+@pytest.mark.parametrize("tamper", ["error", "selection", "collision", "stale_source"])
+def test_screen_integrity_rejects_tampering(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    policy, screen, selection = reduced_screen_inputs
+    path = screen if tamper in {"error", "collision"} else selection
+    payload = json.loads(path.read_text())
+    if tamper == "error":
+        payload["shots"][0]["error_bsf"][0] ^= 1
+    elif tamper == "selection":
+        payload["selected"]["pooled"]["failures"] += 1
+    elif tamper == "collision":
+        payload["config"] = json.loads(selection.read_text())["calibration_data_config"]
+    else:
+        label = next(iter(payload["provenance"]["source_sha256"]))
+        payload["provenance"]["source_sha256"][label] = "0" * 64
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="replay|selection|domain|source"):
+        accuracy.run_planar_shot_accuracy(policy, screen, selection, tmp_path / "result")
+
+
+def test_screen_integrity_detects_stored_result_tampering(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    result["shots"][0]["work"]["policy"] += 1
+    with pytest.raises(ValueError, match="replay"):
+        accuracy.verify_screen_result(result, *reduced_screen_inputs)
+
+
+def test_screen_policy_invalid_view_still_runs_both_views_and_charges_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def tensor(**kwargs: object) -> PlanarCosetMasses:
+        calls.append((kwargs["mode"], kwargs["chi"]))
+        if len(calls) == 1:
+            raise InvalidCosetMassError(
+                np.array([float("nan")] * 4), {"estimated_arithmetic_flops": 11}
+            )
+        return _coset_masses(
+            selected_class=0,
+            mode=str(kwargs["mode"]),
+            chi=kwargs["chi"],
+            tol=kwargs["tol"],
+            flops=17,
+        )
+
+    monkeypatch.setattr(accuracy, "planar_mps_coset_masses", tensor)
+    result = accuracy.two_view_tolerance_decision(np.zeros(40, dtype=np.uint8), 0.1)
+    assert calls == [("columns", None), ("rows", None), ("columns", 8)]
+    assert result["used_fallback"] is True
+    assert result["estimated_arithmetic_flops"] == 45
+    assert result["invalid_views"] == ["columns"]
+
+
+def test_screen_gate_rejects_class_mismatch_even_when_both_logically_fail(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+) -> None:
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    row = result["shots"][0]
+    row["class_mismatch"] = True
+    row["outcome_discordance"] = False
+    assert (
+        accuracy._summarize_screen(result["shots"], canonical=True)["status"]
+        == "falsified_exact_outcome_preservation"
+    )
+    row["class_mismatch"] = False
+    row["outcome_discordance"] = True
+    assert (
+        accuracy._summarize_screen(result["shots"], canonical=True)["status"]
+        == "falsified_exact_outcome_preservation"
+    )
+    row["reference_valid"] = False
+    assert (
+        accuracy._summarize_screen(result["shots"], canonical=True)["status"]
+        == "invalid_exact_reference"
+    )
+    assert (
+        accuracy._summarize_screen(result["shots"], canonical=False)["status"]
+        == "unresolved_noncanonical_data"
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["class", "probability", "signature", "aggregate", "data_hash", "selection_hash", "parameters"],
+)
+def test_screen_integrity_recomputes_stored_scientific_fields(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+    field: str,
+) -> None:
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    row = result["shots"][0]
+    if field == "class":
+        row["exact_class"] = (row["exact_class"] + 1) % 4
+    elif field == "probability":
+        row["tensor"]["exact_columns"]["probabilities"][0] += 0.1
+    elif field == "signature":
+        row["arms"]["policy"]["logical_signature"][0] ^= 1
+    elif field == "aggregate":
+        result["per_rate"][0]["class_mismatches"] += 1
+    elif field in {"data_hash", "selection_hash"}:
+        result["provenance"]["input_sha256"]["screen" if field == "data_hash" else "selection"] = (
+            "0" * 64
+        )
+    else:
+        result["selected_cmwpm_parameters"]["factor"] += 1
+    with pytest.raises(ValueError, match="replay"):
+        accuracy.verify_screen_result(result, *reduced_screen_inputs)
+
+
+def test_screen_invalid_matching_recovery_is_failure_and_integrity_error(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InvalidDecoder:
+        def decode(self, code: PlanarCode, syndrome: np.ndarray) -> np.ndarray:
+            recovery = logical_class_recovery(code, syndrome, 0)
+            recovery[0] ^= 1
+            return recovery
+
+    monkeypatch.setattr(accuracy, "PlanarMWPMDecoder", InvalidDecoder)
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    assert all(row["arms"]["mwpm"]["failure"] for row in result["shots"])
+    assert all(not row["arms"]["mwpm"]["syndrome_valid"] for row in result["shots"])
+    assert (
+        accuracy._summarize_screen(result["shots"], canonical=True)["status"] == "invalid_recovery"
+    )
+
+
+@pytest.mark.parametrize("action", ["exact", "fallback"])
+def test_screen_invalid_tensor_actions_preserve_diagnostics_and_work(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    real_tensor = accuracy.planar_mps_coset_masses
+
+    def tensor(**kwargs: object) -> PlanarCosetMasses:
+        if (action == "exact" and kwargs["chi"] is None and kwargs["tol"] is None) or (
+            action == "fallback" and (kwargs["chi"] == 8 or kwargs["tol"] == 0.01)
+        ):
+            raise InvalidCosetMassError(
+                np.array([float("nan")] * 4), {"estimated_arithmetic_flops": 13}
+            )
+        return real_tensor(**kwargs)
+
+    monkeypatch.setattr(accuracy, "planar_mps_coset_masses", tensor)
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    for row in result["shots"]:
+        if action == "exact":
+            assert row["reference_valid"] is False
+            assert row["work"]["exact"] == 26
+        else:
+            assert row["arms"]["policy"]["failure"] is True
+            assert row["work"]["policy"] == 39
+            assert row["work"]["fixed_chi8"] == 13
+    assert result["status"] == "unresolved_noncanonical_data"
+    assert result["integrity"]["independent_replay"] is True
+
+
+def test_screen_work_bootstrap_uses_paired_equal_rate_means() -> None:
+    rows = [
+        {
+            "error_rate": rate,
+            "work": {"policy": factor * 2, "fixed_chi8": factor * 4, "exact": factor * 8},
+        }
+        for rate in (0.1, 0.15)
+        for factor in (1, 3)
+    ]
+    result = accuracy._work_summary(rows)
+    assert result["policy_relative_to"]["fixed_chi8"]["ratio"] == 0.5
+    assert result["policy_relative_to"]["fixed_chi8"]["ratio_95ci"] == [0.5, 0.5]
+    assert result["policy_relative_to"]["exact"]["ratio_95ci"] == [0.25, 0.25]
+    assert accuracy._work_summary(rows) == result
