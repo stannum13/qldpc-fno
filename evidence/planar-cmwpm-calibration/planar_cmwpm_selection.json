@@ -1,0 +1,1756 @@
+{
+  "calibration_data_config": {
+    "campaign_seed": 11897243249319388773,
+    "code_distance": 5,
+    "error_rates": [
+      0.1,
+      0.15
+    ],
+    "noise_model": "qecsim_iid_depolarizing_code_capacity",
+    "schema_version": 1,
+    "seed_domain": "qldpc-fno/planar-shot-accuracy/calibration/v1",
+    "shots_per_rate": 512
+  },
+  "calibration_data_eligible": true,
+  "calibration_data_provenance": {
+    "config_committed": true,
+    "config_content": "{\n  \"schema_version\": 1,\n  \"seed_domain\": \"qldpc-fno/planar-shot-accuracy/calibration/v1\",\n  \"campaign_seed\": 11897243249319388773,\n  \"code_distance\": 5,\n  \"error_rates\": [0.1, 0.15],\n  \"shots_per_rate\": 512,\n  \"noise_model\": \"qecsim_iid_depolarizing_code_capacity\"\n}\n",
+    "config_path": "configs/planar_shot_calibration.json",
+    "config_scope": "repository",
+    "config_sha256": "d757dec3f7450a2befce85065d06ebff58eb8a470b842bcf57c4a5a05b5f9054",
+    "dependencies": {
+      "networkx": "3.6.1",
+      "numpy": "2.4.1",
+      "python": "3.14.6",
+      "qecsim": "1.0b9",
+      "scipy": "1.17.1"
+    },
+    "git_commit": "8ecda1f3d4a70e0ae3678a2d5eaf44384739813e",
+    "git_dirty": false,
+    "matching_backend": {
+      "blossom5_available": false,
+      "blossom5_binary_sha256": null,
+      "lockfile_sha256": "d849847d419c5fef439b651380d5fbe46f44f14d03f00a06b3e39abd72918029",
+      "name": "networkx"
+    },
+    "qecsim_version": "1.0b9",
+    "source_sha256": {
+      "src/qldpc_fno/artifacts.py": "5fc3ce4a9551e362ee65344bded19392745e1ac22f9039fe59d3cca3a7831f5e",
+      "src/qldpc_fno/decision/planar_shot_accuracy.py": "23f9be626de84dbd2f6bd7a20962ae266bb854d6df62abb703adeb6c818fcfa4",
+      "src/qldpc_fno/decision/planar_shot_data.py": "f8a26cf2e123071dcaa65025f46480a764b1e33c733f555f1be30bbf6b657188",
+      "src/qldpc_fno/decision/tensor_network.py": "f1ce76b6fb00f5665798ce85ed93fd3c51322212a058bafc9eb8ddc512a574f9",
+      "src/qldpc_fno/metrics/paired.py": "77e582a50c55a4ac89e01da66311a492a33f8e96721092ef173a3534ac699588"
+    }
+  },
+  "candidates": [
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 1,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 1,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 1,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 1,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 1,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 1,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 1,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 1,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 1,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 1,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 1,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 1,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 51,
+          "invalid_recoveries": 0,
+          "logical_failures": 51,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 128,
+          "invalid_recoveries": 0,
+          "logical_failures": 128,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 179,
+        "invalid_recoveries": 0,
+        "logical_failures": 179,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 2,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 37,
+          "invalid_recoveries": 0,
+          "logical_failures": 37,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 109,
+          "invalid_recoveries": 0,
+          "logical_failures": 109,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 146,
+        "invalid_recoveries": 0,
+        "logical_failures": 146,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 2,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 36,
+          "invalid_recoveries": 0,
+          "logical_failures": 36,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 106,
+          "invalid_recoveries": 0,
+          "logical_failures": 106,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 142,
+        "invalid_recoveries": 0,
+        "logical_failures": 142,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 2,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 110,
+          "invalid_recoveries": 0,
+          "logical_failures": 110,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 145,
+        "invalid_recoveries": 0,
+        "logical_failures": 145,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 2,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 36,
+          "invalid_recoveries": 0,
+          "logical_failures": 36,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 108,
+          "invalid_recoveries": 0,
+          "logical_failures": 108,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 144,
+        "invalid_recoveries": 0,
+        "logical_failures": 144,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 2,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 108,
+          "invalid_recoveries": 0,
+          "logical_failures": 108,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 143,
+        "invalid_recoveries": 0,
+        "logical_failures": 143,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 2,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 106,
+          "invalid_recoveries": 0,
+          "logical_failures": 106,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 141,
+        "invalid_recoveries": 0,
+        "logical_failures": 141,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 2,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 108,
+          "invalid_recoveries": 0,
+          "logical_failures": 108,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 143,
+        "invalid_recoveries": 0,
+        "logical_failures": 143,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 2,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 36,
+          "invalid_recoveries": 0,
+          "logical_failures": 36,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 106,
+          "invalid_recoveries": 0,
+          "logical_failures": 106,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 142,
+        "invalid_recoveries": 0,
+        "logical_failures": 142,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 2,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 108,
+          "invalid_recoveries": 0,
+          "logical_failures": 108,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 143,
+        "invalid_recoveries": 0,
+        "logical_failures": 143,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 2,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 107,
+          "invalid_recoveries": 0,
+          "logical_failures": 107,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 142,
+        "invalid_recoveries": 0,
+        "logical_failures": 142,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 2,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 108,
+          "invalid_recoveries": 0,
+          "logical_failures": 108,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 143,
+        "invalid_recoveries": 0,
+        "logical_failures": 143,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 2,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 36,
+          "invalid_recoveries": 0,
+          "logical_failures": 36,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 106,
+          "invalid_recoveries": 0,
+          "logical_failures": 106,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 142,
+        "invalid_recoveries": 0,
+        "logical_failures": 142,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 3,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 38,
+          "invalid_recoveries": 0,
+          "logical_failures": 38,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 113,
+          "invalid_recoveries": 0,
+          "logical_failures": 113,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 151,
+        "invalid_recoveries": 0,
+        "logical_failures": 151,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 3,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 41,
+          "invalid_recoveries": 0,
+          "logical_failures": 41,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 111,
+          "invalid_recoveries": 0,
+          "logical_failures": 111,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 152,
+        "invalid_recoveries": 0,
+        "logical_failures": 152,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 3,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 116,
+          "invalid_recoveries": 0,
+          "logical_failures": 116,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 151,
+        "invalid_recoveries": 0,
+        "logical_failures": 151,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 3,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 39,
+          "invalid_recoveries": 0,
+          "logical_failures": 39,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 113,
+          "invalid_recoveries": 0,
+          "logical_failures": 113,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 152,
+        "invalid_recoveries": 0,
+        "logical_failures": 152,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 3,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 38,
+          "invalid_recoveries": 0,
+          "logical_failures": 38,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 110,
+          "invalid_recoveries": 0,
+          "logical_failures": 110,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 148,
+        "invalid_recoveries": 0,
+        "logical_failures": 148,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 3,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 40,
+          "invalid_recoveries": 0,
+          "logical_failures": 40,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 111,
+          "invalid_recoveries": 0,
+          "logical_failures": 111,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 151,
+        "invalid_recoveries": 0,
+        "logical_failures": 151,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 3,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 112,
+          "invalid_recoveries": 0,
+          "logical_failures": 112,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 147,
+        "invalid_recoveries": 0,
+        "logical_failures": 147,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 3,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 38,
+          "invalid_recoveries": 0,
+          "logical_failures": 38,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 111,
+          "invalid_recoveries": 0,
+          "logical_failures": 111,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 149,
+        "invalid_recoveries": 0,
+        "logical_failures": 149,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 3,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 38,
+          "invalid_recoveries": 0,
+          "logical_failures": 38,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 109,
+          "invalid_recoveries": 0,
+          "logical_failures": 109,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 147,
+        "invalid_recoveries": 0,
+        "logical_failures": 147,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 3,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 39,
+          "invalid_recoveries": 0,
+          "logical_failures": 39,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 111,
+          "invalid_recoveries": 0,
+          "logical_failures": 111,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 150,
+        "invalid_recoveries": 0,
+        "logical_failures": 150,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 3,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 112,
+          "invalid_recoveries": 0,
+          "logical_failures": 112,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 147,
+        "invalid_recoveries": 0,
+        "logical_failures": 147,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 3,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 38,
+          "invalid_recoveries": 0,
+          "logical_failures": 38,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 111,
+          "invalid_recoveries": 0,
+          "logical_failures": 111,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 149,
+        "invalid_recoveries": 0,
+        "logical_failures": 149,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 4,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 39,
+          "invalid_recoveries": 0,
+          "logical_failures": 39,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 114,
+          "invalid_recoveries": 0,
+          "logical_failures": 114,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 153,
+        "invalid_recoveries": 0,
+        "logical_failures": 153,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 4,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 42,
+          "invalid_recoveries": 0,
+          "logical_failures": 42,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 115,
+          "invalid_recoveries": 0,
+          "logical_failures": 115,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 157,
+        "invalid_recoveries": 0,
+        "logical_failures": 157,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 4,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 35,
+          "invalid_recoveries": 0,
+          "logical_failures": 35,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 117,
+          "invalid_recoveries": 0,
+          "logical_failures": 117,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 152,
+        "invalid_recoveries": 0,
+        "logical_failures": 152,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 4,
+        "max_iterations": 2
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 41,
+          "invalid_recoveries": 0,
+          "logical_failures": 41,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 117,
+          "invalid_recoveries": 0,
+          "logical_failures": 117,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 158,
+        "invalid_recoveries": 0,
+        "logical_failures": 158,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 4,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 39,
+          "invalid_recoveries": 0,
+          "logical_failures": 39,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 112,
+          "invalid_recoveries": 0,
+          "logical_failures": 112,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 151,
+        "invalid_recoveries": 0,
+        "logical_failures": 151,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 4,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 38,
+          "invalid_recoveries": 0,
+          "logical_failures": 38,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 114,
+          "invalid_recoveries": 0,
+          "logical_failures": 114,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 152,
+        "invalid_recoveries": 0,
+        "logical_failures": 152,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 4,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 36,
+          "invalid_recoveries": 0,
+          "logical_failures": 36,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 114,
+          "invalid_recoveries": 0,
+          "logical_failures": 114,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 150,
+        "invalid_recoveries": 0,
+        "logical_failures": 150,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 4,
+        "max_iterations": 4
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 40,
+          "invalid_recoveries": 0,
+          "logical_failures": 40,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 115,
+          "invalid_recoveries": 0,
+          "logical_failures": 115,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 155,
+        "invalid_recoveries": 0,
+        "logical_failures": 155,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 2,
+        "factor": 4,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 39,
+          "invalid_recoveries": 0,
+          "logical_failures": 39,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 112,
+          "invalid_recoveries": 0,
+          "logical_failures": 112,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 151,
+        "invalid_recoveries": 0,
+        "logical_failures": 151,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "t",
+        "distance_algorithm": 4,
+        "factor": 4,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 39,
+          "invalid_recoveries": 0,
+          "logical_failures": 39,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 113,
+          "invalid_recoveries": 0,
+          "logical_failures": 113,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 152,
+        "invalid_recoveries": 0,
+        "logical_failures": 152,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 2,
+        "factor": 4,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 36,
+          "invalid_recoveries": 0,
+          "logical_failures": 36,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 114,
+          "invalid_recoveries": 0,
+          "logical_failures": 114,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 150,
+        "invalid_recoveries": 0,
+        "logical_failures": 150,
+        "shots": 1024
+      }
+    },
+    {
+      "parameters": {
+        "box_shape": "r",
+        "distance_algorithm": 4,
+        "factor": 4,
+        "max_iterations": 8
+      },
+      "per_rate": [
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.1,
+          "failures": 39,
+          "invalid_recoveries": 0,
+          "logical_failures": 39,
+          "shots": 512
+        },
+        {
+          "decode_exceptions": 0,
+          "error_rate": 0.15,
+          "failures": 115,
+          "invalid_recoveries": 0,
+          "logical_failures": 115,
+          "shots": 512
+        }
+      ],
+      "pooled": {
+        "decode_exceptions": 0,
+        "failures": 154,
+        "invalid_recoveries": 0,
+        "logical_failures": 154,
+        "shots": 1024
+      }
+    }
+  ],
+  "data_sha256": "630daa4254bd8cc9c58f5e6edc7d0fee1df846bfd33590cf3bf868bfe97a7cb2",
+  "grid": {
+    "box_shapes": [
+      "t",
+      "r"
+    ],
+    "distance_algorithms": [
+      2,
+      4
+    ],
+    "factors": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "max_iterations": [
+      2,
+      4,
+      8
+    ],
+    "schema_version": 1
+  },
+  "grid_sha256": "10d8ffbed2a3b397886932e92af2108d8e96b2206540cbd855ac2e0511281774",
+  "input_bindings": {
+    "calibration_data": {
+      "committed": true,
+      "path": "evidence/planar-shot-calibration/planar_shots.json",
+      "scope": "repository",
+      "sha256": "630daa4254bd8cc9c58f5e6edc7d0fee1df846bfd33590cf3bf868bfe97a7cb2"
+    },
+    "grid": {
+      "committed": true,
+      "path": "configs/planar_cmwpm_grid.json",
+      "scope": "repository",
+      "sha256": "10d8ffbed2a3b397886932e92af2108d8e96b2206540cbd855ac2e0511281774"
+    }
+  },
+  "mwpm_reference": {
+    "per_rate": [
+      {
+        "decode_exceptions": 0,
+        "error_rate": 0.1,
+        "failures": 49,
+        "invalid_recoveries": 0,
+        "logical_failures": 49,
+        "shots": 512
+      },
+      {
+        "decode_exceptions": 0,
+        "error_rate": 0.15,
+        "failures": 124,
+        "invalid_recoveries": 0,
+        "logical_failures": 124,
+        "shots": 512
+      }
+    ],
+    "pooled": {
+      "decode_exceptions": 0,
+      "failures": 173,
+      "invalid_recoveries": 0,
+      "logical_failures": 173,
+      "shots": 1024
+    }
+  },
+  "producer_inputs_committed": true,
+  "provenance": {
+    "dependencies": {
+      "networkx": "3.6.1",
+      "numpy": "2.4.1",
+      "python": "3.14.6",
+      "qecsim": "1.0b9",
+      "scipy": "1.17.1"
+    },
+    "git_commit": "e21a7623058d9b5869ed69a692a187ac03c61c28",
+    "git_dirty": false,
+    "matching_backend": {
+      "blossom5_available": false,
+      "blossom5_binary_sha256": null,
+      "lockfile_sha256": "d849847d419c5fef439b651380d5fbe46f44f14d03f00a06b3e39abd72918029",
+      "name": "networkx"
+    },
+    "source_sha256": {
+      "experiments/32_calibrate_planar_cmwpm.py": "05eba77982676c4817d44a17472ac93d11cd5b3a525371fcb7cdf5a3f3ea796f",
+      "src/qldpc_fno/artifacts.py": "5fc3ce4a9551e362ee65344bded19392745e1ac22f9039fe59d3cca3a7831f5e",
+      "src/qldpc_fno/decision/planar_shot_accuracy.py": "23f9be626de84dbd2f6bd7a20962ae266bb854d6df62abb703adeb6c818fcfa4",
+      "src/qldpc_fno/decision/planar_shot_data.py": "f8a26cf2e123071dcaa65025f46480a764b1e33c733f555f1be30bbf6b657188",
+      "src/qldpc_fno/decision/tensor_network.py": "f1ce76b6fb00f5665798ce85ed93fd3c51322212a058bafc9eb8ddc512a574f9",
+      "src/qldpc_fno/metrics/paired.py": "77e582a50c55a4ac89e01da66311a492a33f8e96721092ef173a3534ac699588"
+    }
+  },
+  "schema_version": 1,
+  "selected": {
+    "parameters": {
+      "box_shape": "t",
+      "distance_algorithm": 4,
+      "factor": 2,
+      "max_iterations": 4
+    },
+    "per_rate": [
+      {
+        "decode_exceptions": 0,
+        "error_rate": 0.1,
+        "failures": 35,
+        "invalid_recoveries": 0,
+        "logical_failures": 35,
+        "shots": 512
+      },
+      {
+        "decode_exceptions": 0,
+        "error_rate": 0.15,
+        "failures": 106,
+        "invalid_recoveries": 0,
+        "logical_failures": 106,
+        "shots": 512
+      }
+    ],
+    "pooled": {
+      "decode_exceptions": 0,
+      "failures": 141,
+      "invalid_recoveries": 0,
+      "logical_failures": 141,
+      "shots": 1024
+    }
+  }
+}
