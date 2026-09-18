@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
+import re
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
+import qecsim
+import scipy
 from qecsim import paulitools as pt
 from qecsim.models.generic import DepolarizingErrorModel
 from qecsim.models.planar import (
@@ -38,6 +43,14 @@ _PLANAR_SHOT_CONFIG_KEYS = {
 }
 _PLANAR_ERROR_RATES = (0.1, 0.15)
 _PLANAR_NOISE_MODEL = "qecsim_iid_depolarizing_code_capacity"
+_PLANAR_SHOT_SOURCE_LABELS = (
+    "src/qldpc_fno/decision/planar_shot_accuracy.py",
+    "src/qldpc_fno/decision/planar_shot_data.py",
+)
+_CMWPM_SOURCE_LABELS = (
+    "experiments/32_calibrate_planar_cmwpm.py",
+    *_PLANAR_SHOT_SOURCE_LABELS,
+)
 
 
 def _binary_vector(value: np.ndarray, *, length: int, name: str) -> np.ndarray:
@@ -186,7 +199,28 @@ def _calibration_shot_seed(domain: str, error_rate: float, shot_index: int) -> i
     return int.from_bytes(hashlib.sha256(identity.encode()).digest()[:8], "big")
 
 
-def _validated_calibration_shots(data_path: Path) -> list[dict[str, object]]:
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _validate_shot_provenance(payload: Mapping[str, object]) -> None:
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, Mapping):
+        raise TypeError("planar calibration artifact is missing provenance")
+    source_sha256 = provenance.get("source_sha256")
+    if (
+        not isinstance(source_sha256, Mapping)
+        or set(source_sha256) != set(_PLANAR_SHOT_SOURCE_LABELS)
+        or any(not _is_sha256(source_sha256.get(label)) for label in _PLANAR_SHOT_SOURCE_LABELS)
+        or not isinstance(provenance.get("qecsim_version"), str)
+        or not _is_sha256(provenance.get("config_sha256"))
+        or not isinstance(provenance.get("git_commit"), str)
+        or type(provenance.get("git_dirty")) is not bool
+    ):
+        raise ValueError("planar calibration artifact has malformed provenance")
+
+
+def _validated_calibration_shots(data_path: Path) -> tuple[dict[str, object], list[dict[str, object]]]:
     payload = json.loads(data_path.read_text())
     if not isinstance(payload, dict):
         raise TypeError("planar calibration artifact must be a JSON object")
@@ -194,6 +228,7 @@ def _validated_calibration_shots(data_path: Path) -> list[dict[str, object]]:
     rows = payload.get("shots")
     if not isinstance(config, dict) or set(config) != _PLANAR_SHOT_CONFIG_KEYS:
         raise ValueError("planar calibration artifact has an invalid shot config")
+    _validate_shot_provenance(payload)
     domain = config.get("seed_domain")
     campaign_seed = config.get("campaign_seed")
     if not isinstance(domain, str) or "/calibration/" not in domain:
@@ -263,7 +298,43 @@ def _validated_calibration_shots(data_path: Path) -> list[dict[str, object]]:
         )
     if any(indices != expected_indices for indices in by_rate_indices.values()):
         raise ValueError("planar calibration artifact is missing or duplicates shot indices")
-    return validated
+    return dict(config), validated
+
+
+def _git_provenance(repository_root: Path) -> tuple[str, bool]:
+    commit = subprocess.run(
+        ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "-C", str(repository_root), "status", "--porcelain"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    return commit, dirty
+
+
+def _cmwpm_provenance() -> dict[str, object]:
+    repository_root = Path(__file__).resolve().parents[3]
+    git_commit, git_dirty = _git_provenance(repository_root)
+    return {
+        "source_sha256": {
+            label: sha256_file(repository_root / label) for label in _CMWPM_SOURCE_LABELS
+        },
+        "dependencies": {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "scipy": scipy.__version__,
+            "qecsim": qecsim.__version__,
+        },
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
+    }
 
 
 def _parameters_tuple(parameters: Mapping[str, object]) -> tuple[int, int, str, int]:
@@ -391,7 +462,7 @@ def calibrate_cmwpm(grid_path: Path, data_path: Path, output_dir: Path) -> dict[
     if output_path.exists():
         raise FileExistsError(f"refusing to overwrite CMWPM selection: {output_path}")
     candidates = cmwpm_grid(grid_path)
-    shots = _validated_calibration_shots(data_path)
+    calibration_data_config, shots = _validated_calibration_shots(data_path)
 
     candidate_rows: list[dict[str, object]] = []
     for parameters in candidates:
@@ -410,8 +481,11 @@ def calibrate_cmwpm(grid_path: Path, data_path: Path, output_dir: Path) -> dict[
     selected = select_cmwpm_candidate(candidate_rows)
     payload: dict[str, object] = {
         "schema_version": 1,
+        "grid": json.loads(grid_path.read_text()),
+        "calibration_data_config": calibration_data_config,
         "grid_sha256": sha256_file(grid_path),
         "data_sha256": sha256_file(data_path),
+        "provenance": _cmwpm_provenance(),
         "candidates": candidate_rows,
         "selected": selected,
         "mwpm_reference": {"per_rate": mwpm_per_rate, "pooled": mwpm_pooled},

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import qecsim
+import scipy
 from qecsim import paulitools as pt
 from qecsim.models.planar import PlanarCode, PlanarMPSDecoder
 
@@ -314,12 +316,14 @@ def test_cmwpm_calibration_records_one_shared_selection_and_mwpm_reference(
     tmp_path: Path,
 ) -> None:
     shots_dir = tmp_path / "calibration-shots"
+    shot_config = _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1")
     generate_planar_shots(
-        _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1"), shots_dir
+        shot_config, shots_dir
     )
+    grid_path = _cmwpm_grid(tmp_path / "grid.json")
 
     result = calibrate_cmwpm(
-        _cmwpm_grid(tmp_path / "grid.json"),
+        grid_path,
         shots_dir / "planar_shots.json",
         tmp_path / "selection",
     )
@@ -328,7 +332,60 @@ def test_cmwpm_calibration_records_one_shared_selection_and_mwpm_reference(
     assert result["selected"] in result["candidates"]
     assert len(result["selected"]["per_rate"]) == 2
     assert result["mwpm_reference"] not in result["candidates"]
-    assert (tmp_path / "selection" / "planar_cmwpm_selection.json").exists()
+    selection_path = tmp_path / "selection" / "planar_cmwpm_selection.json"
+    selection = json.loads(selection_path.read_text())
+    assert selection["grid"] == json.loads(grid_path.read_text())
+    assert selection["calibration_data_config"] == json.loads(shot_config.read_text())
+    provenance = selection["provenance"]
+    assert provenance["dependencies"] == {
+        "numpy": np.__version__,
+        "python": provenance["dependencies"]["python"],
+        "qecsim": qecsim.__version__,
+        "scipy": scipy.__version__,
+    }
+    assert isinstance(provenance["git_commit"], str)
+    assert isinstance(provenance["git_dirty"], bool)
+    source_hashes = provenance["source_sha256"]
+    root = Path(__file__).resolve().parents[2]
+    assert set(source_hashes) == {
+        "experiments/32_calibrate_planar_cmwpm.py",
+        "src/qldpc_fno/decision/planar_shot_accuracy.py",
+        "src/qldpc_fno/decision/planar_shot_data.py",
+    }
+    assert source_hashes == {
+        label: hashlib.sha256((root / label).read_bytes()).hexdigest()
+        for label in source_hashes
+    }
+
+
+def test_cmwpm_calibration_rejects_missing_data_provenance(tmp_path: Path) -> None:
+    shots_dir = tmp_path / "shots"
+    generate_planar_shots(
+        _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1"), shots_dir
+    )
+    artifact_path = shots_dir / "planar_shots.json"
+    artifact = json.loads(artifact_path.read_text())
+    del artifact["provenance"]
+    artifact_path.write_text(json.dumps(artifact))
+
+    with pytest.raises(TypeError, match="provenance"):
+        calibrate_cmwpm(_cmwpm_grid(tmp_path / "grid.json"), artifact_path, tmp_path / "out")
+
+
+def test_cmwpm_calibration_rejects_malformed_data_provenance(tmp_path: Path) -> None:
+    shots_dir = tmp_path / "shots"
+    generate_planar_shots(
+        _shot_config(tmp_path, "qldpc-fno/planar-shot-test/calibration/v1"), shots_dir
+    )
+    artifact_path = shots_dir / "planar_shots.json"
+    artifact = json.loads(artifact_path.read_text())
+    artifact["provenance"]["source_sha256"][
+        "src/qldpc_fno/decision/planar_shot_data.py"
+    ] = "not-a-sha256"
+    artifact_path.write_text(json.dumps(artifact))
+
+    with pytest.raises(ValueError, match="provenance"):
+        calibrate_cmwpm(_cmwpm_grid(tmp_path / "grid.json"), artifact_path, tmp_path / "out")
 
 
 @pytest.mark.parametrize("domain", ["qldpc-fno/planar-shot-test/screen/v1"])
