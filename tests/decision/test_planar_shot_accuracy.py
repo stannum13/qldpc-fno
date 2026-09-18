@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from qecsim import paulitools as pt
-from qecsim.models.planar import PlanarCode
+from qecsim.models.planar import PlanarCode, PlanarMPSDecoder
 
 from qldpc_fno.decision.planar_shot_accuracy import (
     logical_class_recovery,
@@ -38,6 +38,42 @@ def test_class_recoveries_reproduce_syndrome_and_are_stabilizer_invariant() -> N
             np.testing.assert_array_equal(
                 stabilized_scored["logical_signature"], scored["logical_signature"]
             )
+
+
+def test_logical_class_recoveries_match_qecsim_representative_order() -> None:
+    code = PlanarCode(3, 3)
+    error = np.zeros(2 * code.n_k_d[0], dtype=np.uint8)
+    error[0] = 1
+    syndrome = pt.bsp(error, code.stabilizers.T)
+    sample = PlanarMPSDecoder.sample_recovery(code, syndrome)
+    expected = (
+        sample,
+        sample.copy().logical_x(),
+        sample.copy().logical_x().logical_z(),
+        sample.copy().logical_z(),
+    )
+
+    for logical_class, representative in enumerate(expected):
+        recovery = logical_class_recovery(code, syndrome, logical_class)
+        np.testing.assert_array_equal(recovery, representative.to_bsf())
+
+
+@pytest.mark.parametrize(
+    "syndrome",
+    (np.zeros(11, dtype=np.uint8), np.full(12, 2, dtype=np.uint8)),
+)
+def test_logical_class_recovery_rejects_invalid_syndrome(syndrome: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="syndrome"):
+        logical_class_recovery(PlanarCode(3, 3), syndrome, 0)
+
+
+@pytest.mark.parametrize("logical_class", (-1, 4, True, 1.0))
+def test_logical_class_recovery_rejects_invalid_class(logical_class: object) -> None:
+    code = PlanarCode(3, 3)
+    syndrome = np.zeros(code.stabilizers.shape[0], dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="logical_class"):
+        logical_class_recovery(code, syndrome, logical_class)  # type: ignore[arg-type]
 
 
 def test_logical_shift_is_syndrome_valid_but_changes_failure_outcome() -> None:
@@ -175,3 +211,21 @@ def test_two_view_tolerance_falls_back_to_column_chi_eight_and_accounts_for_work
     assert decision["accepted"] is False
     assert decision["used_fallback"] is True
     assert decision["estimated_arithmetic_flops"] == 60
+
+
+@pytest.mark.parametrize(
+    ("syndrome", "error_rate"),
+    (
+        (np.zeros(39, dtype=np.uint8), 0.1),
+        (np.full(40, 2, dtype=np.uint8), 0.1),
+        (np.full(40, 0.5, dtype=np.float64), 0.1),
+        (np.zeros(40, dtype=np.uint8), 0.0),
+        (np.zeros(40, dtype=np.uint8), 1.0),
+        (np.zeros(40, dtype=np.uint8), float("nan")),
+    ),
+)
+def test_two_view_tolerance_rejects_invalid_policy_inputs(
+    syndrome: np.ndarray, error_rate: float
+) -> None:
+    with pytest.raises(ValueError):
+        two_view_tolerance_decision(syndrome, error_rate)

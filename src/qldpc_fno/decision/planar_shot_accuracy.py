@@ -66,10 +66,14 @@ def _estimated_flops(result: PlanarCosetMasses) -> int:
 
 def two_view_tolerance_decision(syndrome: np.ndarray, error_rate: float) -> dict[str, object]:
     """Choose an agreeing tolerance class, or a fixed-chi column fallback."""
+    syndrome_array = _binary_vector(syndrome, length=40, name="syndrome")
+    error_rate = float(error_rate)
+    if not np.isfinite(error_rate) or not 0 < error_rate < 1:
+        raise ValueError("error_rate must be a finite number strictly between zero and one")
     columns = planar_mps_coset_masses(
         rows=5,
         columns=5,
-        syndrome=syndrome,
+        syndrome=syndrome_array,
         error_rate=error_rate,
         chi=None,
         tol=0.01,
@@ -79,7 +83,7 @@ def two_view_tolerance_decision(syndrome: np.ndarray, error_rate: float) -> dict
     rows = planar_mps_coset_masses(
         rows=5,
         columns=5,
-        syndrome=syndrome,
+        syndrome=syndrome_array,
         error_rate=error_rate,
         chi=None,
         tol=0.01,
@@ -93,7 +97,7 @@ def two_view_tolerance_decision(syndrome: np.ndarray, error_rate: float) -> dict
         fallback = planar_mps_coset_masses(
             rows=5,
             columns=5,
-            syndrome=syndrome,
+            syndrome=syndrome_array,
             error_rate=error_rate,
             chi=8,
             tol=None,
