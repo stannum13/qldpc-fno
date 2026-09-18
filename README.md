@@ -99,6 +99,12 @@ Read [Research background](docs/background.md) for the full motivation,
 [Experiment methodology](docs/experiment-methodology.md) for the exact implemented
 study.
 
+For the next research sequence, see [What Does the Next Unit of Computation
+Buy?](docs/adaptive-computation-reader-plan.md), a staged reader and experiment
+plan connecting the observed consensus failures to adaptive refinement, shared
+recurrent models, memory tradeoffs, and learned inference dynamics. Its proposed
+experiments are distinguished from the completed results above.
+
 ## Causal forecasting extension
 
 Repeated syndrome measurements raise a narrower question than direct neural
