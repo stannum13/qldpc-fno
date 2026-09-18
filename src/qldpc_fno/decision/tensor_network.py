@@ -42,6 +42,14 @@ class InvalidCosetMassError(ValueError):
         self.work = work
 
 
+class InvalidContractionError(InvalidCosetMassError):
+    """A numerical sweep failed; completed work and failed sweeps remain auditable."""
+
+    def __init__(self, masses: np.ndarray, work: dict[str, object]) -> None:
+        super().__init__(masses, work)
+        self.args = ("MPS contraction failed numerically",)
+
+
 @dataclass(frozen=True)
 class PlanarCosetMasses:
     """Four logical-coset masses in qecsim's I, X, Y, Z order."""
@@ -79,8 +87,7 @@ def _validate_inputs(
     syndrome_array = np.asarray(syndrome, dtype=np.uint8)
     if syndrome_array.shape != (code.stabilizers.shape[0],):
         raise ValueError(
-            f"syndrome must have shape {(code.stabilizers.shape[0],)}, "
-            f"not {syndrome_array.shape}"
+            f"syndrome must have shape {(code.stabilizers.shape[0],)}, not {syndrome_array.shape}"
         )
     if np.any(syndrome_array > 1):
         raise ValueError("syndrome entries must be binary")
@@ -258,24 +265,30 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         start_flops = cumulative_flops()
         start_pairwise = int(trace["pairwise_contractions"])
         start_truncations = len(truncation_events)
+        failure = None
         try:
             result = original_mps2d_contract(tn, *args, **kwargs)
+        except (ValueError, np.linalg.LinAlgError) as error:
+            # qecsim catches these exceptions and returns partial/zero masses.
+            # Preserve the attempted sweep before qecsim handles the error.
+            failure = {"exception_type": type(error).__name__, "message": str(error)}
+            raise
         finally:
             active_sweep_index = None
-        sweeps.append(
-            {
+            sweep = {
                 "index": sweep_index,
                 "network_rows": int(tn.shape[0]),
                 "network_columns": int(tn.shape[1]),
                 "requested_chi": kwargs.get("chi", args[0] if args else None),
                 "requested_tol": kwargs.get("tol", args[1] if len(args) > 1 else None),
-                "pairwise_contractions": int(trace["pairwise_contractions"])
-                - start_pairwise,
+                "pairwise_contractions": int(trace["pairwise_contractions"]) - start_pairwise,
                 "truncation_event_start": start_truncations,
                 "truncation_event_stop": len(truncation_events),
                 "estimated_arithmetic_flops": cumulative_flops() - start_flops,
             }
-        )
+            if failure is not None:
+                sweep["failure"] = failure
+            sweeps.append(sweep)
         return result
 
     def qr(matrix: np.ndarray, *args: Any, **kwargs: Any) -> Any:
@@ -284,9 +297,7 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         trace["qr_calls"] += 1
         trace["decomposition_input_elements"] += int(matrix.size)
         rank = min(m, n)
-        trace["estimated_dense_decomposition_flops"] += int(
-            2 * m * n * rank - (2 * rank**3) / 3
-        )
+        trace["estimated_dense_decomposition_flops"] += int(2 * m * n * rank - (2 * rank**3) / 3)
         observe(matrix, result)
         return result
 
@@ -404,6 +415,8 @@ def planar_mps_coset_masses(
             sweep["label"] = label
         trace["single_shot_wall_seconds"] = perf_counter() - started
     masses = np.asarray([float(value) for value in raw_masses], dtype=np.float64)
+    if trace is not None and any("failure" in sweep for sweep in trace["contraction_sweeps"]):
+        raise InvalidContractionError(masses, trace)
     if np.any(~np.isfinite(masses)) or np.any(masses <= 0) or float(masses.sum()) <= 0:
         raise InvalidCosetMassError(masses, trace)
     return PlanarCosetMasses(

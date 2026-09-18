@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from qecsim.tensortools import mps2d
 
+from qldpc_fno.decision import tensor_network
 from qldpc_fno.decision.tensor_network import (
     InvalidCosetMassError,
     exact_planar_coset_masses,
@@ -108,9 +110,7 @@ def test_tolerance_allocates_bond_dimension_per_local_spectrum() -> None:
     events = result.work["truncation_events"]
     assert events
     retained_ranks = {
-        spectrum["retained_rank"]
-        for event in events
-        for spectrum in event["spectral_summaries"]
+        spectrum["retained_rank"] for event in events for spectrum in event["spectral_summaries"]
     }
     assert len(retained_ranks) > 1
     assert max(retained_ranks) > 1
@@ -121,15 +121,15 @@ def test_tolerance_allocates_bond_dimension_per_local_spectrum() -> None:
     )
     sweeps = result.work["contraction_sweeps"]
     assert [sweep["label"] for sweep in sweeps] == ["columns:I-X", "columns:Z-Y"]
-    assert sum(sweep["estimated_arithmetic_flops"] for sweep in sweeps) + result.work[
-        "terminal_residual_estimated_arithmetic_flops"
-    ] == result.work["estimated_arithmetic_flops"]
+    assert (
+        sum(sweep["estimated_arithmetic_flops"] for sweep in sweeps)
+        + result.work["terminal_residual_estimated_arithmetic_flops"]
+        == result.work["estimated_arithmetic_flops"]
+    )
 
 
 def test_passive_trace_does_not_change_coset_masses() -> None:
-    syndrome = np.array(
-        [0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0], dtype=np.uint8
-    )
+    syndrome = np.array([0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0], dtype=np.uint8)
     kwargs = {
         "rows": 3,
         "columns": 3,
@@ -185,3 +185,61 @@ def test_negative_approximate_mass_is_reported_not_clipped() -> None:
 
     assert np.any(captured.value.masses < 0)
     assert captured.value.work is not None
+
+
+def test_real_contraction_numerical_failure_retains_failed_sweeps_and_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = mps2d.contract
+
+    def fail_after_contraction(*args: object, **kwargs: object) -> object:
+        original(*args, **kwargs)
+        raise ValueError("injected numerical failure")
+
+    monkeypatch.setattr(mps2d, "contract", fail_after_contraction)
+    with pytest.raises(ValueError) as captured:
+        planar_mps_coset_masses(
+            rows=3,
+            columns=3,
+            syndrome=np.zeros(12, dtype=np.uint8),
+            error_rate=0.1,
+            chi=None,
+            tol=0.01,
+            mode="columns",
+            trace_work=True,
+        )
+    assert isinstance(captured.value, tensor_network.InvalidContractionError)
+    work = captured.value.work
+    assert work["estimated_arithmetic_flops"] > 0
+    assert [sweep["label"] for sweep in work["contraction_sweeps"]] == [
+        "columns:I-X",
+        "columns:Z-Y",
+    ]
+    assert all(
+        sweep["failure"]["exception_type"] == "ValueError" for sweep in work["contraction_sweeps"]
+    )
+    assert (
+        sum(sweep["estimated_arithmetic_flops"] for sweep in work["contraction_sweeps"])
+        + work["terminal_residual_estimated_arithmetic_flops"]
+        == work["estimated_arithmetic_flops"]
+    )
+    assert mps2d.contract is fail_after_contraction
+
+
+def test_real_contraction_unexpected_runtime_error_is_not_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("unexpected tracer defect")
+
+    monkeypatch.setattr(mps2d, "contract", fail)
+    with pytest.raises(RuntimeError, match="unexpected tracer defect"):
+        planar_mps_coset_masses(
+            rows=3,
+            columns=3,
+            syndrome=np.zeros(12, dtype=np.uint8),
+            error_rate=0.1,
+            chi=None,
+            mode="columns",
+            trace_work=True,
+        )

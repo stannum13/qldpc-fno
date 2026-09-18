@@ -1022,7 +1022,12 @@ def _summarize_screen(rows: list[dict[str, object]], *, canonical: bool) -> dict
                 "class_mismatches": mismatches,
                 "outcome_discordances": discordances,
                 "adjusted_wilson_upper": upper,
-                "gate_passed": mismatches == discordances == 0 and upper <= 0.005,
+                "gate_passed": (
+                    mismatches == discordances == 0
+                    and upper <= 0.005
+                    and all(row["reference_valid"] for row in group)
+                    and all(arm["syndrome_valid"] for row in group for arm in row["arms"].values())
+                ),
                 "fallbacks": sum(row["used_fallback"] for row in group),
                 "invalid_references": sum(not row["reference_valid"] for row in group),
                 "invalid_recoveries": {
@@ -1069,23 +1074,59 @@ def verify_screen_result(
     policy_path: Path,
     screen_path: Path,
     selection_path: Path,
+    *,
+    prepublication: bool = False,
 ) -> None:
-    """Independently replay inputs, every decoder, and aggregate results."""
+    """Replay the complete artifact; only the runner accepts an unfinished replay flag."""
     inputs = _screen_inputs(Path(policy_path), Path(screen_path), Path(selection_path))
-    if result["provenance"]["input_sha256"] != inputs["input_sha256"]:
-        raise ValueError("input hash integrity replay failed")
-    _current_sources(result["provenance"], _ACCURACY_SOURCE_LABELS)
-    replayed = _evaluate_screen(inputs)
-    summary = _summarize_screen(replayed, canonical=inputs["canonical"])
+    expected_provenance = _screen_provenance(inputs)
+    expected_integrity = {"independent_replay": not prepublication, "seed_domains_disjoint": True}
     if (
-        result["shots"] != replayed
-        or result["canonical"] != inputs["canonical"]
-        or result["config"] != inputs["config"]
-        or result["policy"] != inputs["policy"]
-        or result["selected_cmwpm_parameters"] != inputs["selection"]["selected"]["parameters"]
-        or any(result[name] != value for name, value in summary.items())
+        result.get("provenance") != expected_provenance
+        or result.get("integrity") != expected_integrity
+    ):
+        raise ValueError("screen provenance/integrity replay mismatch")
+    replayed = _evaluate_screen(inputs)
+    expected = _screen_result(inputs, replayed, independent_replay=not prepublication)
+    # Full canonical serialization also distinguishes booleans from integer 0/1,
+    # and rejects nonfinite numbers, missing fields, and unverified extra fields.
+    if json.dumps(result, sort_keys=True, allow_nan=False) != json.dumps(
+        expected, sort_keys=True, allow_nan=False
     ):
         raise ValueError("screen result independent replay mismatch")
+
+
+def _screen_provenance(inputs: dict[str, object]) -> dict[str, object]:
+    """Bind the producer freeze, independent of later documentation-only commits."""
+    root = Path(__file__).resolve().parents[3]
+    provenance = _cmwpm_provenance()
+    for field in ("git_commit", "git_dirty"):
+        provenance[field] = inputs["screen"]["provenance"][field]
+    provenance["source_sha256"] = {
+        label: sha256_file(root / label) for label in _ACCURACY_SOURCE_LABELS
+    }
+    provenance["input_sha256"] = inputs["input_sha256"]
+    provenance["calibration_data_sha256"] = inputs["selection"]["data_sha256"]
+    return provenance
+
+
+def _screen_result(
+    inputs: dict[str, object],
+    rows: list[dict[str, object]],
+    *,
+    independent_replay: bool,
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "canonical": inputs["canonical"],
+        "policy": inputs["policy"],
+        "config": inputs["config"],
+        "selected_cmwpm_parameters": inputs["selection"]["selected"]["parameters"],
+        "shots": rows,
+        "provenance": _screen_provenance(inputs),
+        "integrity": {"independent_replay": independent_replay, "seed_domains_disjoint": True},
+        **_summarize_screen(rows, canonical=inputs["canonical"]),
+    }
 
 
 def run_planar_shot_accuracy(
@@ -1100,25 +1141,8 @@ def run_planar_shot_accuracy(
         raise FileExistsError(f"refusing to overwrite screen: {output_path}")
     inputs = _screen_inputs(Path(policy_path), Path(screen_path), Path(selection_path))
     rows = _evaluate_screen(inputs)
-    root = Path(__file__).resolve().parents[3]
-    provenance = _cmwpm_provenance()
-    provenance["source_sha256"] = {
-        label: sha256_file(root / label) for label in _ACCURACY_SOURCE_LABELS
-    }
-    provenance["input_sha256"] = inputs["input_sha256"]
-    provenance["calibration_data_sha256"] = inputs["selection"]["data_sha256"]
-    result = {
-        "schema_version": 1,
-        "canonical": inputs["canonical"],
-        "policy": inputs["policy"],
-        "config": inputs["config"],
-        "selected_cmwpm_parameters": inputs["selection"]["selected"]["parameters"],
-        "shots": rows,
-        "provenance": provenance,
-        "integrity": {"independent_replay": False, "seed_domains_disjoint": True},
-        **_summarize_screen(rows, canonical=inputs["canonical"]),
-    }
-    verify_screen_result(result, policy_path, screen_path, selection_path)
+    result = _screen_result(inputs, rows, independent_replay=False)
+    verify_screen_result(result, policy_path, screen_path, selection_path, prepublication=True)
     result["integrity"]["independent_replay"] = True
     write_canonical_json(output_path, result)
     return result

@@ -724,3 +724,145 @@ def test_screen_work_bootstrap_uses_paired_equal_rate_means() -> None:
     assert result["policy_relative_to"]["fixed_chi8"]["ratio_95ci"] == [0.5, 0.5]
     assert result["policy_relative_to"]["exact"]["ratio_95ci"] == [0.25, 0.25]
     assert accuracy._work_summary(rows) == result
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "schema_version",
+        "calibration_digest",
+        "dependencies",
+        "git_commit",
+        "git_dirty",
+        "integrity",
+        "extra_key",
+        "missing_key",
+    ],
+)
+def test_screen_integrity_rejects_complete_schema_and_provenance_tampering(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+    field: str,
+) -> None:
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    if field == "schema_version":
+        result["schema_version"] = 2
+    elif field == "calibration_digest":
+        result["provenance"]["calibration_data_sha256"] = "0" * 64
+    elif field == "dependencies":
+        result["provenance"]["dependencies"]["numpy"] = "0.0.0"
+    elif field == "git_commit":
+        result["provenance"]["git_commit"] = "0" * 40
+    elif field == "git_dirty":
+        result["provenance"]["git_dirty"] = not result["provenance"]["git_dirty"]
+    elif field == "integrity":
+        result["integrity"]["independent_replay"] = False
+    elif field == "extra_key":
+        result["unverified"] = True
+    else:
+        del result["integrity"]
+    with pytest.raises(ValueError, match="replay"):
+        accuracy.verify_screen_result(result, *reduced_screen_inputs)
+
+
+@pytest.mark.parametrize("invalid", ["reference", "recovery"])
+def test_screen_gate_never_passes_invalid_rows_with_sufficient_sample(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid: str,
+) -> None:
+    monkeypatch.setattr(accuracy, "_work_summary", lambda _: {})
+    rows = [
+        {
+            "error_rate": rate,
+            "class_mismatch": False,
+            "outcome_discordance": False,
+            "used_fallback": False,
+            "reference_valid": invalid != "reference",
+            "arms": {
+                name: {"failure": True, "syndrome_valid": invalid != "recovery"}
+                for name in ("exact", "policy", "cmwpm", "mwpm")
+            },
+        }
+        for rate in (0.1, 0.15)
+        for _ in range(2048)
+    ]
+    result = accuracy._summarize_screen(rows, canonical=True)
+    assert all(not stratum["gate_passed"] for stratum in result["per_rate"])
+
+
+def test_screen_policy_handles_real_qecsim_contraction_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from qecsim.tensortools import mps2d
+
+    original = mps2d.contract
+    calls = []
+
+    def contract(*args: object, **kwargs: object) -> object:
+        calls.append((kwargs["chi"], kwargs["tol"]))
+        result = original(*args, **kwargs)
+        if kwargs["tol"] == 0.01:
+            raise ValueError("injected tolerance contraction failure")
+        return result
+
+    monkeypatch.setattr(mps2d, "contract", contract)
+    result = two_view_tolerance_decision(np.zeros(40, dtype=np.uint8), 0.1)
+    assert calls == [(None, 0.01)] * 4 + [(8, None)] * 2
+    assert result["invalid_views"] == ["columns", "rows"]
+    assert result["used_fallback"] is True
+    assert result["selected_class"] is not None
+    failed_work = sum(
+        work["estimated_arithmetic_flops"] for work in result["invalid_action_work"].values()
+    )
+    assert failed_work > 0
+    assert (
+        result["estimated_arithmetic_flops"]
+        == failed_work + result["fallback_columns"].work["estimated_arithmetic_flops"]
+    )
+
+
+@pytest.mark.parametrize("failed_action", ["exact", "fallback"])
+def test_screen_replays_real_numerical_contraction_failures_without_lost_work(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_action: str,
+) -> None:
+    from qecsim.tensortools import mps2d
+
+    original = mps2d.contract
+
+    def contract(*args: object, **kwargs: object) -> object:
+        result = original(*args, **kwargs)
+        if (failed_action == "exact" and kwargs["chi"] is None and kwargs["tol"] is None) or (
+            failed_action == "fallback" and (kwargs["chi"] == 8 or kwargs["tol"] == 0.01)
+        ):
+            raise ValueError("injected contraction failure")
+        return result
+
+    monkeypatch.setattr(mps2d, "contract", contract)
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    assert len(result["shots"]) == 4
+    for row in result["shots"]:
+        assert row["work"]["exact" if failed_action == "exact" else "policy"] > 0
+        assert row["invalid_tensor_work"]
+        assert all(work["contraction_sweeps"] for work in row["invalid_tensor_work"].values())
+    assert result["integrity"]["independent_replay"] is True
+
+
+def test_screen_provenance_is_bound_to_producer_across_later_git_commits(
+    reduced_screen_inputs: tuple[Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screen = json.loads(reduced_screen_inputs[1].read_text())
+    producer = screen["provenance"]
+    monkeypatch.setattr(accuracy, "_git_provenance", lambda _: ("f" * 40, producer["git_dirty"]))
+    result = accuracy.run_planar_shot_accuracy(*reduced_screen_inputs, tmp_path / "result")
+    assert result["provenance"]["git_commit"] == producer["git_commit"]
+    assert result["provenance"]["git_dirty"] == producer["git_dirty"]
+    accuracy.verify_screen_result(result, *reduced_screen_inputs)
+    result["integrity"]["independent_replay"] = False
+    accuracy.verify_screen_result(result, *reduced_screen_inputs, prepublication=True)
+    with pytest.raises(ValueError, match="replay"):
+        accuracy.verify_screen_result(result, *reduced_screen_inputs)
