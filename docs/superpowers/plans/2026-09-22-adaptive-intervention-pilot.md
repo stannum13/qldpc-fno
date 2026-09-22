@@ -68,6 +68,7 @@ outside Git and publish a checksummed manifest, compact summary, and result note
    - separate accuracy and fully charged gain-per-FLOP efficiency oracles;
    - deterministic oracle selection, including null winners, 1% efficiency
      separation, and ties;
+   - exactly-one-valid and both-invalid probe utility behavior;
    - repair/introduction of class mismatch and physical outcome discordance.
 2. Run the focused tests and observe the expected failures.
 3. Implement small pure functions. Reuse stable diagnostic metrics where their
@@ -91,8 +92,8 @@ outside Git and publish a checksummed manifest, compact summary, and result note
    - any invalid reference forcing both advancement clauses false;
    - spectra recorded only after their action has run;
    - the exact frozen pre-action feature set and separate label namespace; and
-   - one-shot paired statistical units, per-rate/equal-rate summaries, and
-     complete-vector stratified bootstrap behavior.
+   - one-shot paired statistical units and per-rate/equal-rate descriptive
+     summaries without inferential resampling.
 2. Implement action dispatch through `planar_mps_coset_masses(trace_work=True)`.
    Preserve complete stable work traces in raw output and derive compact spectral
    summaries. Do not catch programming/configuration errors as measured numerical

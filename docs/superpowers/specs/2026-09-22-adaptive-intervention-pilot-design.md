@@ -105,6 +105,12 @@ Negative benefit is retained. Also report whether the candidate repairs or
 introduces a logical-class mismatch and whether it changes the realized physical
 outcome.
 
+When exactly one probe is valid, that valid probe alone defines the baseline TV
+distance; the invalid probe's partial work is still charged. When both probes are
+invalid, baseline distance, candidate benefit, and both oracle winners are null.
+Candidate actions are still recorded, scored physically when valid, and charged,
+but the shot cannot contribute to an opportunity count.
+
 The candidate set excludes the two probes and therefore contains the remaining
 12 approximate actions. A gain is positive only when it exceeds `1e-6`; this
 prevents numerical noise from becoming action-selection opportunity.
@@ -116,15 +122,21 @@ require TV gain greater than `1e-6`; otherwise their winner ID is null. Numerica
 ties use `rel_tol=1e-12`, `abs_tol=0`, then lower composite work, then the literal
 action order above. The accuracy winner is uniquely separated only when its gain
 exceeds the runner-up by more than `1e-6`. The efficiency winner is uniquely
-separated only when the runner-up is absent or its efficiency is positive and
-the best efficiency exceeds it by more than 1%. Both are opportunity bounds, not
-deployable policies. Controller advancement uses only the efficiency oracle.
+separated when it is the only eligible positive candidate, or when a positive
+runner-up exists and `(best_efficiency - runner_efficiency) / runner_efficiency`
+is strictly greater than `0.01`. Both are opportunity bounds, not deployable
+policies. Controller advancement uses only the efficiency oracle.
 
 The inference-visible pre-action feature set is frozen to physical error rate,
 syndrome Hamming weight, both probe selected classes, class agreement, both
 winning-class margins and their minimum, cross-probe TV and Jensen-Shannon
 divergence, each probe's stable arithmetic work, and each probe's compact
-spectral summaries. Invalidity flags replace unavailable values. The pilot may
+spectral summaries. Those summaries contain exactly: `available`,
+`truncation_event_count`, `spectrum_count`,
+`maximum_discarded_squared_weight_fraction`, `mean_spectral_entropy`,
+`maximum_retained_rank`, and `estimated_arithmetic_flops`. For an unavailable
+probe, the flag is false, both counts are zero, and the other four values are
+null. Invalidity flags replace all other unavailable probe values. The pilot may
 show descriptive winner counts or plots over these features, but it may not
 search feature subsets or fit and evaluate a controller on the same 128 shots.
 
@@ -150,8 +162,9 @@ false; it cannot be hidden by complete-case analysis.
 One physical shot is the independent statistical unit. Its 14 action rows are
 paired repeated measurements, never 14 samples. Report every endpoint separately
 at each error rate and as an equal-weight mixture of the two rate-level estimates.
-Any bootstrap resamples complete per-shot action vectors within rate and then
-combines the two strata with equal weight.
+This bounded development pilot reports empirical distributions and counts only;
+it performs no bootstrap, confidence-interval, significance, or population-risk
+calculation.
 
 Gate coverage uses all 128 shots; an invalid probe escalates. Action validity and
 per-action physical logical-failure rates use all 128 attempted shots, with an
@@ -166,9 +179,9 @@ Advance to a frozen risk-ladder contract only if at least one of these is true:
    of shots separately at each physical error rate; or
 2. all 128 references certify and at least two distinct candidate action IDs are
    uniquely best under the efficiency oracle on different escalated shots, each
-   with TV reduction greater than `1e-6` and more than 1% efficiency separation
-   from its runner-up, establishing bounded cost-aware action-selection
-   opportunity.
+   with TV reduction greater than `1e-6` and either no other eligible positive
+   candidate or strictly more than 1% relative efficiency separation from its
+   runner-up, establishing bounded cost-aware action-selection opportunity.
 
 The pilot cannot establish safety or superiority. If no heterogeneous positive
 opportunity appears, the next contract tests only the simple margin gate with a
