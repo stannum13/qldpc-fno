@@ -41,14 +41,39 @@ _SHOT_CONFIG = _ROOT / "configs" / "adaptive_intervention_pilot_shots.json"
 _FIXTURE_SHOT_CONFIG = _ROOT / "configs" / "adaptive_intervention_pilot_fixture_shots.json"
 
 
+@pytest.fixture(autouse=True)
+def _guard_identity_parser_oracle_tests(request, monkeypatch):
+    """Identity/parser/oracle checks must never derive shots, sample or contract."""
+    name = request.node.originalname or request.node.name
+    if any(
+        part in name
+        for part in (
+            "config",
+            "identity",
+            "parser",
+            "json_loader",
+            "oracle",
+            "retired_scientific",
+        )
+    ):
+        from qecsim.models.generic import DepolarizingErrorModel
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("identity/parser/oracle test attempted shot derivation or execution")
+
+        monkeypatch.setattr(DepolarizingErrorModel, "generate", forbidden)
+        monkeypatch.setattr(pilot, "_shot_seed", forbidden)
+        monkeypatch.setattr(pilot, "planar_mps_coset_masses", forbidden)
+
+
 def test_config_freezes_the_literal_action_table_and_policy_constants() -> None:
     config = load_pilot_config(_PILOT_CONFIG)
 
     assert config.schema_version == 1
-    assert config.pilot_id == "adaptive_intervention_pilot_v2"
+    assert config.pilot_id == "adaptive_intervention_pilot_v3"
     assert config.code_distance == 5
     assert config.noise_model == "qecsim_iid_depolarizing_code_capacity"
-    assert config.required_shot_seed_domain == "qldpc-fno/adaptive-intervention-pilot/v2"
+    assert config.required_shot_seed_domain == "qldpc-fno/adaptive-intervention-pilot/v3"
     assert config.required_shots_per_rate == 64
     assert config.required_error_rates == (0.1, 0.15)
     assert config.reference_modes == ("columns", "rows")
@@ -84,8 +109,8 @@ def test_shot_config_has_the_frozen_identity_and_derived_seed() -> None:
     config = load_shot_config(_SHOT_CONFIG)
 
     assert config.schema_version == 1
-    assert config.seed_domain == "qldpc-fno/adaptive-intervention-pilot/v2"
-    assert config.campaign_seed == CAMPAIGN_SEED == 8908597917812360592
+    assert config.seed_domain == "qldpc-fno/adaptive-intervention-pilot/v3"
+    assert config.campaign_seed == CAMPAIGN_SEED == 10044421296420932682
     assert config.campaign_seed == int.from_bytes(
         hashlib.sha256(config.seed_domain.encode()).digest()[:8], "big"
     )
@@ -136,8 +161,8 @@ def test_config_parser_rejects_noncanonical_values(
         (
             "shots",
             (
-                '"campaign_seed": 8908597917812360592',
-                '"campaign_seed": 0,\n  "campaign_seed": 8908597917812360592',
+                '"campaign_seed": 10044421296420932682',
+                '"campaign_seed": 0,\n  "campaign_seed": 10044421296420932682',
             ),
         ),
         (
@@ -775,7 +800,7 @@ def test_historical_domains_include_every_declared_seed_domain_and_reject_overla
     (tmp_path / "configs" / "future_confirmation.json").write_text(
         json.dumps(
             {
-                "required_data_seed_domain": "qldpc-fno/adaptive-intervention-pilot/v2",
+                "required_data_seed_domain": "qldpc-fno/adaptive-intervention-pilot/v3",
             }
         )
     )
@@ -1119,15 +1144,48 @@ def test_fixture_config_reserves_its_own_domain_and_both_modes_reject_cross_use(
         load_shot_config(_SHOT_CONFIG, non_scientific_fixture=True)
 
 
-def test_retired_scientific_domain_is_rejected_without_sampling(tmp_path):
+@pytest.mark.parametrize(
+    ("version", "seed"),
+    [
+        ("v1", 16980117767564665917),
+        ("v2", 8908597917812360592),
+    ],
+)
+def test_retired_scientific_domain_is_rejected_without_sampling(tmp_path, version, seed):
     payload = json.loads(_SHOT_CONFIG.read_text())
     payload.update(
-        seed_domain="qldpc-fno/adaptive-intervention-pilot/v1", campaign_seed=16980117767564665917
+        seed_domain=f"qldpc-fno/adaptive-intervention-pilot/{version}",
+        campaign_seed=seed,
     )
     path = tmp_path / "retired.json"
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="domain"):
         load_shot_config(path)
+
+
+@pytest.mark.parametrize(
+    ("version", "seed"),
+    [
+        ("v1", 16980117767564665917),
+        ("v2", 8908597917812360592),
+        ("v3", 10044421296420932682),
+    ],
+)
+def test_fixture_rejects_scientific_identity_before_artifact_or_seed_use(tmp_path, version, seed):
+    payload = json.loads(_SHOT_CONFIG.read_text())
+    payload.update(
+        seed_domain=f"qldpc-fno/adaptive-intervention-pilot/{version}", campaign_seed=seed
+    )
+    config_path = tmp_path / "scientific.json"
+    config_path.write_text(json.dumps(payload))
+    # The nonexistent artifact proves rejection precedes reading rows, while the
+    # autouse guard fails any shot seed derivation, sampling or contraction call.
+    with pytest.raises(ValueError, match="domain"):
+        pilot.validate_pilot_shots(
+            tmp_path / "must-not-be-opened.json",
+            config_path,
+            non_scientific_fixture=True,
+        )
 
 
 def test_accuracy_oracle_compares_runner_up_below_positive_gain_threshold():

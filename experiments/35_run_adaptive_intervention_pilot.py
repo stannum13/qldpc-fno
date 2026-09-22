@@ -1,4 +1,4 @@
-"""Run the frozen v2 development pilot, publishing raw, compact and host-timing JSON."""
+"""Run the frozen v3 development pilot, publishing raw, compact and host-timing JSON."""
 
 from __future__ import annotations
 

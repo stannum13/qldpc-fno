@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "pilot_id": "adaptive_intervention_pilot_v2",
-  "required_shot_seed_domain": "qldpc-fno/adaptive-intervention-pilot/v2",
+  "pilot_id": "adaptive_intervention_pilot_v3",
+  "required_shot_seed_domain": "qldpc-fno/adaptive-intervention-pilot/v3",
   "required_shots_per_rate": 64,
   "required_error_rates": [0.1, 0.15],
   "code_distance": 5,

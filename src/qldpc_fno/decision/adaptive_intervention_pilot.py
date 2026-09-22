@@ -40,12 +40,12 @@ from qldpc_fno.decision.planar_shot_data import (
 from qldpc_fno.decision.tensor_network import InvalidCosetMassError, planar_mps_coset_masses
 
 _NOISE_MODEL = "qecsim_iid_depolarizing_code_capacity"
-_SEED_DOMAIN = "qldpc-fno/adaptive-intervention-pilot/v2"
+_SEED_DOMAIN = "qldpc-fno/adaptive-intervention-pilot/v3"
 _FIXTURE_SEED_DOMAIN = "qldpc-fno/adaptive-intervention-pilot/test-fixture/v1"
 _ERROR_RATES = (0.1, 0.15)
 _REFERENCE_MODES = ("columns", "rows")
 
-CAMPAIGN_SEED = 8908597917812360592
+CAMPAIGN_SEED = 10044421296420932682
 _FIXTURE_CAMPAIGN_SEED = 1727822112359709271
 MARGIN_THRESHOLD = 0.30710401263493464
 ACTION_IDS = (
@@ -1015,7 +1015,7 @@ def load_pilot_config(path: Path) -> PilotConfig:
     if (
         type(payload["schema_version"]) is not int
         or payload["schema_version"] != 1
-        or payload["pilot_id"] != "adaptive_intervention_pilot_v2"
+        or payload["pilot_id"] != "adaptive_intervention_pilot_v3"
     ):
         raise ValueError("unsupported pilot schema or identity")
     if payload["required_shot_seed_domain"] != _SEED_DOMAIN:
@@ -1076,7 +1076,7 @@ def load_pilot_config(path: Path) -> PilotConfig:
     actions = _parse_actions(payload["actions"])
     return PilotConfig(
         schema_version=1,
-        pilot_id="adaptive_intervention_pilot_v2",
+        pilot_id="adaptive_intervention_pilot_v3",
         required_shot_seed_domain=_SEED_DOMAIN,
         required_shots_per_rate=64,
         required_error_rates=_ERROR_RATES,
@@ -1096,7 +1096,7 @@ def load_pilot_config(path: Path) -> PilotConfig:
 
 
 def load_shot_config(path: Path, *, non_scientific_fixture: bool = False) -> ShotConfig:
-    """Load the frozen scientific v2 or explicitly reserved two-shot test identity."""
+    """Load the frozen scientific v3 or explicitly reserved two-shot test identity."""
     if type(non_scientific_fixture) is not bool:
         raise TypeError("non_scientific_fixture must be boolean")
     payload = _load_object(path)
@@ -1179,7 +1179,7 @@ def validate_pilot_shots(
     """Validate identity, provenance and exact physical-error/syndrome replay.
 
     Fixture mode accepts only index zero at each frozen rate in the reserved
-    test domain. Neither mode accepts the other's domain or the retired v1.
+    test domain. Neither mode accepts the other's domain or the retired v1/v2.
     """
     if type(non_scientific_fixture) is not bool:
         raise TypeError("non_scientific_fixture must be boolean")
