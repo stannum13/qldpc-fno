@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -196,11 +198,13 @@ def test_symmetric_reference_re_normalizes_the_mean_of_separate_views() -> None:
 
 
 def test_margin_gate_is_strict_and_escalates_on_invalid_or_disagreeing_probes() -> None:
-    margin = MARGIN_THRESHOLD
-    equal_margin = [(1 + margin) / 2, (1 - margin) / 2, 0, 0]
-    above_margin = [(1 + margin + 1e-4) / 2, (1 - margin - 1e-4) / 2, 0, 0]
+    equal_margin = [0.75, 0.25, 0, 0]
+    just_above_margin = [0.750000000000005, 0.249999999999995, 0, 0]
+    above_margin = [(1 + MARGIN_THRESHOLD + 1e-4) / 2, (1 - MARGIN_THRESHOLD - 1e-4) / 2, 0, 0]
 
-    assert not margin_gate_accepts(equal_margin, 0, above_margin, 0)
+    assert probability_margin(just_above_margin) == 0.5 + 1e-14
+    assert not margin_gate_accepts(equal_margin, 0, equal_margin, 0, threshold=0.5)
+    assert margin_gate_accepts(just_above_margin, 0, just_above_margin, 0, threshold=0.5)
     assert margin_gate_accepts(above_margin, 0, above_margin, 0)
     assert not margin_gate_accepts(above_margin, 0, above_margin, 1)
     assert not margin_gate_accepts(None, None, above_margin, 0)
@@ -243,8 +247,8 @@ def test_accuracy_oracle_requires_strict_positive_gain_and_reports_separation() 
     close = select_accuracy_oracle(
         [_opportunity("columns_chi2", 0.2, 1), _opportunity("rows_chi2", 0.1999995, 2)]
     )
-    equality = select_accuracy_oracle(
-        [_opportunity("columns_chi2", 0.2, 1), _opportunity("rows_chi2", 0.199999, 2)]
+    just_above = select_accuracy_oracle(
+        [_opportunity("columns_chi2", math.nextafter(floor, math.inf), 1)]
     )
 
     assert no_winner.action_id is None
@@ -253,7 +257,7 @@ def test_accuracy_oracle_requires_strict_positive_gain_and_reports_separation() 
     assert unique.uniquely_separated
     assert close.action_id == "columns_chi2"
     assert not close.uniquely_separated
-    assert not equality.uniquely_separated
+    assert just_above.action_id == "columns_chi2"
 
 
 def test_oracles_use_tolerance_then_lower_work_then_literal_action_order() -> None:
@@ -301,8 +305,11 @@ def test_efficiency_oracle_requires_full_work_and_strict_one_percent_separation(
         ]
     )
     single = select_efficiency_oracle([_opportunity("columns_chi2", 0.1, 100)])
-    equality = select_efficiency_oracle(
-        [_opportunity("columns_chi2", 0.5, 100), _opportunity("rows_chi2", 0.5, 101)]
+    just_above = select_efficiency_oracle(
+        [
+            _opportunity("columns_chi2", math.nextafter(0.505, math.inf), 100),
+            _opportunity("rows_chi2", 0.5, 100),
+        ]
     )
 
     assert winner.action_id == "columns_chi2"
@@ -310,7 +317,36 @@ def test_efficiency_oracle_requires_full_work_and_strict_one_percent_separation(
     assert winner.uniquely_separated
     assert single.action_id == "columns_chi2"
     assert single.uniquely_separated
-    assert not equality.uniquely_separated
+    assert just_above.action_id == "columns_chi2"
+    assert just_above.uniquely_separated
+
+
+def test_accuracy_oracle_tie_breaking_is_input_order_independent() -> None:
+    candidates = (
+        _opportunity("columns_chi2", 0.2, 1),
+        _opportunity("rows_chi2", 0.2 * (1 + 0.75e-12), 2),
+        _opportunity("columns_chi4", 0.2 * (1 + 1.5e-12), 10),
+    )
+
+    selections = {
+        select_accuracy_oracle(order).action_id for order in itertools.permutations(candidates)
+    }
+
+    assert selections == {"rows_chi2"}
+
+
+def test_efficiency_oracle_tie_breaking_is_input_order_independent() -> None:
+    candidates = (
+        _opportunity("columns_chi2", 0.2, 100),
+        _opportunity("rows_chi2", 0.2 * (1 + 0.75e-12), 100),
+        _opportunity("columns_chi4", 0.2 * (1 + 1.5e-12), 100),
+    )
+
+    selections = {
+        select_efficiency_oracle(order).action_id for order in itertools.permutations(candidates)
+    }
+
+    assert selections == {"rows_chi2"}
 
 
 def test_probe_actions_cannot_be_candidates() -> None:

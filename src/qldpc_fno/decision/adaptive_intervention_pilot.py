@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -230,9 +230,7 @@ def margin_gate_accepts(
     if not math.isfinite(threshold):
         raise ValueError("margin threshold must be finite")
     minimum_margin = min(probability_margin(columns), probability_margin(rows))
-    return minimum_margin > threshold and not math.isclose(
-        minimum_margin, threshold, rel_tol=1e-12, abs_tol=0.0
-    )
+    return minimum_margin > threshold
 
 
 def _work_value(work: int, name: str) -> int:
@@ -282,7 +280,7 @@ def _eligible_positive_candidates(
         for candidate in candidates
         if candidate.valid
         and candidate.gain is not None
-        and _strictly_exceeds(candidate.gain, 1e-6)
+        and candidate.gain > 1e-6
         and (not require_work or candidate.composite_work > 0)
     ]
 
@@ -291,33 +289,25 @@ def _literal_action_rank(action_id: str) -> int:
     return ACTION_IDS.index(action_id)
 
 
-def _strictly_exceeds(value: float, floor: float) -> bool:
-    """Apply a strict threshold without admitting round-off equality."""
-    return value > floor and not math.isclose(value, floor, rel_tol=0.0, abs_tol=1e-15)
-
-
 def _select_by_metric(
-    candidates: Sequence[CandidateOpportunity], metric: object
+    candidates: Sequence[CandidateOpportunity], metric: Callable[[CandidateOpportunity], float]
 ) -> CandidateOpportunity:
-    """Select the maximum metric, resolving near ties by work then frozen order."""
-    selected = candidates[0]
-    for candidate in candidates[1:]:
-        selected_metric = float(metric(selected))  # type: ignore[operator]
-        candidate_metric = float(metric(candidate))  # type: ignore[operator]
+    """Choose globally tied maximum contenders by work then frozen action order."""
+    maximum_metric = max(metric(candidate) for candidate in candidates)
+    contenders = [
+        candidate
+        for candidate in candidates
         if math.isclose(
-            candidate_metric,
-            selected_metric,
+            metric(candidate),
+            maximum_metric,
             rel_tol=1e-12,
             abs_tol=0.0,
-        ):
-            if (candidate.composite_work, _literal_action_rank(candidate.action_id)) < (
-                selected.composite_work,
-                _literal_action_rank(selected.action_id),
-            ):
-                selected = candidate
-        elif candidate_metric > selected_metric:
-            selected = candidate
-    return selected
+        )
+    ]
+    return min(
+        contenders,
+        key=lambda candidate: (candidate.composite_work, _literal_action_rank(candidate.action_id)),
+    )
 
 
 def _selection(
@@ -326,11 +316,12 @@ def _selection(
     eligible = _eligible_positive_candidates(candidates, require_work=efficiency)
     if not eligible:
         return OracleSelection(None, None, None, None, False)
-    metric = (
-        (lambda candidate: float(candidate.gain) / candidate.composite_work)
-        if efficiency
-        else (lambda candidate: float(candidate.gain))
-    )
+    if efficiency:
+        def metric(candidate: CandidateOpportunity) -> float:
+            return float(candidate.gain) / candidate.composite_work
+    else:
+        def metric(candidate: CandidateOpportunity) -> float:
+            return float(candidate.gain)
     winner = _select_by_metric(eligible, metric)
     winner_metric = float(metric(winner))
     runner_metrics = [float(metric(candidate)) for candidate in eligible if candidate != winner]
@@ -338,11 +329,9 @@ def _selection(
         uniquely_separated = True
     elif efficiency:
         runner_metric = max(runner_metrics)
-        uniquely_separated = _strictly_exceeds(
-            (winner_metric - runner_metric) / runner_metric, 0.01
-        )
+        uniquely_separated = (winner_metric - runner_metric) / runner_metric > 0.01
     else:
-        uniquely_separated = _strictly_exceeds(winner_metric - max(runner_metrics), 1e-6)
+        uniquely_separated = winner_metric - max(runner_metrics) > 1e-6
     return OracleSelection(
         action_id=winner.action_id,
         gain=float(winner.gain),
