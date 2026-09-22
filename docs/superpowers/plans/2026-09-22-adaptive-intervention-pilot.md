@@ -43,8 +43,8 @@ outside Git and publish a checksummed manifest, compact summary, and result note
 3. Implement strict immutable config parsing. Freeze the 14 actions in the order
    declared by the design. Reject extra fields and non-finite values.
 4. Add the shot-generator config with 64 shots at each of `0.10` and `0.15` in
-   seed domain `qldpc-fno/adaptive-intervention-pilot/v1` and campaign seed
-   `16980117767564665917`.
+   seed domain `qldpc-fno/adaptive-intervention-pilot/v2` and campaign seed
+   `8908597917812360592`.
 5. Rerun the focused tests and Ruff.
 6. Commit: `feat: freeze adaptive intervention pilot`.
 
@@ -172,6 +172,10 @@ outside Git and publish a checksummed manifest, compact summary, and result note
    non-outcome-dependent repair reviewed before rerun.
 5. Build the compact summary and manifest from the immutable raw output. Verify
    their reconstruction and hashes before adding them to Git.
+6. Preserve the atomically written `timing.json` sidecar. It binds raw and
+   compact hashes but is intentionally nondeterministic engineering metadata;
+   report per-action and total host timing without treating it as deployment
+   latency or an oracle input.
 
 ## Task 7: Interpret, review, and publish the development evidence
 

@@ -17,8 +17,8 @@ are development data forever and cannot confirm a policy selected from them.
 
 ## Immutable data identity
 
-- Seed domain: `qldpc-fno/adaptive-intervention-pilot/v1`
-- Campaign seed: `16980117767564665917`, the unsigned big-endian integer formed
+- Seed domain: `qldpc-fno/adaptive-intervention-pilot/v2`
+- Campaign seed: `8908597917812360592`, the unsigned big-endian integer formed
   from the first eight bytes of SHA-256 over the seed domain.
 - Code: qecsim distance-five planar code.
 - Noise: qecsim iid depolarizing code-capacity noise.
@@ -29,6 +29,13 @@ The existing planar-shot generator creates each error and derives its syndrome
 from that same error. Shot identity, sampler seed, physical error, and syndrome
 remain joined. This pilot domain must be disjoint from every calibration, screen,
 and future confirmation domain.
+
+The former `qldpc-fno/adaptive-intervention-pilot/v1` identity is retired: test
+fixtures generated its index-zero physical error at both rates before the final
+preregistration review. No full v1 artifact or contraction result was produced,
+but v1 is not an unopened domain. Tests use only the reserved
+`qldpc-fno/adaptive-intervention-pilot/test-fixture/v1` domain (campaign seed
+`1727822112359709271`), which scientific mode rejects.
 
 ## Frozen action table
 
@@ -121,7 +128,10 @@ with the greatest TV reduction divided by fully charged composite FLOPs. Both
 require TV gain greater than `1e-6`; otherwise their winner ID is null. Numerical
 ties use `rel_tol=1e-12`, `abs_tol=0`, then lower composite work, then the literal
 action order above. The accuracy winner is uniquely separated only when its gain
-exceeds the runner-up by more than `1e-6`. The efficiency winner is uniquely
+exceeds the second-highest gain among every other valid candidate by more than
+`1e-6`; candidates below the positive-gain floor still serve as accuracy
+runner-up comparators. If no other valid candidate exists, the accuracy winner
+is uniquely separated. The efficiency winner is uniquely
 separated when it is the only eligible positive candidate, or when a positive
 runner-up exists and `(best_efficiency - runner_efficiency) / runner_efficiency`
 is strictly greater than `0.01`. Both are opportunity bounds, not deployable
@@ -153,6 +163,16 @@ tracked summary and a human-readable result note report:
 - descriptive winner counts across the frozen inference-visible features, with
   no fitted controller or significance claim; and
 - the strongest beneficial and harmful counterexamples.
+
+The deterministic raw and compact artifacts exclude wall-clock values. The same
+atomic publication writes a separate `timing.json` sidecar containing total host
+runtime and per-shot wall seconds for both unrestricted views and all 14 actions,
+with null plus invalidity metadata when unavailable. The sidecar binds the raw
+and compact SHA-256 values, config/input/source provenance, host identity, and an
+explicit `nondeterministic_engineering_metadata` status. Timing never affects a
+gate, benefit, oracle, or advancement decision and is not required to replay
+byte-identically. Result notes summarize timing by action and call it research-
+host engineering timing, not decoder latency.
 
 All 128 shots remain in the total and invalid-reference denominators. Posterior
 metrics use the certified-reference denominator, which is reported separately.
@@ -195,6 +215,12 @@ validates exact config keys and the derived campaign seed, and binds config,
 source, dependency, Git, and input-artifact hashes. Development runs may use a
 dirty tree while testing; the scientific artifact requires a committed clean
 tree and is regenerated from that commit.
+
+Every attempted SVD or QR is charged before calling the underlying numerical
+routine, using the existing frozen dense-decomposition FLOP formula. Attempt
+metadata records decomposition kind, matrix shape, estimated FLOPs, success, and
+exception type. A failed attempt followed by qecsim retry therefore charges both
+attempts; only successful SVDs produce spectral summaries.
 
 Unit tests cover config rejection, seed separation, action ordering, reference
 certification, recovery scoring, invalid-work charging, gate equality, oracle
