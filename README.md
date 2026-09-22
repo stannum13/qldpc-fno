@@ -128,6 +128,11 @@ no safety, controller value, latency, qLDPC, FNO, or HiPPO benefit; the
 and [provenance manifest](evidence/adaptive-computation/intervention-pilot-v3/manifest.json)
 preserve the evidence and its limits.
 
+The [frozen simple-policy confirmation contract](docs/adaptive-computation-simple-confirmation-contract.md)
+now specifies 2,048 fresh joined shots per rate and eight exact adjusted
+class/outcome discrepancy gates. Its implementation and preregistration reviews
+remain ahead; the confirmation domain is unopened.
+
 ## Causal forecasting extension
 
 Repeated syndrome measurements raise a narrower question than direct neural
