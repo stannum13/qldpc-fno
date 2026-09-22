@@ -6,6 +6,9 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
+from scipy.stats import beta
+
 _SCIENTIFIC_DOMAIN_LITERAL = "qldpc-fno/simple-planar-confirmation/v1"
 _FIXTURE_DOMAIN_LITERAL = "qldpc-fno/simple-planar-confirmation/test-fixture/v1"
 _BOOTSTRAP_DOMAIN_LITERAL = "qldpc-fno/simple-planar-confirmation/bootstrap/v1"
@@ -217,3 +220,139 @@ def load_shot_config(path: Path, *, fixture: bool) -> dict[str, object]:
         mode = "fixture" if fixture else "scientific"
         raise ValueError(f"shot configuration differs from the frozen {mode} identity")
     return payload
+
+
+def primary_upper(events: int, shots: int) -> float:
+    """Return the frozen one-sided Clopper-Pearson upper confidence bound."""
+    if type(events) is not int or type(shots) is not int:
+        raise ValueError("events and shots must be integers")
+    if shots <= 0 or not 0 <= events <= shots:
+        raise ValueError("invalid binomial counts")
+    if events == shots:
+        return 1.0
+    return float(beta.ppf(1.0 - 0.00625, events + 1, shots - events))
+
+
+def _validate_endpoint_label(
+    *, valid: bool, selected_class: int | None, failure: bool | None, name: str
+) -> None:
+    if valid:
+        if type(selected_class) is not int or not 0 <= selected_class <= 3:
+            raise ValueError(f"valid {name} class must be an integer in [0,3]")
+        if type(failure) is not bool:
+            raise ValueError(f"valid {name} failure must be boolean")
+    elif selected_class is not None or failure is not None:
+        raise ValueError(f"invalid {name} labels must be null")
+
+
+def event_indicators(
+    *,
+    reference_valid: bool,
+    policy_valid: bool,
+    policy_class: int | None,
+    reference_class: int | None,
+    policy_failure: bool | None,
+    reference_failure: bool | None,
+) -> tuple[bool, bool]:
+    """Return class-mismatch and outcome-discordance event indicators."""
+    if type(reference_valid) is not bool or type(policy_valid) is not bool:
+        raise ValueError("validity flags must be boolean")
+    _validate_endpoint_label(
+        valid=reference_valid,
+        selected_class=reference_class,
+        failure=reference_failure,
+        name="reference",
+    )
+    _validate_endpoint_label(
+        valid=policy_valid,
+        selected_class=policy_class,
+        failure=policy_failure,
+        name="policy",
+    )
+    if not reference_valid or not policy_valid:
+        return True, True
+    return policy_class != reference_class, policy_failure != reference_failure
+
+
+def _bootstrap_record(
+    *,
+    status: str,
+    estimate: float | None,
+    lower_bound: float | None,
+    passed: bool,
+    unavailable_reason: str | None,
+) -> dict[str, object]:
+    return {
+        "status": status,
+        "estimand": "equal_rate_mean_paired_relative_saving",
+        "replicates": 10_000,
+        "seed": _BOOTSTRAP_SEED_LITERAL,
+        "bit_generator": "PCG64",
+        "quantile_method": "linear",
+        "estimate": estimate,
+        "lower_bound": lower_bound,
+        "threshold": 0.5,
+        "passed": passed,
+        "unavailable_reason": unavailable_reason,
+    }
+
+
+def _unavailable_bootstrap(reason: str) -> dict[str, object]:
+    return _bootstrap_record(
+        status="unavailable",
+        estimate=None,
+        lower_bound=None,
+        passed=False,
+        unavailable_reason=reason,
+    )
+
+
+def bootstrap_saving(paired: np.ndarray) -> dict[str, object]:
+    """Bootstrap the frozen equal-rate mean paired relative-work saving."""
+    if not isinstance(paired, np.ndarray):
+        raise TypeError("paired data must be a NumPy array")
+    if paired.shape == (2, 2, 11):
+        return _bootstrap_record(
+            status="fixture_only",
+            estimate=None,
+            lower_bound=None,
+            passed=False,
+            unavailable_reason="fixture_analysis_is_noninferential",
+        )
+    if paired.shape != (2, 2048, 11):
+        raise ValueError("paired data must have shape (2,2048,11)")
+    if not np.issubdtype(paired.dtype, np.number) or np.issubdtype(paired.dtype, np.bool_):
+        raise ValueError("paired data must have a non-boolean numeric dtype")
+
+    numeric = np.asarray(paired, dtype=np.float64)
+    if not bool(np.all(np.isfinite(numeric))):
+        return _unavailable_bootstrap("nonfinite_values")
+    work = numeric[:, :, :3]
+    if bool(np.any(work < 0.0)):
+        return _unavailable_bootstrap("negative_work")
+    if not bool(np.all(work == np.floor(work))):
+        return _unavailable_bootstrap("noninteger_work")
+    if bool(np.any(numeric[:, :, 1] <= 0.0)):
+        return _unavailable_bootstrap("nonpositive_comparator_work")
+    outcomes = numeric[:, :, 3:]
+    if not bool(np.all((outcomes == 0.0) | (outcomes == 1.0))):
+        return _unavailable_bootstrap("nonbinary_outcomes")
+
+    rng = np.random.Generator(np.random.PCG64(_BOOTSTRAP_SEED_LITERAL))
+    replicates = np.empty(10_000, dtype=np.float64)
+    for replicate in range(10_000):
+        means: list[float] = []
+        for stratum in range(2):
+            indices = rng.integers(0, 2048, size=2048)
+            selected = numeric[stratum, indices, :]
+            means.append(float(np.mean(1.0 - selected[:, 0] / selected[:, 1])))
+        replicates[replicate] = (means[0] + means[1]) / 2.0
+    estimate = float(np.mean(1.0 - numeric[:, :, 0] / numeric[:, :, 1]))
+    lower = float(np.quantile(replicates, 0.05, method="linear"))
+    return _bootstrap_record(
+        status="available",
+        estimate=estimate,
+        lower_bound=lower,
+        passed=lower > 0.5,
+        unavailable_reason=None,
+    )

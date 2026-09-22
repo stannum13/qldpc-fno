@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from qldpc_fno.decision import planar_shot_data
@@ -13,8 +15,11 @@ from qldpc_fno.decision.simple_confirmation import (
     FROZEN_CONFIG,
     FROZEN_SHOT_CONFIG,
     SCIENTIFIC_DOMAIN,
+    bootstrap_saving,
+    event_indicators,
     load_config,
     load_shot_config,
+    primary_upper,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -411,3 +416,332 @@ def test_direct_generator_rejects_scientific_domain_before_sampler(
     monkeypatch.setattr(DepolarizingErrorModel, "generate", forbidden)
     with pytest.raises(ValueError, match="scientific confirmation seed forbidden in test mode"):
         planar_shot_data.generate_planar_shots(_SHOTS, tmp_path / "out")
+
+
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        (0, 0.0024750442291897544),
+        (1, 0.003498836715834498),
+        (2, 0.004385297715096555),
+        (3, 0.005205093018026918),
+        (2048, 1.0),
+    ],
+)
+def test_primary_upper_matches_independent_binomial_inversion(
+    events: int, expected: float
+) -> None:
+    actual = primary_upper(events, 2048)
+    assert actual == pytest.approx(expected, abs=1e-15)
+    if events < 2048:
+        cdf = sum(
+            math.comb(2048, j) * actual**j * (1.0 - actual) ** (2048 - j)
+            for j in range(events + 1)
+        )
+        assert cdf == pytest.approx(0.00625, abs=1e-13)
+
+
+def test_primary_upper_is_monotone_and_freezes_confirmation_cutoff() -> None:
+    bounds = [primary_upper(events, 2048) for events in range(5)]
+    assert bounds == sorted(bounds)
+    assert [bound <= 0.005 for bound in bounds[:4]] == [True, True, True, False]
+
+
+@pytest.mark.parametrize(
+    ("events", "shots"),
+    [
+        (True, 2048),
+        (0, True),
+        (0.0, 2048),
+        (0, 2048.0),
+        (-1, 2048),
+        (2049, 2048),
+        (0, 0),
+        (0, -1),
+    ],
+)
+def test_primary_upper_rejects_noninteger_or_out_of_range_counts(
+    events: object, shots: object
+) -> None:
+    with pytest.raises(ValueError):
+        primary_upper(events, shots)  # type: ignore[arg-type]
+
+
+def test_two_wrong_classes_can_share_failure_outcome() -> None:
+    assert event_indicators(
+        reference_valid=True,
+        policy_valid=True,
+        policy_class=1,
+        reference_class=2,
+        policy_failure=True,
+        reference_failure=True,
+    ) == (True, False)
+
+
+@pytest.mark.parametrize(
+    ("policy_class", "reference_class", "policy_failure", "reference_failure", "expected"),
+    [
+        (0, 0, False, False, (False, False)),
+        (1, 2, False, False, (True, False)),
+        (3, 3, True, False, (False, True)),
+        (0, 3, False, True, (True, True)),
+    ],
+)
+def test_event_indicators_keep_class_and_failure_endpoints_distinct(
+    policy_class: int,
+    reference_class: int,
+    policy_failure: bool,
+    reference_failure: bool,
+    expected: tuple[bool, bool],
+) -> None:
+    assert event_indicators(
+        reference_valid=True,
+        policy_valid=True,
+        policy_class=policy_class,
+        reference_class=reference_class,
+        policy_failure=policy_failure,
+        reference_failure=reference_failure,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("reference_valid", "policy_valid"),
+    [(False, True), (True, False), (False, False)],
+)
+def test_invalid_reference_or_policy_counts_both_primary_events(
+    reference_valid: bool, policy_valid: bool
+) -> None:
+    assert event_indicators(
+        reference_valid=reference_valid,
+        policy_valid=policy_valid,
+        policy_class=0 if policy_valid else None,
+        reference_class=0 if reference_valid else None,
+        policy_failure=False if policy_valid else None,
+        reference_failure=False if reference_valid else None,
+    ) == (True, True)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"reference_valid": 1},
+        {"policy_valid": 0},
+        {"policy_class": True},
+        {"policy_class": -1},
+        {"policy_class": 4},
+        {"reference_class": 1.0},
+        {"policy_failure": 0},
+        {"reference_failure": 1},
+        {"policy_class": None},
+        {"reference_failure": None},
+    ],
+)
+def test_event_indicators_reject_invalid_validity_and_labels(kwargs: dict[str, object]) -> None:
+    arguments: dict[str, object] = {
+        "reference_valid": True,
+        "policy_valid": True,
+        "policy_class": 0,
+        "reference_class": 0,
+        "policy_failure": False,
+        "reference_failure": False,
+    }
+    arguments.update(kwargs)
+    with pytest.raises(ValueError):
+        event_indicators(**arguments)  # type: ignore[arg-type]
+
+
+def test_event_indicators_require_null_labels_for_invalid_records() -> None:
+    with pytest.raises(ValueError):
+        event_indicators(
+            reference_valid=False,
+            policy_valid=True,
+            policy_class=0,
+            reference_class=0,
+            policy_failure=False,
+            reference_failure=False,
+        )
+
+
+def _paired(*, margin: float, column: float = 100.0, rows: float = 40.0) -> np.ndarray:
+    paired = np.zeros((2, 2048, 11), dtype=np.float64)
+    paired[:, :, 0] = margin
+    paired[:, :, 1] = column
+    paired[:, :, 2] = rows
+    return paired
+
+
+def test_bootstrap_constant_seventy_five_percent_saving_is_exact() -> None:
+    result = bootstrap_saving(_paired(margin=25.0))
+
+    assert set(result) == {
+        "status",
+        "estimand",
+        "replicates",
+        "seed",
+        "bit_generator",
+        "quantile_method",
+        "estimate",
+        "lower_bound",
+        "threshold",
+        "passed",
+        "unavailable_reason",
+    }
+    assert result == {
+        "status": "available",
+        "estimand": "equal_rate_mean_paired_relative_saving",
+        "replicates": 10_000,
+        "seed": 2713269656809941213,
+        "bit_generator": "PCG64",
+        "quantile_method": "linear",
+        "estimate": 0.75,
+        "lower_bound": 0.75,
+        "threshold": 0.5,
+        "passed": True,
+        "unavailable_reason": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("margin", "estimate", "passed"),
+    [(50.0, 0.5, False), (125.0, -0.25, False)],
+)
+def test_bootstrap_gate_is_strict_and_preserves_negative_savings(
+    margin: float, estimate: float, passed: bool
+) -> None:
+    result = bootstrap_saving(_paired(margin=margin))
+    assert result["estimate"] == pytest.approx(estimate)
+    assert result["lower_bound"] == pytest.approx(estimate)
+    assert result["passed"] is passed
+
+
+def test_bootstrap_equal_weights_rates_and_uses_mean_of_paired_ratios() -> None:
+    paired = _paired(margin=25.0)
+    paired[0, :, 0] = 0.0
+    paired[1, :, 0] = 100.0
+    paired[0, :, 1] = np.tile([4.0, 100.0], 1024)
+    paired[1, :, 1] = np.tile([4.0, 100.0], 1024)
+    paired[0, :, 0] = paired[0, :, 1] * 0.25
+    paired[1, :, 0] = paired[1, :, 1] * 0.75
+
+    result = bootstrap_saving(paired)
+    ratio_of_totals = 1.0 - float(np.sum(paired[:, :, 0])) / float(np.sum(paired[:, :, 1]))
+    assert result["estimate"] == pytest.approx(0.5)
+    assert ratio_of_totals == pytest.approx(0.5)
+    assert result["passed"] is False
+
+
+def test_bootstrap_mean_ratios_differs_from_ratio_of_totals_when_costs_covary() -> None:
+    paired = _paired(margin=25.0)
+    for stratum in range(2):
+        paired[stratum, :1024, 0] = 0.0
+        paired[stratum, :1024, 1] = 1.0
+        paired[stratum, 1024:, 0] = 100.0
+        paired[stratum, 1024:, 1] = 100.0
+
+    result = bootstrap_saving(paired)
+    ratio_of_totals = 1.0 - float(np.sum(paired[:, :, 0])) / float(np.sum(paired[:, :, 1]))
+    assert result["estimate"] == pytest.approx(0.5)
+    assert ratio_of_totals == pytest.approx(1.0 / 101.0)
+
+
+def test_bootstrap_is_deterministic_and_pairing_sensitive() -> None:
+    paired = _paired(margin=25.0)
+    ramp = np.arange(1, 2049, dtype=np.float64)
+    paired[:, :, 1] = ramp * 10.0
+    paired[:, :, 0] = ramp * np.tile([1.0, 9.0], 1024)
+    first = bootstrap_saving(paired)
+    second = bootstrap_saving(paired.copy())
+    unpaired = paired.copy()
+    unpaired[:, :, 0] = unpaired[:, ::-1, 0]
+    changed = bootstrap_saving(unpaired)
+
+    assert first == second
+    assert changed["estimate"] != pytest.approx(first["estimate"])
+
+
+def test_bootstrap_draws_complete_paired_rows_with_frozen_generator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, int, int]] = []
+    paired_row_slices: list[tuple[object, object, object]] = []
+    original_asarray = confirmation.np.asarray
+
+    class TrackingArray(np.ndarray):
+        def __getitem__(self, key):
+            if (
+                isinstance(key, tuple)
+                and len(key) == 3
+                and type(key[0]) is int
+                and isinstance(key[1], np.ndarray)
+            ):
+                paired_row_slices.append(key)
+            return super().__getitem__(key)
+
+    class GeneratorSpy:
+        def __init__(self, bit_generator: object) -> None:
+            assert type(bit_generator).__name__ == "PCG64"
+
+        def integers(self, low: int, high: int, *, size: int) -> np.ndarray:
+            calls.append((low, high, size))
+            return np.arange(size, dtype=np.int64)
+
+    def tracking_asarray(value: object, *, dtype: object) -> TrackingArray:
+        return original_asarray(value, dtype=dtype).view(TrackingArray)
+
+    monkeypatch.setattr(confirmation.np.random, "Generator", GeneratorSpy)
+    monkeypatch.setattr(confirmation.np, "asarray", tracking_asarray)
+    result = bootstrap_saving(_paired(margin=25.0))
+
+    assert result["estimate"] == 0.75
+    assert result["lower_bound"] == 0.75
+    assert calls == [(0, 2048, 2048)] * 20_000
+    assert len(paired_row_slices) == 20_000
+    assert all(key[2] == slice(None) for key in paired_row_slices)
+
+
+@pytest.mark.parametrize(
+    ("mutator", "reason"),
+    [
+        (lambda value: value.__setitem__((0, 0, 0), np.nan), "nonfinite_values"),
+        (lambda value: value.__setitem__((0, 0, 0), -1.0), "negative_work"),
+        (lambda value: value.__setitem__((0, 0, 0), 1.5), "noninteger_work"),
+        (lambda value: value.__setitem__((0, 0, 1), 0.0), "nonpositive_comparator_work"),
+    ],
+)
+def test_bootstrap_invalid_or_missing_costs_suppress_inference(mutator, reason: str) -> None:
+    paired = _paired(margin=25.0)
+    mutator(paired)
+    result = bootstrap_saving(paired)
+    assert result["status"] == "unavailable"
+    assert result["estimate"] is None
+    assert result["lower_bound"] is None
+    assert result["passed"] is False
+    assert result["unavailable_reason"] == reason
+
+
+@pytest.mark.parametrize(
+    "paired",
+    [
+        np.zeros((2048, 11)),
+        np.zeros((2, 2047, 11)),
+        np.zeros((2, 2048, 10)),
+        np.zeros((2, 2048, 11), dtype=object),
+    ],
+)
+def test_bootstrap_rejects_wrong_shape_or_nonnumeric_array(paired: np.ndarray) -> None:
+    with pytest.raises(ValueError):
+        bootstrap_saving(paired)
+
+
+def test_bootstrap_rejects_non_array_input() -> None:
+    with pytest.raises(TypeError):
+        bootstrap_saving([])  # type: ignore[arg-type]
+
+
+def test_bootstrap_fixture_shape_never_runs_inference() -> None:
+    result = bootstrap_saving(np.zeros((2, 2, 11), dtype=np.float64))
+    assert result["status"] == "fixture_only"
+    assert result["estimate"] is None
+    assert result["lower_bound"] is None
+    assert result["passed"] is False
+    assert result["unavailable_reason"] == "fixture_analysis_is_noninferential"
