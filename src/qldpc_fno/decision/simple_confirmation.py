@@ -25,64 +25,107 @@ _SHOT_KEYS = {
     "noise_model",
 }
 _ACTION_KEYS = {"action_id", "mode", "chi", "tol"}
+_ACTION_SPECS = (
+    ("rows_tol003", "rows", None, 0.003),
+    ("columns_tol01", "columns", None, 0.01),
+    ("rows_tol01", "rows", None, 0.01),
+    ("columns_chi8", "columns", 8, None),
+    ("exact_columns", "columns", None, None),
+    ("exact_rows", "rows", None, None),
+)
+_CONFIG_KEYS = frozenset(
+    {
+        "schema_version",
+        "contract_id",
+        "required_shot_seed_domain",
+        "fixture_seed_domain",
+        "code_distance",
+        "noise_model",
+        "required_error_rates",
+        "required_shots_per_rate",
+        "policy_ids",
+        "comparator_id",
+        "actions",
+        "margin_threshold",
+        "reference_probability_tolerance",
+        "reference_log_ratio_tolerance",
+        "reference_margin_discrepancy_factor",
+        "primary_endpoints",
+        "family_alpha",
+        "primary_alpha",
+        "discrepancy_budget",
+        "bootstrap_domain",
+        "bootstrap_seed",
+        "bootstrap_replicates",
+        "bootstrap_generator",
+        "bootstrap_quantile",
+        "bootstrap_quantile_method",
+        "minimum_work_saving",
+        "order_rule",
+        "invalidity_rule",
+        "status_rule",
+    }
+)
 
-FROZEN_SHOT_CONFIG: dict[str, object] = {
-    "schema_version": 1,
-    "seed_domain": SCIENTIFIC_DOMAIN,
-    "campaign_seed": SCIENTIFIC_CAMPAIGN_SEED,
-    "code_distance": 5,
-    "error_rates": [0.1, 0.15],
-    "shots_per_rate": 2048,
-    "noise_model": _NOISE_MODEL,
-}
-FIXTURE_SHOT_CONFIG: dict[str, object] = {
-    **FROZEN_SHOT_CONFIG,
-    "seed_domain": FIXTURE_DOMAIN,
-    "campaign_seed": FIXTURE_CAMPAIGN_SEED,
-    "shots_per_rate": 2,
-}
 
-_FROZEN_ACTIONS: list[dict[str, object]] = [
-    {"action_id": "rows_tol003", "mode": "rows", "chi": None, "tol": 0.003},
-    {"action_id": "columns_tol01", "mode": "columns", "chi": None, "tol": 0.01},
-    {"action_id": "rows_tol01", "mode": "rows", "chi": None, "tol": 0.01},
-    {"action_id": "columns_chi8", "mode": "columns", "chi": 8, "tol": None},
-    {"action_id": "exact_columns", "mode": "columns", "chi": None, "tol": None},
-    {"action_id": "exact_rows", "mode": "rows", "chi": None, "tol": None},
-]
+def _shot_config(*, fixture: bool) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "seed_domain": FIXTURE_DOMAIN if fixture else SCIENTIFIC_DOMAIN,
+        "campaign_seed": FIXTURE_CAMPAIGN_SEED if fixture else SCIENTIFIC_CAMPAIGN_SEED,
+        "code_distance": 5,
+        "error_rates": [0.1, 0.15],
+        "shots_per_rate": 2 if fixture else 2048,
+        "noise_model": _NOISE_MODEL,
+    }
 
-FROZEN_CONFIG: dict[str, object] = {
-    "schema_version": 1,
-    "contract_id": "simple_planar_confirmation_v1",
-    "required_shot_seed_domain": SCIENTIFIC_DOMAIN,
-    "fixture_seed_domain": FIXTURE_DOMAIN,
-    "code_distance": 5,
-    "noise_model": _NOISE_MODEL,
-    "required_error_rates": [0.1, 0.15],
-    "required_shots_per_rate": 2048,
-    "policy_ids": ["fixed_rows_tol003", "margin_columns_chi8"],
-    "comparator_id": "fixed_columns_chi8",
-    "actions": _FROZEN_ACTIONS,
-    "margin_threshold": MARGIN_THRESHOLD,
-    "reference_probability_tolerance": 1e-10,
-    "reference_log_ratio_tolerance": 1e-8,
-    "reference_margin_discrepancy_factor": 2.0,
-    "primary_endpoints": ["class_mismatch", "outcome_discordance"],
-    "family_alpha": 0.05,
-    "primary_alpha": 0.00625,
-    "discrepancy_budget": 0.005,
-    "bootstrap_domain": BOOTSTRAP_DOMAIN,
-    "bootstrap_seed": BOOTSTRAP_SEED,
-    "bootstrap_replicates": 10_000,
-    "bootstrap_generator": "PCG64",
-    "bootstrap_quantile": 0.05,
-    "bootstrap_quantile_method": "linear",
-    "minimum_work_saving": 0.5,
-    "order_rule": "lexicographic_permutations_index_mod_6",
-    "invalidity_rule": "count_both_events_reference_blocks_positive",
-    "status_rule": "immutable_pending_independent_replay",
-}
-_CONFIG_KEYS = set(FROZEN_CONFIG)
+
+def _frozen_actions() -> list[dict[str, object]]:
+    return [
+        {"action_id": action_id, "mode": mode, "chi": chi, "tol": tolerance}
+        for action_id, mode, chi, tolerance in _ACTION_SPECS
+    ]
+
+
+def _analysis_config() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "contract_id": "simple_planar_confirmation_v1",
+        "required_shot_seed_domain": SCIENTIFIC_DOMAIN,
+        "fixture_seed_domain": FIXTURE_DOMAIN,
+        "code_distance": 5,
+        "noise_model": _NOISE_MODEL,
+        "required_error_rates": [0.1, 0.15],
+        "required_shots_per_rate": 2048,
+        "policy_ids": ["fixed_rows_tol003", "margin_columns_chi8"],
+        "comparator_id": "fixed_columns_chi8",
+        "actions": _frozen_actions(),
+        "margin_threshold": MARGIN_THRESHOLD,
+        "reference_probability_tolerance": 1e-10,
+        "reference_log_ratio_tolerance": 1e-8,
+        "reference_margin_discrepancy_factor": 2.0,
+        "primary_endpoints": ["class_mismatch", "outcome_discordance"],
+        "family_alpha": 0.05,
+        "primary_alpha": 0.00625,
+        "discrepancy_budget": 0.005,
+        "bootstrap_domain": BOOTSTRAP_DOMAIN,
+        "bootstrap_seed": BOOTSTRAP_SEED,
+        "bootstrap_replicates": 10_000,
+        "bootstrap_generator": "PCG64",
+        "bootstrap_quantile": 0.05,
+        "bootstrap_quantile_method": "linear",
+        "minimum_work_saving": 0.5,
+        "order_rule": "lexicographic_permutations_index_mod_6",
+        "invalidity_rule": "count_both_events_reference_blocks_positive",
+        "status_rule": "immutable_pending_independent_replay",
+    }
+
+
+# Public snapshots support ergonomic fixture construction. Validators deliberately
+# rebuild their private canonical values, so callers cannot mutate the source of truth.
+FROZEN_SHOT_CONFIG = _shot_config(fixture=False)
+FIXTURE_SHOT_CONFIG = _shot_config(fixture=True)
+FROZEN_CONFIG = _analysis_config()
 
 
 def _reject_constant(value: str) -> None:
@@ -130,9 +173,10 @@ def _same_literal(actual: object, expected: object) -> bool:
 
 
 def _validate_actions(value: object) -> None:
-    if not isinstance(value, list) or len(value) != len(_FROZEN_ACTIONS):
+    expected_actions = _frozen_actions()
+    if not isinstance(value, list) or len(value) != len(expected_actions):
         raise ValueError("actions must contain exactly the six frozen actions")
-    for item, expected in zip(value, _FROZEN_ACTIONS, strict=True):
+    for item, expected in zip(value, expected_actions, strict=True):
         if not isinstance(item, dict) or set(item) != _ACTION_KEYS:
             raise ValueError("each action must contain exactly the frozen action fields")
         if not _same_literal(item, expected):
@@ -145,7 +189,7 @@ def load_config(path: Path) -> dict[str, object]:
     if set(payload) != _CONFIG_KEYS:
         raise ValueError("analysis configuration must contain exactly the frozen fields")
     _validate_actions(payload["actions"])
-    if not _same_literal(payload, FROZEN_CONFIG):
+    if not _same_literal(payload, _analysis_config()):
         raise ValueError("analysis configuration differs from the frozen contract")
     return payload
 
@@ -157,7 +201,7 @@ def load_shot_config(path: Path, *, fixture: bool) -> dict[str, object]:
     payload = _load_object(path)
     if set(payload) != _SHOT_KEYS:
         raise ValueError("shot configuration must contain exactly the sampler fields")
-    expected = FIXTURE_SHOT_CONFIG if fixture else FROZEN_SHOT_CONFIG
+    expected = _shot_config(fixture=fixture)
     if not _same_literal(payload, expected):
         mode = "fixture" if fixture else "scientific"
         raise ValueError(f"shot configuration differs from the frozen {mode} identity")

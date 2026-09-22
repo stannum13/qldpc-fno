@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from qldpc_fno.decision import planar_shot_data
+from qldpc_fno.decision import simple_confirmation as confirmation
 from qldpc_fno.decision.simple_confirmation import (
     FIXTURE_SHOT_CONFIG,
     FROZEN_CONFIG,
@@ -59,6 +60,77 @@ def test_shot_configs_are_separate_frozen_identities() -> None:
     assert scientific["shots_per_rate"] == 2048
     assert fixture["shots_per_rate"] == 2
     assert scientific["seed_domain"] != fixture["seed_domain"]
+
+
+def test_mutating_exported_analysis_mapping_cannot_redefine_validator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    payload = json.loads(_CONFIG.read_text())
+    payload["margin_threshold"] = 0.25
+    monkeypatch.setitem(confirmation.FROZEN_CONFIG, "margin_threshold", 0.25)
+
+    with pytest.raises(ValueError):
+        load_config(_write_json(tmp_path / "config.json", payload))
+
+
+def test_mutating_exported_nested_lists_cannot_redefine_validator(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(_CONFIG.read_text())
+    payload["required_error_rates"][0] = 0.05
+    exported_rates = confirmation.FROZEN_CONFIG["required_error_rates"]
+    exported_rates[0] = 0.05
+    try:
+        with pytest.raises(ValueError):
+            load_config(_write_json(tmp_path / "config.json", payload))
+    finally:
+        exported_rates[0] = 0.1
+
+
+def test_mutating_exported_nested_action_cannot_redefine_validator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    payload = json.loads(_CONFIG.read_text())
+    payload["actions"][0]["tol"] = 0.004
+    monkeypatch.setitem(confirmation.FROZEN_CONFIG["actions"][0], "tol", 0.004)
+
+    with pytest.raises(ValueError):
+        load_config(_write_json(tmp_path / "config.json", payload))
+
+
+def test_mutating_exported_shot_mapping_cannot_redefine_validator(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    payload = json.loads(_SHOTS.read_text())
+    payload["shots_per_rate"] = 1024
+    monkeypatch.setitem(confirmation.FROZEN_SHOT_CONFIG, "shots_per_rate", 1024)
+
+    with pytest.raises(ValueError):
+        load_shot_config(_write_json(tmp_path / "shots.json", payload), fixture=False)
+
+
+def test_mutating_exported_shot_nested_list_cannot_redefine_validator(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(_FIXTURE_SHOTS.read_text())
+    payload["error_rates"][1] = 0.2
+    exported_rates = confirmation.FIXTURE_SHOT_CONFIG["error_rates"]
+    exported_rates[1] = 0.2
+    try:
+        with pytest.raises(ValueError):
+            load_shot_config(_write_json(tmp_path / "shots.json", payload), fixture=True)
+    finally:
+        exported_rates[1] = 0.15
+
+
+def test_loaded_config_mutation_does_not_affect_later_load() -> None:
+    first = load_config(_CONFIG)
+    first["actions"][0]["tol"] = 0.004
+    first["required_error_rates"][0] = 0.05
+
+    second = load_config(_CONFIG)
+    assert second["actions"][0]["tol"] == 0.003
+    assert second["required_error_rates"] == [0.1, 0.15]
 
 
 @pytest.mark.parametrize("count", [2, 2047, 2049, True, 2048.0])
