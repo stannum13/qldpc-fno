@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import re
 import subprocess
@@ -197,6 +198,12 @@ def _load_config(path: Path) -> dict[str, object]:
 
 
 def _shot_seed(domain: str, *, error_rate: float, shot_index: int) -> int:
+    if (
+        os.environ.get("QLDPC_FNO_CONFIRMATION_TESTING") == "1"
+        and domain.startswith("qldpc-fno/simple-planar-confirmation/")
+        and "/test-fixture/" not in domain
+    ):
+        raise ValueError("scientific confirmation seed forbidden in test mode")
     identity = f"{domain}|d5|p{error_rate:.6f}|i{shot_index:06d}"
     return int.from_bytes(hashlib.sha256(identity.encode()).digest()[:8], "big")
 
@@ -228,6 +235,13 @@ def generate_planar_shots(config_path: Path, output_dir: Path) -> dict[str, obje
     config_path = Path(config_path)
     output_dir = Path(output_dir)
     config = _load_config(config_path)
+    domain = str(config["seed_domain"])
+    if (
+        os.environ.get("QLDPC_FNO_CONFIRMATION_TESTING") == "1"
+        and domain.startswith("qldpc-fno/simple-planar-confirmation/")
+        and "/test-fixture/" not in domain
+    ):
+        raise ValueError("scientific confirmation seed forbidden in test mode")
     if output_dir.exists():
         raise FileExistsError(f"refusing to overwrite existing output directory: {output_dir}")
 
