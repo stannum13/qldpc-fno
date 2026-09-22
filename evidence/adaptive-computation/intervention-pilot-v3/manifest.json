@@ -1,0 +1,133 @@
+{
+  "artifacts": {
+    "raw": {
+      "external_path": "/Users/shiva/repos/qldpc-fno/artifacts/adaptive-intervention-pilot-v3/result/intervention_pilot.json",
+      "path": "artifacts/adaptive-intervention-pilot-v3/result/intervention_pilot.json",
+      "sha256": "aaa5c23e0ad799c8361aee2df86c10636ce289bc81508cfe92b8fc9e82b7da2d",
+      "size_bytes": 199594008,
+      "tracked": false
+    },
+    "shots": {
+      "external_path": "/Users/shiva/repos/qldpc-fno/artifacts/adaptive-intervention-pilot-v3/shots/planar_shots.json",
+      "path": "artifacts/adaptive-intervention-pilot-v3/shots/planar_shots.json",
+      "sha256": "3715372b0ab2633a89e4cb890ed6579a5fe8ac8f1378b2e6fed8ce52e38f9c54",
+      "size_bytes": 199723,
+      "tracked": false
+    },
+    "source_summary": {
+      "external_path": "/Users/shiva/repos/qldpc-fno/artifacts/adaptive-intervention-pilot-v3/result/summary.json",
+      "path": "artifacts/adaptive-intervention-pilot-v3/result/summary.json",
+      "sha256": "5ff350877d909f8207974dd332d212037e8016dfe2041ace265f300fb44402b3",
+      "size_bytes": 377435,
+      "tracked": false
+    },
+    "timing": {
+      "external_path": "/Users/shiva/repos/qldpc-fno/artifacts/adaptive-intervention-pilot-v3/result/timing.json",
+      "path": "artifacts/adaptive-intervention-pilot-v3/result/timing.json",
+      "sha256": "2267290ed19b88dbdc856bf00b40d4949bb6da31112712b69afde1adfd687ecf",
+      "size_bytes": 436724,
+      "tracked": false
+    },
+    "tracked_summary": {
+      "external_path": null,
+      "path": "evidence/adaptive-computation/intervention-pilot-v3/summary.json",
+      "sha256": "5ff350877d909f8207974dd332d212037e8016dfe2041ace265f300fb44402b3",
+      "size_bytes": 377435,
+      "tracked": true
+    }
+  },
+  "availability": {
+    "external_artifact_status": "local_ignored_files_only_no_upload_or_public_download_claim",
+    "external_paths_are": "absolute paths on the producing host; not expected in a fresh clone",
+    "tracked": [
+      "summary.json",
+      "manifest.json"
+    ]
+  },
+  "bindings": {
+    "source_and_tracked_summary_byte_identical": true,
+    "summary_raw_sha256": "aaa5c23e0ad799c8361aee2df86c10636ce289bc81508cfe92b8fc9e82b7da2d",
+    "summary_raw_size_bytes": 199594008,
+    "timing_raw_sha256": "aaa5c23e0ad799c8361aee2df86c10636ce289bc81508cfe92b8fc9e82b7da2d",
+    "timing_summary_sha256": "5ff350877d909f8207974dd332d212037e8016dfe2041ace265f300fb44402b3"
+  },
+  "claim_boundary": "No controller value, safety, superiority, latency, threshold, qLDPC, FNO, HiPPO, hardware, or population-risk claim.",
+  "commands": {
+    "evaluate": "uv run python experiments/35_run_adaptive_intervention_pilot.py --config configs/adaptive_intervention_pilot.json --shots artifacts/adaptive-intervention-pilot-v3/shots/planar_shots.json --out artifacts/adaptive-intervention-pilot-v3/result",
+    "generate_shots": "uv run python experiments/31_generate_planar_shots.py --config configs/adaptive_intervention_pilot_shots.json --out artifacts/adaptive-intervention-pilot-v3/shots",
+    "working_directory": "repository root at source_commit, with clean committed tree"
+  },
+  "configs": {
+    "pilot": {
+      "path": "configs/adaptive_intervention_pilot.json",
+      "sha256": "9261be90ba78062e5b81f14591f46ff2cab40ccda20173ef29c35c297100845c",
+      "size_bytes": 1779
+    },
+    "shots": {
+      "path": "configs/adaptive_intervention_pilot_shots.json",
+      "sha256": "12b4d30b292ba1475545c91a4ff8a7945ffafdc93496ab228117076e4cd894ff",
+      "size_bytes": 262
+    }
+  },
+  "dependencies": {
+    "networkx": "3.6.1",
+    "numpy": "2.4.1",
+    "python": "3.14.6",
+    "qecsim": "1.0b9",
+    "scipy": "1.17.1"
+  },
+  "domain": {
+    "campaign_seed": 10044421296420932682,
+    "code_distance": 5,
+    "error_rates": [
+      0.1,
+      0.15
+    ],
+    "noise_model": "qecsim_iid_depolarizing_code_capacity",
+    "schema_version": 1,
+    "seed_domain": "qldpc-fno/adaptive-intervention-pilot/v3",
+    "shots_per_rate": 64
+  },
+  "matching_backend": {
+    "blossom5_available": false,
+    "blossom5_binary_sha256": null,
+    "lockfile_sha256": "d849847d419c5fef439b651380d5fbe46f44f14d03f00a06b3e39abd72918029",
+    "name": "networkx"
+  },
+  "pilot_id": "adaptive_intervention_pilot_v3",
+  "replay": {
+    "deterministic_artifacts": [
+      "shots",
+      "raw",
+      "source_summary",
+      "tracked_summary"
+    ],
+    "numerical_portability": "Exact contraction bytes can depend on the bound source, dependencies, and numerical environment; timing is nondeterministic.",
+    "summary_reconstruction": "summarize_evaluations(raw.shots, load_pilot_config(config)); serialize compact wrapper with json.dumps(indent=2, sort_keys=True, allow_nan=False) plus newline"
+  },
+  "schema_version": 1,
+  "source_commit": "a2ffdc5da79a64da6837f54230283e4735aaf674",
+  "source_sha256": {
+    "experiments/35_run_adaptive_intervention_pilot.py": "87d895edf57507380c7b3dc74422864ed65d98f77a9a5e303f09e74ed436be64",
+    "src/qldpc_fno/artifacts.py": "5fc3ce4a9551e362ee65344bded19392745e1ac22f9039fe59d3cca3a7831f5e",
+    "src/qldpc_fno/decision/adaptive_diagnostics.py": "30fa2d793e0f2dee804cf0b02a585cec5a72983664da183a12561fb8258c30ca",
+    "src/qldpc_fno/decision/adaptive_intervention_pilot.py": "85d2342bb68bc0869ecea8b4c126bbba78cdb0695b7b1787e165976a900a6fba",
+    "src/qldpc_fno/decision/planar_shot_accuracy.py": "23f9be626de84dbd2f6bd7a20962ae266bb854d6df62abb703adeb6c818fcfa4",
+    "src/qldpc_fno/decision/planar_shot_data.py": "f8a26cf2e123071dcaa65025f46480a764b1e33c733f555f1be30bbf6b657188",
+    "src/qldpc_fno/decision/tensor_network.py": "1c8e2c5c7efcad2940c3fc75d898b3d6b60010c2e5b82749d370e0984238d3e5",
+    "src/qldpc_fno/metrics/paired.py": "77e582a50c55a4ac89e01da66311a492a33f8e96721092ef173a3534ac699588"
+  },
+  "source_tree_dirty": false,
+  "status": "development_only",
+  "timing": {
+    "host": {
+      "machine": "arm64",
+      "node": "MacBook-Pro-3.local",
+      "platform": "macOS-15.6.1-arm64-arm-64bit-Mach-O"
+    },
+    "measurement": "research_host_wall_time_not_decoder_latency",
+    "replay_byte_identity_required": false,
+    "status": "nondeterministic_engineering_metadata",
+    "total_host_wall_seconds": 74.67079299967736
+  }
+}

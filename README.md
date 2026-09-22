@@ -113,6 +113,21 @@ accepting 3,581 shots cheaply, but this is a hypothesis for fresh confirmation,
 not a safety result. Read the [diagnostic audit](docs/adaptive-computation-diagnostic-audit.md)
 and its [compact derived evidence](evidence/adaptive-computation/diagnostic-audit-v1/diagnostic_audit.json).
 
+The next [128-shot intervention pilot](docs/adaptive-computation-intervention-pilot.md)
+found a more difficult boundary: different actions improve posterior total
+variation on different escalated shots, but those improvements repair no
+reference-class errors and can introduce logical failures. The frozen margin
+gate plus fixed column `chi=8` fallback has zero development mismatches, yet a
+post-hoc fixed row-tolerance `0.003` comparator uses less estimated arithmetic
+work, and host timing reverses the composite policy's arithmetic advantage over
+fixed column `chi=8`. Learned-controller work under the current TV objective does
+not advance. Fresh confirmation must compare the simple fixed and gated
+policies with class/outcome safety first. These development results establish
+no safety, controller value, latency, qLDPC, FNO, or HiPPO benefit; the
+[compact summary](evidence/adaptive-computation/intervention-pilot-v3/summary.json)
+and [provenance manifest](evidence/adaptive-computation/intervention-pilot-v3/manifest.json)
+preserve the evidence and its limits.
+
 ## Causal forecasting extension
 
 Repeated syndrome measurements raise a narrower question than direct neural
