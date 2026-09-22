@@ -586,6 +586,119 @@ def _require_sha256(value: str) -> None:
         raise ValueError("source_sha256 must be a lowercase SHA-256 digest")
 
 
+def _development_margin_gate(rows: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    accepted_agreements = [
+        row
+        for row in rows
+        if _nested_mapping(row, "decision")["accepted"] is True
+        and _nested_mapping(row, "inference_features")["tolerance_class_agreement"] is True
+    ]
+    mismatches = [
+        row
+        for row in accepted_agreements
+        if _nested_mapping(row, "reference_labels")["class_mismatch"] is True
+    ]
+    mismatch_margins = [
+        float(_nested_mapping(row, "inference_features")["tolerance_minimum_margin"])
+        for row in mismatches
+    ]
+    if not mismatch_margins:
+        return {
+            "claim_status": "unavailable_without_revealed_reference_mismatches",
+            "selected_on_revealed_labels": True,
+            "threshold": None,
+        }
+    threshold = max(mismatch_margins)
+    cheaply_accepted = [
+        row
+        for row in accepted_agreements
+        if float(_nested_mapping(row, "inference_features")["tolerance_minimum_margin"])
+        > threshold
+    ]
+    cheaply_accepted_ids = {
+        str(_nested_mapping(row, "identity")["shot_id"]) for row in cheaply_accepted
+    }
+    escalated = [
+        row
+        for row in rows
+        if str(_nested_mapping(row, "identity")["shot_id"]) not in cheaply_accepted_ids
+    ]
+    accepted_mismatches = sum(
+        _nested_mapping(row, "reference_labels")["class_mismatch"] is True
+        for row in cheaply_accepted
+    )
+    fallback_mismatches = sum(
+        _nested_mapping(row, "post_refinement_diagnostics")[
+            "fixed_chi8_class_matches_reference"
+        ]
+        is False
+        for row in escalated
+    )
+    unresolved_escalations = sum(
+        _nested_mapping(row, "post_refinement_diagnostics")[
+            "fixed_chi8_class_matches_reference"
+        ]
+        is None
+        for row in escalated
+    )
+    projected_work = sum(
+        int(_nested_mapping(row, "work")["cheap_estimated_arithmetic_flops"])
+        + (
+            0
+            if str(_nested_mapping(row, "identity")["shot_id"]) in cheaply_accepted_ids
+            else int(_nested_mapping(row, "work")["fixed_chi8_estimated_arithmetic_flops"])
+        )
+        for row in rows
+    )
+    fixed_work = sum(
+        int(_nested_mapping(row, "work")["fixed_chi8_estimated_arithmetic_flops"])
+        for row in rows
+    )
+    rates = sorted({float(_nested_mapping(row, "identity")["error_rate"]) for row in rows})
+    by_rate = []
+    for rate in rates:
+        rate_rows = [row for row in rows if float(_nested_mapping(row, "identity")["error_rate"]) == rate]
+        rate_accepts = [
+            row
+            for row in rate_rows
+            if str(_nested_mapping(row, "identity")["shot_id"]) in cheaply_accepted_ids
+        ]
+        by_rate.append(
+            {
+                "error_rate": rate,
+                "shots": len(rate_rows),
+                "cheap_accepts": len(rate_accepts),
+                "cheap_acceptance_fraction": len(rate_accepts) / len(rate_rows),
+                "accepted_reference_mismatches": sum(
+                    _nested_mapping(row, "reference_labels")["class_mismatch"] is True
+                    for row in rate_accepts
+                ),
+            }
+        )
+    return {
+        "claim_status": "development_hypothesis_only",
+        "selected_on_revealed_labels": True,
+        "threshold_rule": "accept only when tolerance_minimum_margin > threshold",
+        "threshold": threshold,
+        "shots": len(rows),
+        "cheap_accepts": len(cheaply_accepted),
+        "cheap_acceptance_fraction": len(cheaply_accepted) / len(rows),
+        "escalations": len(escalated),
+        "accepted_reference_mismatches": accepted_mismatches,
+        "fallback_reference_mismatches": fallback_mismatches,
+        "unresolved_escalations": unresolved_escalations,
+        "projected_final_reference_mismatches": accepted_mismatches + fallback_mismatches,
+        "by_error_rate": by_rate,
+        "projected_work": {
+            "estimand": "cheap tolerance work on every shot plus fixed-chi8 work on escalations",
+            "estimated_arithmetic_flops": projected_work,
+            "fixed_chi8_comparator_flops": fixed_work,
+            "ratio_to_fixed_chi8": projected_work / fixed_work,
+            "saving_relative_to_fixed_chi8": 1 - projected_work / fixed_work,
+        },
+    }
+
+
 def build_diagnostic_audit(
     source: Mapping[str, object], *, source_sha256: str
 ) -> dict[str, object]:
@@ -702,6 +815,7 @@ def build_diagnostic_audit(
         "rows": rows,
         "common_mode_reference_mismatches": mismatches,
         "margin_matched_controls": select_margin_matched_controls(rows),
+        "development_zero_mismatch_margin_gate": _development_margin_gate(rows),
         "exploratory_discrimination": {
             "development_only": True,
             "accepted_agreement_shots": len(accepted_agreements),

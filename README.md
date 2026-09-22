@@ -105,6 +105,14 @@ plan connecting the observed consensus failures to adaptive refinement, shared
 recurrent models, memory tradeoffs, and learned inference dynamics. Its proposed
 experiments are distinguished from the completed results above.
 
+The first development audit in that sequence is now available. On the already
+revealed 4,096-shot planar artifact, minimum cheap-view margin is the strongest
+single diagnostic of the eight common-mode reference mismatches. A threshold
+selected on those same labels would retrospectively escalate all eight while
+accepting 3,581 shots cheaply, but this is a hypothesis for fresh confirmation,
+not a safety result. Read the [diagnostic audit](docs/adaptive-computation-diagnostic-audit.md)
+and its [compact derived evidence](evidence/adaptive-computation/diagnostic-audit-v1/diagnostic_audit.json).
+
 ## Causal forecasting extension
 
 Repeated syndrome measurements raise a narrower question than direct neural

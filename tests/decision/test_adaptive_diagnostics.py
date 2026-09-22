@@ -42,6 +42,8 @@ def _action(probabilities: list[float], *, flops: int = 100) -> dict[str, object
 
 
 def _shot(*, mismatch: bool = True) -> dict[str, object]:
+    tolerance_columns = [0.6, 0.2, 0.1, 0.1] if mismatch else [0.1, 0.75, 0.1, 0.05]
+    tolerance_rows = [0.55, 0.25, 0.1, 0.1] if mismatch else [0.15, 0.7, 0.1, 0.05]
     return {
         "shot_id": "d5/p0.100000/i000001",
         "shot_index": 1,
@@ -57,8 +59,8 @@ def _shot(*, mismatch: bool = True) -> dict[str, object]:
         "tensor": {
             "exact_columns": _action([0.3, 0.5, 0.1, 0.1], flops=1000),
             "exact_rows": _action([0.3, 0.5, 0.1, 0.1], flops=1000),
-            "tolerance_columns": _action([0.6, 0.2, 0.1, 0.1], flops=100),
-            "tolerance_rows": _action([0.55, 0.25, 0.1, 0.1], flops=120),
+            "tolerance_columns": _action(tolerance_columns, flops=100),
+            "tolerance_rows": _action(tolerance_rows, flops=120),
             "fixed_columns": _action([0.31, 0.49, 0.1, 0.1], flops=400),
             "fallback_columns": None,
         },
@@ -333,7 +335,18 @@ def _small_source() -> dict[str, object]:
         benign["shot_id"] = f"d5/p{rate:.6f}/i000001"
         benign["shot_index"] = 1
         benign["error_rate"] = rate
-        shots.extend([mismatch, benign])
+        invalid = _shot(mismatch=False)
+        invalid["shot_id"] = f"d5/p{rate:.6f}/i000002"
+        invalid["shot_index"] = 2
+        invalid["error_rate"] = rate
+        invalid["accepted"] = False
+        invalid["used_fallback"] = True
+        invalid["tensor"]["tolerance_columns"] = None  # type: ignore[index]
+        invalid["invalid_tensor_work"] = {
+            "tolerance_columns": {"estimated_arithmetic_flops": 50}
+        }
+        invalid["work"]["policy"] = 570  # type: ignore[index]
+        shots.extend([mismatch, benign, invalid])
     return {
         "schema_version": 1,
         "status": "falsified_exact_outcome_preservation",
@@ -341,18 +354,18 @@ def _small_source() -> dict[str, object]:
         "per_rate": [
             {
                 "error_rate": rate,
-                "shots": 2,
+                "shots": 3,
                 "class_mismatches": 1,
                 "outcome_discordances": 1,
-                "fallbacks": 0,
+                "fallbacks": 1,
             }
             for rate in (0.1, 0.15)
         ],
         "work": {
             "totals": {
-                "policy": 880,
-                "fixed_chi8": 1600,
-                "exact": 8000,
+                "policy": 2020,
+                "fixed_chi8": 2400,
+                "exact": 12000,
             }
         },
     }
@@ -363,11 +376,23 @@ def test_build_diagnostic_audit_checks_source_and_separates_exploratory_results(
 
     assert audit["source"]["sha256"] == "a" * 64
     assert audit["source_consistency"]["passed"] is True
-    assert len(audit["rows"]) == 4
+    assert len(audit["rows"]) == 6
     assert len(audit["common_mode_reference_mismatches"]) == 2
     assert len(audit["margin_matched_controls"]) == 2
     assert audit["exploratory_discrimination"]["development_only"] is True
     assert audit["exploratory_discrimination"]["accepted_agreement_shots"] == 4
+    margin_gate = audit["development_zero_mismatch_margin_gate"]
+    assert margin_gate["selected_on_revealed_labels"] is True
+    assert margin_gate["accepted_reference_mismatches"] == 0
+    assert margin_gate["threshold_rule"] == "accept only when tolerance_minimum_margin > threshold"
+    assert margin_gate["cheap_accepts"] == 2
+    assert margin_gate["escalations"] == 4
+    assert margin_gate["projected_work"]["estimated_arithmetic_flops"] == 2820
+    assert margin_gate["projected_work"]["ratio_to_fixed_chi8"] == pytest.approx(1.175)
+    invalid_rows = [row for row in audit["rows"] if row["decision"]["used_fallback"]]
+    assert len(invalid_rows) == 2
+    assert all(row["work"]["cheap_estimated_arithmetic_flops"] == 170 for row in invalid_rows)
+    assert margin_gate["claim_status"] == "development_hypothesis_only"
     assert audit["availability_ledger"] == diagnostic_availability_ledger()
     assert "calibrated safety" in " ".join(audit["nonclaims"]).lower()
 
