@@ -12,6 +12,7 @@
   "margin_threshold": 0.30710401263493464,
   "positive_gain_threshold": 1e-6,
   "oracle_tie_relative_tolerance": 1e-12,
+  "oracle_tie_absolute_tolerance": 0.0,
   "efficiency_unique_relative_separation": 0.01,
   "probe_action_ids": ["columns_tol01", "rows_tol01"],
   "actions": [

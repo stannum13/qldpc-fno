@@ -61,6 +61,7 @@ _PILOT_CONFIG_KEYS = {
     "margin_threshold",
     "positive_gain_threshold",
     "oracle_tie_relative_tolerance",
+    "oracle_tie_absolute_tolerance",
     "efficiency_unique_relative_separation",
     "probe_action_ids",
     "actions",
@@ -104,6 +105,7 @@ class PilotConfig:
     margin_threshold: float
     positive_gain_threshold: float
     oracle_tie_relative_tolerance: float
+    oracle_tie_absolute_tolerance: float
     efficiency_unique_relative_separation: float
     probe_action_ids: tuple[str, str]
     actions: tuple[ActionConfig, ...]
@@ -122,9 +124,20 @@ class ShotConfig:
     noise_model: str
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key}")
+        result[key] = value
+    return result
+
+
 def _load_object(path: Path) -> dict[str, object]:
     try:
-        value = json.loads(Path(path).read_text())
+        value = json.loads(
+            Path(path).read_text(), object_pairs_hook=_reject_duplicate_json_keys
+        )
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid JSON configuration: {path}") from error
     if not isinstance(value, dict):
@@ -193,12 +206,18 @@ def load_pilot_config(path: Path) -> PilotConfig:
         raise ValueError("unsupported pilot schema or identity")
     if payload["required_shot_seed_domain"] != _SEED_DOMAIN:
         raise ValueError("required_shot_seed_domain must use the frozen pilot domain")
-    if payload["required_shots_per_rate"] != 64:
+    if type(payload["required_shots_per_rate"]) is not int or payload[
+        "required_shots_per_rate"
+    ] != 64:
         raise ValueError("required_shots_per_rate must be exactly 64")
     rates = payload["required_error_rates"]
     if not isinstance(rates, list) or tuple(_finite_float(rate, "required_error_rates") for rate in rates) != _ERROR_RATES:
         raise ValueError("required_error_rates must be exactly [0.1, 0.15]")
-    if payload["code_distance"] != 5 or payload["noise_model"] != _NOISE_MODEL:
+    if (
+        type(payload["code_distance"]) is not int
+        or payload["code_distance"] != 5
+        or payload["noise_model"] != _NOISE_MODEL
+    ):
         raise ValueError("pilot code identity must be the frozen planar noise model")
     modes = payload["reference_modes"]
     if not isinstance(modes, list) or tuple(modes) != _REFERENCE_MODES:
@@ -216,6 +235,9 @@ def load_pilot_config(path: Path) -> PilotConfig:
     tie_tolerance = _positive_finite_float(
         payload["oracle_tie_relative_tolerance"], "oracle_tie_relative_tolerance"
     )
+    absolute_tie_tolerance = _finite_float(
+        payload["oracle_tie_absolute_tolerance"], "oracle_tie_absolute_tolerance"
+    )
     efficiency_separation = _positive_finite_float(
         payload["efficiency_unique_relative_separation"],
         "efficiency_unique_relative_separation",
@@ -226,6 +248,7 @@ def load_pilot_config(path: Path) -> PilotConfig:
         or threshold != MARGIN_THRESHOLD
         or positive_gain != 1e-6
         or tie_tolerance != 1e-12
+        or absolute_tie_tolerance != 0.0
         or efficiency_separation != 0.01
     ):
         raise ValueError("pilot numerical constants must match the frozen values")
@@ -247,6 +270,7 @@ def load_pilot_config(path: Path) -> PilotConfig:
         margin_threshold=threshold,
         positive_gain_threshold=positive_gain,
         oracle_tie_relative_tolerance=tie_tolerance,
+        oracle_tie_absolute_tolerance=absolute_tie_tolerance,
         efficiency_unique_relative_separation=efficiency_separation,
         probe_action_ids=("columns_tol01", "rows_tol01"),
         actions=actions,
@@ -271,7 +295,9 @@ def load_shot_config(path: Path) -> ShotConfig:
     if (
         type(payload["schema_version"]) is not int
         or payload["schema_version"] != 1
+        or type(payload["code_distance"]) is not int
         or payload["code_distance"] != 5
+        or type(payload["shots_per_rate"]) is not int
         or payload["shots_per_rate"] != 64
         or payload["noise_model"] != _NOISE_MODEL
     ):

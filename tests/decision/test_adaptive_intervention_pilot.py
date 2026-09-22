@@ -36,6 +36,7 @@ def test_config_freezes_the_literal_action_table_and_policy_constants() -> None:
     assert config.reference_log_ratio_tolerance == 1e-8
     assert config.positive_gain_threshold == 1e-6
     assert config.oracle_tie_relative_tolerance == 1e-12
+    assert config.oracle_tie_absolute_tolerance == 0.0
     assert config.efficiency_unique_relative_separation == 0.01
     assert tuple(action.action_id for action in config.actions) == ACTION_IDS
     assert tuple((action.mode, action.chi, action.tol) for action in config.actions) == (
@@ -79,12 +80,17 @@ def test_shot_config_has_the_frozen_identity_and_derived_seed() -> None:
         ("pilot", {"unexpected": True}),
         ("pilot", {"schema_version": 2}),
         ("pilot", {"schema_version": True}),
+        ("pilot", {"required_shots_per_rate": 64.0}),
+        ("pilot", {"code_distance": 5.0}),
         ("pilot", {"margin_threshold": float("nan")}),
+        ("pilot", {"oracle_tie_absolute_tolerance": 1e-9}),
         ("pilot", {"actions": []}),
         ("pilot", {"probe_action_ids": ["columns_tol01", "columns_tol01"]}),
         ("shots", {"unexpected": True}),
         ("shots", {"schema_version": 2}),
         ("shots", {"schema_version": True}),
+        ("shots", {"code_distance": 5.0}),
+        ("shots", {"shots_per_rate": 64.0}),
         ("shots", {"campaign_seed": 0}),
         ("shots", {"error_rates": [0.1, 0.15, 0.2]}),
     ],
@@ -100,6 +106,41 @@ def test_config_parser_rejects_noncanonical_values(
 
     loader = load_pilot_config if config_name == "pilot" else load_shot_config
     with pytest.raises(ValueError):
+        loader(path)
+
+
+@pytest.mark.parametrize(
+    ("config_name", "replacement"),
+    [
+        (
+            "shots",
+            (
+                '"campaign_seed": 16980117767564665917',
+                '"campaign_seed": 0,\n  "campaign_seed": 16980117767564665917',
+            ),
+        ),
+        (
+            "pilot",
+            (
+                '"action_id": "columns_chi2", "mode": "columns"',
+                (
+                    '"action_id": "wrong", "action_id": "columns_chi2", '
+                    '"mode": "columns"'
+                ),
+            ),
+        ),
+    ],
+)
+def test_config_parser_rejects_duplicate_json_keys(
+    tmp_path: Path, config_name: str, replacement: tuple[str, str]
+) -> None:
+    source = _PILOT_CONFIG if config_name == "pilot" else _SHOT_CONFIG
+    malformed = source.read_text().replace(*replacement, 1)
+    path = tmp_path / f"duplicate-{config_name}.json"
+    path.write_text(malformed)
+
+    loader = load_pilot_config if config_name == "pilot" else load_shot_config
+    with pytest.raises(ValueError, match="duplicate JSON object key"):
         loader(path)
 
 
