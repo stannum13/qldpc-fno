@@ -194,7 +194,7 @@ vectors can change the winning class in the harmful direction.
 The strongest harmful escalated example is
 `d5/p0.150000/i000026`: `columns_tol03` has gain
 `-0.7221565719124328` and introduces a class mismatch and physical failure.
-At p=.10 the largest TV harm is `rows_chi2` on
+Among escalated p=.10 shots, the largest TV harm is `rows_chi2` on
 `d5/p0.100000/i000027`, gain `-0.39298193769461964`, although its class
 remains matched. Posterior fidelity, reference-class agreement, and physical
 success are distinct endpoints and must remain distinct.
