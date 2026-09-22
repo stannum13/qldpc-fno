@@ -126,6 +126,7 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         "pairwise_output_elements": 0,
         "decomposition_input_elements": 0,
         "estimated_dense_decomposition_flops": 0,
+        "decomposition_attempts": [],
         "peak_observed_array_elements": 0,
         "truncation_events": [],
         "contraction_sweeps": [],
@@ -203,13 +204,40 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         observe(operands, result)
         return result
 
-    def svd(matrix: np.ndarray, *args: Any, **kwargs: Any) -> Any:
-        result = original_svd(matrix, *args, **kwargs)
+    @contextmanager
+    def decomposition_attempt(
+        kind: str, matrix: np.ndarray, estimated_flops: int
+    ) -> Iterator[None]:
+        """Charge each numerical call, including failures and subsequent retries."""
         m, n = matrix.shape
-        trace["svd_calls"] += 1
+        trace[f"{kind}_calls"] += 1
         trace["decomposition_input_elements"] += int(matrix.size)
+        trace["estimated_dense_decomposition_flops"] += estimated_flops
+        attempt = {
+            "decomposition_kind": kind,
+            "matrix_rows": int(m),
+            "matrix_columns": int(n),
+            "estimated_flops": estimated_flops,
+            "succeeded": False,
+            "exception_type": None,
+        }
+        attempts = trace["decomposition_attempts"]
+        assert isinstance(attempts, list)
+        attempts.append(attempt)
+        observe(matrix)
+        try:
+            yield
+        except Exception as error:
+            attempt["exception_type"] = type(error).__name__
+            raise
+        else:
+            attempt["succeeded"] = True
+
+    def svd(matrix: np.ndarray, *args: Any, **kwargs: Any) -> Any:
+        m, n = matrix.shape
         rank = min(m, n)
-        trace["estimated_dense_decomposition_flops"] += int(4 * m * n * rank + 8 * rank**3)
+        with decomposition_attempt("svd", matrix, int(4 * m * n * rank + 8 * rank**3)):
+            result = original_svd(matrix, *args, **kwargs)
         if active_truncation is not None:
             singular_values = np.asarray(result[1], dtype=np.float64)
             requested_tol = active_truncation["requested_tol"]
@@ -292,12 +320,10 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         return result
 
     def qr(matrix: np.ndarray, *args: Any, **kwargs: Any) -> Any:
-        result = original_qr(matrix, *args, **kwargs)
         m, n = matrix.shape
-        trace["qr_calls"] += 1
-        trace["decomposition_input_elements"] += int(matrix.size)
         rank = min(m, n)
-        trace["estimated_dense_decomposition_flops"] += int(2 * m * n * rank - (2 * rank**3) / 3)
+        with decomposition_attempt("qr", matrix, int(2 * m * n * rank - (2 * rank**3) / 3)):
+            result = original_qr(matrix, *args, **kwargs)
         observe(matrix, result)
         return result
 

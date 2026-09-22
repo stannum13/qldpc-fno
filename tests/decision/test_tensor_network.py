@@ -12,6 +12,151 @@ from qldpc_fno.decision.tensor_network import (
 )
 
 
+@pytest.mark.parametrize(("kind", "expected_flops"), [("svd", 112), ("qr", 18)])
+@pytest.mark.parametrize("in_sweep", [False, True])
+def test_failed_decomposition_attempt_is_charged_before_call_and_restores_wrappers(
+    monkeypatch: pytest.MonkeyPatch, kind: str, expected_flops: int, in_sweep: bool
+) -> None:
+    mps = tensor_network.qecsim_mps
+    matrix = np.ones((3, 2))
+    failure = np.linalg.LinAlgError("injected decomposition failure")
+    observed = {}
+
+    def fail(*args: object, **kwargs: object) -> object:
+        observed["calls"] = work[f"{kind}_calls"]
+        observed["flops"] = work["estimated_dense_decomposition_flops"]
+        observed["attempts"] = [dict(item) for item in work.get("decomposition_attempts", [])]
+        raise failure
+
+    def contract(*args: object, **kwargs: object) -> object:
+        return getattr(mps.sp_linalg, kind)(matrix)
+
+    monkeypatch.setattr(mps.sp_linalg, kind, fail)
+    monkeypatch.setattr(mps2d, "contract", contract)
+    originals = (
+        mps.contract_pairwise,
+        mps.truncate,
+        mps.sp_linalg.svd,
+        mps.sp_linalg.qr,
+        mps.np.einsum,
+        mps2d.contract,
+    )
+    with (
+        pytest.raises(np.linalg.LinAlgError) as captured,
+        tensor_network._trace_mps_work() as work,
+    ):
+        if in_sweep:
+            mps2d.contract(np.empty((2, 3), dtype=object))
+        else:
+            getattr(mps.sp_linalg, kind)(matrix)
+
+    assert captured.value is failure
+    assert observed["calls"] == 1
+    assert observed["flops"] == expected_flops
+    attempt = {
+        "decomposition_kind": kind,
+        "matrix_rows": 3,
+        "matrix_columns": 2,
+        "estimated_flops": expected_flops,
+        "succeeded": False,
+        "exception_type": None,
+    }
+    assert observed["attempts"] == [attempt]
+    assert work["decomposition_attempts"] == [attempt | {"exception_type": "LinAlgError"}]
+    assert work[f"{kind}_calls"] == 1
+    assert work["decomposition_input_elements"] == 6
+    assert work["estimated_arithmetic_flops"] == expected_flops
+    assert work["truncation_events"] == []
+    sweeps = work["contraction_sweeps"]
+    assert len(sweeps) == int(in_sweep)
+    if in_sweep:
+        assert sweeps[0]["failure"]["exception_type"] == "LinAlgError"
+        assert sweeps[0]["estimated_arithmetic_flops"] == expected_flops
+    assert work["terminal_residual_estimated_arithmetic_flops"] == (
+        0 if in_sweep else expected_flops
+    )
+    assert (
+        sum(sweep["estimated_arithmetic_flops"] for sweep in sweeps)
+        + work["terminal_residual_estimated_arithmetic_flops"]
+        == work["estimated_arithmetic_flops"]
+    )
+    assert (
+        mps.contract_pairwise,
+        mps.truncate,
+        mps.sp_linalg.svd,
+        mps.sp_linalg.qr,
+        mps.np.einsum,
+        mps2d.contract,
+    ) == originals
+
+
+@pytest.mark.parametrize(("kind", "expected_flops"), [("svd", 112), ("qr", 18)])
+def test_successful_decomposition_attempt_metadata(kind: str, expected_flops: int) -> None:
+    with tensor_network._trace_mps_work() as work:
+        getattr(tensor_network.qecsim_mps.sp_linalg, kind)(np.ones((2, 3)))
+
+    assert work["decomposition_attempts"] == [
+        {
+            "decomposition_kind": kind,
+            "matrix_rows": 2,
+            "matrix_columns": 3,
+            "estimated_flops": expected_flops,
+            "succeeded": True,
+            "exception_type": None,
+        }
+    ]
+    assert work["estimated_dense_decomposition_flops"] == expected_flops
+    assert work["estimated_arithmetic_flops"] == expected_flops
+
+
+def test_svd_retry_charges_both_attempts_and_only_summarizes_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mps = tensor_network.qecsim_mps
+    original_svd = mps.sp_linalg.svd
+    drivers = []
+
+    def fail_first(matrix: np.ndarray, *args: object, **kwargs: object) -> object:
+        drivers.append(kwargs["lapack_driver"])
+        if len(drivers) == 1:
+            raise np.linalg.LinAlgError("retry with gesvd")
+        return original_svd(matrix, *args, **kwargs)
+
+    def retrying_truncate(tensors: object, **kwargs: object) -> object:
+        matrix = np.array([[3.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+        try:
+            mps.sp_linalg.svd(matrix, full_matrices=False, lapack_driver="gesdd")
+        except np.linalg.LinAlgError:
+            mps.sp_linalg.svd(matrix, full_matrices=False, lapack_driver="gesvd")
+        return tensors, 1.0
+
+    monkeypatch.setattr(mps.sp_linalg, "svd", fail_first)
+    monkeypatch.setattr(mps, "truncate", retrying_truncate)
+    with tensor_network._trace_mps_work() as work:
+        mps.truncate([np.ones((1, 2, 1, 2))], chi=1)
+
+    assert drivers == ["gesdd", "gesvd"]
+    assert work["svd_calls"] == 2
+    assert work["decomposition_input_elements"] == 12
+    assert work["estimated_dense_decomposition_flops"] == 224
+    assert work["estimated_arithmetic_flops"] == 224
+    assert work["terminal_residual_estimated_arithmetic_flops"] == 224
+    attempts = work["decomposition_attempts"]
+    assert [(item["succeeded"], item["exception_type"]) for item in attempts] == [
+        (False, "LinAlgError"),
+        (True, None),
+    ]
+    assert all(item["estimated_flops"] == 112 for item in attempts)
+    (event,) = work["truncation_events"]
+    assert event["cumulative_estimated_arithmetic_flops"] == 224
+    (spectrum,) = event["spectral_summaries"]
+    assert spectrum["singular_value_count"] == 2
+    assert spectrum["retained_rank"] == 1
+    assert spectrum["discarded_squared_weight_fraction"] == pytest.approx(0.1)
+    assert mps.sp_linalg.svd is fail_first
+    assert mps.truncate is retrying_truncate
+
+
 def test_unrestricted_mps_matches_independent_coset_enumeration() -> None:
     syndrome = np.array([0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0], dtype=np.uint8)
 
