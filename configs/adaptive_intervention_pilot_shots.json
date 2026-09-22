@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "seed_domain": "qldpc-fno/adaptive-intervention-pilot/v1",
+  "campaign_seed": 16980117767564665917,
+  "code_distance": 5,
+  "error_rates": [0.1, 0.15],
+  "shots_per_rate": 64,
+  "noise_model": "qecsim_iid_depolarizing_code_capacity"
+}

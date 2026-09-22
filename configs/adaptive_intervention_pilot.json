@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "pilot_id": "adaptive_intervention_pilot_v1",
+  "required_shot_seed_domain": "qldpc-fno/adaptive-intervention-pilot/v1",
+  "required_shots_per_rate": 64,
+  "required_error_rates": [0.1, 0.15],
+  "code_distance": 5,
+  "noise_model": "qecsim_iid_depolarizing_code_capacity",
+  "reference_modes": ["columns", "rows"],
+  "reference_probability_tolerance": 1e-10,
+  "reference_log_ratio_tolerance": 1e-8,
+  "margin_threshold": 0.30710401263493464,
+  "positive_gain_threshold": 1e-6,
+  "oracle_tie_relative_tolerance": 1e-12,
+  "efficiency_unique_relative_separation": 0.01,
+  "probe_action_ids": ["columns_tol01", "rows_tol01"],
+  "actions": [
+    {"action_id": "columns_chi2", "mode": "columns", "chi": 2, "tol": null},
+    {"action_id": "rows_chi2", "mode": "rows", "chi": 2, "tol": null},
+    {"action_id": "columns_chi4", "mode": "columns", "chi": 4, "tol": null},
+    {"action_id": "rows_chi4", "mode": "rows", "chi": 4, "tol": null},
+    {"action_id": "columns_chi8", "mode": "columns", "chi": 8, "tol": null},
+    {"action_id": "rows_chi8", "mode": "rows", "chi": 8, "tol": null},
+    {"action_id": "columns_chi16", "mode": "columns", "chi": 16, "tol": null},
+    {"action_id": "rows_chi16", "mode": "rows", "chi": 16, "tol": null},
+    {"action_id": "columns_tol03", "mode": "columns", "chi": null, "tol": 0.03},
+    {"action_id": "rows_tol03", "mode": "rows", "chi": null, "tol": 0.03},
+    {"action_id": "columns_tol01", "mode": "columns", "chi": null, "tol": 0.01},
+    {"action_id": "rows_tol01", "mode": "rows", "chi": null, "tol": 0.01},
+    {"action_id": "columns_tol003", "mode": "columns", "chi": null, "tol": 0.003},
+    {"action_id": "rows_tol003", "mode": "rows", "chi": null, "tol": 0.003}
+  ]
+}
