@@ -55,6 +55,11 @@ and agree within the existing probability and log-ratio certificate tolerances.
 An invalid or uncertified reference invalidates the shot for posterior-target
 analysis but remains recorded and charged.
 
+For a certified shot, the target posterior is the arithmetic mean of the two
+separately normalized unrestricted row and column probability vectors, normalized
+once more after averaging. This symmetric definition is fixed before sampling;
+the certificate ensures the two inputs already agree within the declared bounds.
+
 For every valid approximate action, store normalized class probabilities,
 selected logical class, stable work counters, and spectral summaries. Score its
 class recovery against the joined physical error by residual logical
@@ -68,6 +73,9 @@ Compare each action with the certified reference using:
 - Jensen-Shannon divergence;
 - reference-conditional excess decision risk; and
 - fully charged estimated arithmetic FLOPs.
+
+Jensen-Shannon divergence uses natural logarithms and is reported in nats, with
+the standard convention that a zero-probability numerator contributes zero.
 
 Exact posteriors and physical outcomes are labels only. They may define offline
 utility and oracle opportunity, never an inference-time feature.
@@ -87,9 +95,24 @@ Negative benefit is retained. Also report whether the candidate repairs or
 introduces a logical-class mismatch and whether it changes the realized physical
 outcome.
 
+The candidate set excludes the two probes and therefore contains the remaining
+12 approximate actions. A gain is positive only when it exceeds `1e-6`; this
+prevents numerical noise from becoming action-selection opportunity.
+
 The per-shot offline oracle selects the valid candidate with the greatest
-positive TV reduction and breaks ties by lower composite work, then frozen action
-order. It is an opportunity bound, not a deployable policy.
+positive TV reduction. Gains within `1e-12` are tied and are broken by lower
+composite work, then frozen action order. If no candidate gain exceeds `1e-6`,
+the winner ID is null and the shot has no measured action opportunity. A winner
+is unique for the advance rule only when its gain exceeds the runner-up by more
+than `1e-6`. The oracle is an opportunity bound, not a deployable policy.
+
+The inference-visible pre-action feature set is frozen to physical error rate,
+syndrome Hamming weight, both probe selected classes, class agreement, both
+winning-class margins and their minimum, cross-probe TV and Jensen-Shannon
+divergence, each probe's stable arithmetic work, and each probe's compact
+spectral summaries. Invalidity flags replace unavailable values. The pilot may
+show descriptive winner counts or plots over these features, but it may not
+search feature subsets or fit and evaluate a controller on the same 128 shots.
 
 ## Outputs and decision rule
 
@@ -101,16 +124,23 @@ tracked summary and a human-readable result note report:
 - escalated-shot count by rate;
 - paired error distributions by action;
 - how often each action is the oracle winner;
-- whether winner identity varies with inference-visible pre-action features; and
+- descriptive winner counts across the frozen inference-visible features, with
+  no fitted controller or significance claim; and
 - the strongest beneficial and harmful counterexamples.
+
+All 128 shots remain in the total and invalid-reference denominators. Posterior
+metrics use the certified-reference denominator, which is reported separately.
+Any invalid or uncertified unrestricted reference makes both advancement clauses
+false; it cannot be hidden by complete-case analysis.
 
 Advance to a frozen risk-ladder contract only if at least one of these is true:
 
-1. the unchanged margin gate retains useful cheap coverage and its escalated
-   cases have no evidence of a systematically invalid reference; or
-2. at least two nonduplicate candidate actions are uniquely best on different
-   escalated shots with positive TV reduction, establishing action-selection
-   opportunity.
+1. all 128 references certify and the unchanged margin gate accepts at least 50%
+   of shots separately at each physical error rate; or
+2. all 128 references certify and at least two distinct candidate action IDs are
+   uniquely best on different escalated shots with TV reduction greater than
+   `1e-6` and winner-to-runner-up separation greater than `1e-6`, establishing
+   bounded action-selection opportunity.
 
 The pilot cannot establish safety or superiority. If no heterogeneous positive
 opportunity appears, the next contract tests only the simple margin gate with a
