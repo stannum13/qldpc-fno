@@ -17,8 +17,8 @@ are development data forever and cannot confirm a policy selected from them.
 
 ## Immutable data identity
 
-- Seed domain: `qldpc-fno/adaptive-intervention-pilot/v2`
-- Campaign seed: `8908597917812360592`, the unsigned big-endian integer formed
+- Seed domain: `qldpc-fno/adaptive-intervention-pilot/v3`
+- Campaign seed: `10044421296420932682`, the unsigned big-endian integer formed
   from the first eight bytes of SHA-256 over the seed domain.
 - Code: qecsim distance-five planar code.
 - Noise: qecsim iid depolarizing code-capacity noise.
@@ -33,7 +33,12 @@ and future confirmation domain.
 The former `qldpc-fno/adaptive-intervention-pilot/v1` identity is retired: test
 fixtures generated its index-zero physical error at both rates before the final
 preregistration review. No full v1 artifact or contraction result was produced,
-but v1 is not an unopened domain. Tests use only the reserved
+but v1 is not an unopened domain. The later v2 identity is also retired. A
+concurrent, ultimately failing integration run overlapped the v2 config change,
+and its surviving log was insufficient to prove that an older fixture helper
+could not have derived v2 index-zero shots. No v2 scientific artifact or known
+contraction result exists; retirement avoids relying on uncertain chronology.
+Tests use only the reserved
 `qldpc-fno/adaptive-intervention-pilot/test-fixture/v1` domain (campaign seed
 `1727822112359709271`), which scientific mode rejects.
 
@@ -128,7 +133,8 @@ with the greatest TV reduction divided by fully charged composite FLOPs. Both
 require TV gain greater than `1e-6`; otherwise their winner ID is null. Numerical
 ties use `rel_tol=1e-12`, `abs_tol=0`, then lower composite work, then the literal
 action order above. The accuracy winner is uniquely separated only when its gain
-exceeds the second-highest gain among every other valid candidate by more than
+exceeds the highest gain among every other valid candidate (the overall
+runner-up) by more than
 `1e-6`; candidates below the positive-gain floor still serve as accuracy
 runner-up comparators. If no other valid candidate exists, the accuracy winner
 is uniquely separated. The efficiency winner is uniquely

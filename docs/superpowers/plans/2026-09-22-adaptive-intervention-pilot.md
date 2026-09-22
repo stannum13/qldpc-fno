@@ -43,8 +43,8 @@ outside Git and publish a checksummed manifest, compact summary, and result note
 3. Implement strict immutable config parsing. Freeze the 14 actions in the order
    declared by the design. Reject extra fields and non-finite values.
 4. Add the shot-generator config with 64 shots at each of `0.10` and `0.15` in
-   seed domain `qldpc-fno/adaptive-intervention-pilot/v2` and campaign seed
-   `8908597917812360592`.
+   seed domain `qldpc-fno/adaptive-intervention-pilot/v3` and campaign seed
+   `10044421296420932682`.
 5. Rerun the focused tests and Ruff.
 6. Commit: `feat: freeze adaptive intervention pilot`.
 
@@ -121,7 +121,7 @@ outside Git and publish a checksummed manifest, compact summary, and result note
    - byte-identical reduced replay;
    - CLI nonzero failure with no partial published output.
 2. Implement the runner and CLI. Raw output goes to
-   `artifacts/adaptive-intervention-pilot-v1/intervention_pilot.json`, already
+   `artifacts/adaptive-intervention-pilot-v3/intervention_pilot.json`, already
    covered by the repository's ignored `artifacts/` directory.
 3. Derive a compact summary without errors, syndromes, recovery strings, or full
    work traces. The summary must bind raw/config/shot hashes and reproduce counts
@@ -144,10 +144,10 @@ outside Git and publish a checksummed manifest, compact summary, and result note
 
 **Produces:**
 
-- `artifacts/adaptive-intervention-pilot-v1/shots/planar_shots.json`
-- `artifacts/adaptive-intervention-pilot-v1/result/intervention_pilot.json`
-- `evidence/adaptive-computation/intervention-pilot-v1/summary.json`
-- `evidence/adaptive-computation/intervention-pilot-v1/manifest.json`
+- `artifacts/adaptive-intervention-pilot-v3/shots/planar_shots.json`
+- `artifacts/adaptive-intervention-pilot-v3/result/intervention_pilot.json`
+- `evidence/adaptive-computation/intervention-pilot-v3/summary.json`
+- `evidence/adaptive-computation/intervention-pilot-v3/manifest.json`
 
 1. Verify clean Git status and record the exact commit.
 2. Generate immutable joined shots:
@@ -155,7 +155,7 @@ outside Git and publish a checksummed manifest, compact summary, and result note
    ```bash
    uv run python experiments/31_generate_planar_shots.py \
      --config configs/adaptive_intervention_pilot_shots.json \
-     --out artifacts/adaptive-intervention-pilot-v1/shots
+     --out artifacts/adaptive-intervention-pilot-v3/shots
    ```
 
 3. Run the full action grid:
@@ -163,8 +163,8 @@ outside Git and publish a checksummed manifest, compact summary, and result note
    ```bash
    uv run python experiments/35_run_adaptive_intervention_pilot.py \
      --config configs/adaptive_intervention_pilot.json \
-     --shots artifacts/adaptive-intervention-pilot-v1/shots/planar_shots.json \
-     --out artifacts/adaptive-intervention-pilot-v1/result
+     --shots artifacts/adaptive-intervention-pilot-v3/shots/planar_shots.json \
+     --out artifacts/adaptive-intervention-pilot-v3/result
    ```
 
 4. Do not change the config, code, action set, or sample count after inspecting
