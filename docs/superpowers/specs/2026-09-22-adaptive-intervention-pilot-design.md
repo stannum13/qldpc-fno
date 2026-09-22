@@ -40,6 +40,16 @@ Every shot receives the same actions:
 | Local spectral tolerance | columns, rows | `tol = 0.03, 0.01, 0.003` |
 | Unrestricted reference | columns, rows | `chi = None`, `tol = None` |
 
+The literal approximate-action order is:
+
+1. `columns_chi2`, `rows_chi2`;
+2. `columns_chi4`, `rows_chi4`;
+3. `columns_chi8`, `rows_chi8`;
+4. `columns_chi16`, `rows_chi16`;
+5. `columns_tol03`, `rows_tol03`;
+6. `columns_tol01`, `rows_tol01`; and
+7. `columns_tol003`, `rows_tol003`.
+
 This is 14 approximate actions and two reference views per shot. The two
 `tol=0.01` actions are the initial cheap state used by the retrospective gate.
 They are computed once and reused in offline composite-policy accounting.
@@ -99,12 +109,16 @@ The candidate set excludes the two probes and therefore contains the remaining
 12 approximate actions. A gain is positive only when it exceeds `1e-6`; this
 prevents numerical noise from becoming action-selection opportunity.
 
-The per-shot offline oracle selects the valid candidate with the greatest
-positive TV reduction. Gains within `1e-12` are tied and are broken by lower
-composite work, then frozen action order. If no candidate gain exceeds `1e-6`,
-the winner ID is null and the shot has no measured action opportunity. A winner
-is unique for the advance rule only when its gain exceeds the runner-up by more
-than `1e-6`. The oracle is an opportunity bound, not a deployable policy.
+Two offline oracles are reported. The accuracy oracle selects the valid candidate
+with the greatest TV reduction. The efficiency oracle selects the valid candidate
+with the greatest TV reduction divided by fully charged composite FLOPs. Both
+require TV gain greater than `1e-6`; otherwise their winner ID is null. Numerical
+ties use `rel_tol=1e-12`, `abs_tol=0`, then lower composite work, then the literal
+action order above. The accuracy winner is uniquely separated only when its gain
+exceeds the runner-up by more than `1e-6`. The efficiency winner is uniquely
+separated only when the runner-up is absent or its efficiency is positive and
+the best efficiency exceeds it by more than 1%. Both are opportunity bounds, not
+deployable policies. Controller advancement uses only the efficiency oracle.
 
 The inference-visible pre-action feature set is frozen to physical error rate,
 syndrome Hamming weight, both probe selected classes, class agreement, both
@@ -133,14 +147,28 @@ metrics use the certified-reference denominator, which is reported separately.
 Any invalid or uncertified unrestricted reference makes both advancement clauses
 false; it cannot be hidden by complete-case analysis.
 
+One physical shot is the independent statistical unit. Its 14 action rows are
+paired repeated measurements, never 14 samples. Report every endpoint separately
+at each error rate and as an equal-weight mixture of the two rate-level estimates.
+Any bootstrap resamples complete per-shot action vectors within rate and then
+combines the two strata with equal weight.
+
+Gate coverage uses all 128 shots; an invalid probe escalates. Action validity and
+per-action physical logical-failure rates use all 128 attempted shots, with an
+invalid action counted as a system failure. Posterior distances and reference
+outcome discordance use only certified references and always display that
+denominator. Invalid candidates are ineligible for both oracles but remain in
+action-validity, work, and attempted-shot counts.
+
 Advance to a frozen risk-ladder contract only if at least one of these is true:
 
 1. all 128 references certify and the unchanged margin gate accepts at least 50%
    of shots separately at each physical error rate; or
 2. all 128 references certify and at least two distinct candidate action IDs are
-   uniquely best on different escalated shots with TV reduction greater than
-   `1e-6` and winner-to-runner-up separation greater than `1e-6`, establishing
-   bounded action-selection opportunity.
+   uniquely best under the efficiency oracle on different escalated shots, each
+   with TV reduction greater than `1e-6` and more than 1% efficiency separation
+   from its runner-up, establishing bounded cost-aware action-selection
+   opportunity.
 
 The pilot cannot establish safety or superiority. If no heterogeneous positive
 opportunity appears, the next contract tests only the simple margin gate with a

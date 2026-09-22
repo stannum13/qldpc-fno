@@ -65,7 +65,9 @@ outside Git and publish a checksummed manifest, compact summary, and result note
    - positive, zero, and negative candidate benefit;
    - the `1e-6` positive-gain and unique-winner separation floors and `1e-12`
      deterministic tie rule;
-   - deterministic oracle selection, including no-positive-gain and ties;
+   - separate accuracy and fully charged gain-per-FLOP efficiency oracles;
+   - deterministic oracle selection, including null winners, 1% efficiency
+     separation, and ties;
    - repair/introduction of class mismatch and physical outcome discordance.
 2. Run the focused tests and observe the expected failures.
 3. Implement small pure functions. Reuse stable diagnostic metrics where their
@@ -88,7 +90,9 @@ outside Git and publish a checksummed manifest, compact summary, and result note
    - invalid reference excluded from target metrics but fully charged;
    - any invalid reference forcing both advancement clauses false;
    - spectra recorded only after their action has run;
-   - the exact frozen pre-action feature set and separate label namespace.
+   - the exact frozen pre-action feature set and separate label namespace; and
+   - one-shot paired statistical units, per-rate/equal-rate summaries, and
+     complete-vector stratified bootstrap behavior.
 2. Implement action dispatch through `planar_mps_coset_masses(trace_work=True)`.
    Preserve complete stable work traces in raw output and derive compact spectral
    summaries. Do not catch programming/configuration errors as measured numerical
