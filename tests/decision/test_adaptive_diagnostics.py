@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import copy
 import math
 
 import numpy as np
 import pytest
 
 from qldpc_fno.decision.adaptive_diagnostics import (
+    build_diagnostic_audit,
     diagnostic_availability_ledger,
     extract_diagnostic_row,
     jensen_shannon_divergence,
     maximum_log_ratio_discrepancy,
     probability_margin,
+    rank_auc,
+    select_margin_matched_controls,
     summarize_spectra,
     total_variation,
 )
@@ -235,3 +239,150 @@ def test_diagnostic_availability_ledger_names_stage_and_cost_boundary() -> None:
     )
     assert by_signal["calibrated_ood_score"]["deployable_from_artifact"] is False
     assert all("fields" in entry and "cost_boundary" in entry for entry in ledger)
+
+
+def test_rank_auc_handles_separation_reversal_and_ties() -> None:
+    labels = [False, False, True, True]
+
+    assert rank_auc([0.0, 0.1, 0.9, 1.0], labels) == pytest.approx(1.0)
+    assert rank_auc([1.0, 0.9, 0.1, 0.0], labels) == pytest.approx(0.0)
+    assert rank_auc([1.0, 1.0, 1.0, 1.0], labels) == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("labels", ([False, False], [True, True]))
+def test_rank_auc_requires_both_label_classes(labels: list[bool]) -> None:
+    with pytest.raises(ValueError, match="both"):
+        rank_auc([0.0, 1.0], labels)
+
+
+def _compact_row(
+    shot_id: str,
+    *,
+    rate: float,
+    mismatch: bool,
+    margin: float,
+    disagreement: float,
+    accepted: bool = True,
+) -> dict[str, object]:
+    return {
+        "identity": {"shot_id": shot_id, "shot_index": 0, "error_rate": rate},
+        "decision": {
+            "accepted": accepted,
+            "used_fallback": not accepted,
+            "reference_valid": True,
+        },
+        "inference_features": {
+            "tolerance_minimum_margin": margin,
+            "tolerance_total_variation": disagreement,
+            "tolerance_jensen_shannon": disagreement / 2,
+            "tolerance_log_ratio_discrepancy": disagreement * 2,
+            "tolerance_maximum_discarded_squared_weight_fraction": disagreement / 10,
+            "tolerance_mean_spectral_entropy": 0.3,
+        },
+        "post_refinement_diagnostics": {
+            "column_to_fixed_chi8_total_variation": disagreement / 4
+        },
+        "reference_labels": {"class_mismatch": mismatch, "exact_margin": 0.2},
+        "physical_outcome_labels": {
+            "outcome_discordance": mismatch,
+            "exact_failure": mismatch,
+            "policy_failure": False,
+            "change_helped_realized_outcome": mismatch,
+            "change_harmed_realized_outcome": False,
+        },
+        "work": {
+            "cheap_estimated_arithmetic_flops": 10,
+            "policy_estimated_arithmetic_flops": 10,
+            "fixed_chi8_estimated_arithmetic_flops": 20,
+            "exact_estimated_arithmetic_flops": 30,
+        },
+    }
+
+
+def test_select_margin_matched_controls_is_same_rate_unique_and_deterministic() -> None:
+    rows = [
+        _compact_row("m0", rate=0.1, mismatch=True, margin=0.20, disagreement=0.9),
+        _compact_row("m1", rate=0.1, mismatch=True, margin=0.25, disagreement=0.8),
+        _compact_row("a", rate=0.1, mismatch=False, margin=0.19, disagreement=0.1),
+        _compact_row("b", rate=0.1, mismatch=False, margin=0.21, disagreement=0.2),
+        _compact_row("c", rate=0.1, mismatch=False, margin=0.26, disagreement=0.3),
+        _compact_row(
+            "fallback", rate=0.1, mismatch=False, margin=0.20, disagreement=0.0, accepted=False
+        ),
+        _compact_row("other-rate", rate=0.15, mismatch=False, margin=0.20, disagreement=0.0),
+    ]
+
+    pairs = select_margin_matched_controls(rows)
+
+    assert [(pair["mismatch_shot_id"], pair["control_shot_id"]) for pair in pairs] == [
+        ("m0", "a"),
+        ("m1", "c"),
+    ]
+    assert all(pair["error_rate"] == 0.1 for pair in pairs)
+    assert pairs[0]["paired_differences"]["tolerance_total_variation"] == pytest.approx(0.8)
+
+
+def _small_source() -> dict[str, object]:
+    shots: list[dict[str, object]] = []
+    for rate in (0.1, 0.15):
+        mismatch = _shot(mismatch=True)
+        mismatch["shot_id"] = f"d5/p{rate:.6f}/i000000"
+        mismatch["shot_index"] = 0
+        mismatch["error_rate"] = rate
+        benign = _shot(mismatch=False)
+        benign["shot_id"] = f"d5/p{rate:.6f}/i000001"
+        benign["shot_index"] = 1
+        benign["error_rate"] = rate
+        shots.extend([mismatch, benign])
+    return {
+        "schema_version": 1,
+        "status": "falsified_exact_outcome_preservation",
+        "shots": shots,
+        "per_rate": [
+            {
+                "error_rate": rate,
+                "shots": 2,
+                "class_mismatches": 1,
+                "outcome_discordances": 1,
+                "fallbacks": 0,
+            }
+            for rate in (0.1, 0.15)
+        ],
+        "work": {
+            "totals": {
+                "policy": 880,
+                "fixed_chi8": 1600,
+                "exact": 8000,
+            }
+        },
+    }
+
+
+def test_build_diagnostic_audit_checks_source_and_separates_exploratory_results() -> None:
+    audit = build_diagnostic_audit(_small_source(), source_sha256="a" * 64)
+
+    assert audit["source"]["sha256"] == "a" * 64
+    assert audit["source_consistency"]["passed"] is True
+    assert len(audit["rows"]) == 4
+    assert len(audit["common_mode_reference_mismatches"]) == 2
+    assert len(audit["margin_matched_controls"]) == 2
+    assert audit["exploratory_discrimination"]["development_only"] is True
+    assert audit["exploratory_discrimination"]["accepted_agreement_shots"] == 4
+    assert audit["availability_ledger"] == diagnostic_availability_ledger()
+    assert "calibrated safety" in " ".join(audit["nonclaims"]).lower()
+
+
+def test_build_diagnostic_audit_rejects_inconsistent_source_aggregates() -> None:
+    source = _small_source()
+    source["per_rate"][0]["class_mismatches"] = 0  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="source aggregate mismatch"):
+        build_diagnostic_audit(source, source_sha256="a" * 64)
+
+
+def test_build_diagnostic_audit_rejects_inconsistent_work_totals() -> None:
+    source = copy.deepcopy(_small_source())
+    source["work"]["totals"]["policy"] = 879  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="source work total mismatch"):
+        build_diagnostic_audit(source, source_sha256="a" * 64)

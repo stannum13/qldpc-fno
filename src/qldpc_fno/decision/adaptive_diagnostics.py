@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 
 import numpy as np
@@ -401,3 +402,317 @@ def diagnostic_availability_ledger() -> list[dict[str, object]]:
             "deployable_from_artifact": False,
         },
     ]
+
+
+def rank_auc(scores: Sequence[float], labels: Sequence[bool]) -> float:
+    """Return tie-aware ROC AUC using the Mann-Whitney rank identity."""
+    score_array = np.asarray(scores, dtype=np.float64)
+    label_array = np.asarray(labels)
+    if score_array.ndim != 1 or label_array.ndim != 1 or score_array.size != label_array.size:
+        raise ValueError("scores and labels must be equal-length vectors")
+    if score_array.size == 0 or np.any(~np.isfinite(score_array)):
+        raise ValueError("scores must be a nonempty finite vector")
+    if label_array.dtype != np.bool_:
+        if np.any((label_array != 0) & (label_array != 1)):
+            raise ValueError("labels must be boolean")
+        label_array = label_array.astype(bool)
+    positives = int(label_array.sum())
+    negatives = int(label_array.size - positives)
+    if positives == 0 or negatives == 0:
+        raise ValueError("labels must contain both classes")
+
+    order = np.argsort(score_array, kind="stable")
+    sorted_scores = score_array[order]
+    ranks = np.empty(score_array.size, dtype=np.float64)
+    start = 0
+    while start < sorted_scores.size:
+        stop = start + 1
+        while stop < sorted_scores.size and sorted_scores[stop] == sorted_scores[start]:
+            stop += 1
+        ranks[order[start:stop]] = 0.5 * ((start + 1) + stop)
+        start = stop
+    positive_rank_sum = float(ranks[label_array].sum())
+    mann_whitney = positive_rank_sum - positives * (positives + 1) / 2
+    return float(mann_whitney / (positives * negatives))
+
+
+_MATCHED_DIAGNOSTIC_FIELDS = (
+    "tolerance_total_variation",
+    "tolerance_jensen_shannon",
+    "tolerance_log_ratio_discrepancy",
+    "tolerance_maximum_discarded_squared_weight_fraction",
+    "tolerance_mean_spectral_entropy",
+)
+
+
+def _nested_mapping(row: Mapping[str, object], name: str) -> Mapping[str, object]:
+    value = row.get(name)
+    if not isinstance(value, Mapping):
+        raise TypeError(f"diagnostic row is missing {name}")
+    return value
+
+
+def select_margin_matched_controls(
+    rows: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Match each accepted mismatch to a unique same-rate benign margin neighbour."""
+    mismatch_rows = sorted(
+        (
+            row
+            for row in rows
+            if _nested_mapping(row, "decision").get("accepted") is True
+            and _nested_mapping(row, "reference_labels").get("class_mismatch") is True
+        ),
+        key=lambda row: str(_nested_mapping(row, "identity").get("shot_id")),
+    )
+    candidate_rows = [
+        row
+        for row in rows
+        if _nested_mapping(row, "decision").get("accepted") is True
+        and _nested_mapping(row, "reference_labels").get("class_mismatch") is False
+    ]
+    used: set[str] = set()
+    pairs: list[dict[str, object]] = []
+    for mismatch in mismatch_rows:
+        mismatch_identity = _nested_mapping(mismatch, "identity")
+        mismatch_features = _nested_mapping(mismatch, "inference_features")
+        rate = mismatch_identity.get("error_rate")
+        margin = mismatch_features.get("tolerance_minimum_margin")
+        if not isinstance(margin, (int, float)) or isinstance(margin, bool):
+            raise TypeError("accepted mismatch lacks a numeric cheap margin")
+        eligible = []
+        for control in candidate_rows:
+            identity = _nested_mapping(control, "identity")
+            features = _nested_mapping(control, "inference_features")
+            control_id = str(identity.get("shot_id"))
+            control_margin = features.get("tolerance_minimum_margin")
+            if (
+                identity.get("error_rate") == rate
+                and control_id not in used
+                and isinstance(control_margin, (int, float))
+                and not isinstance(control_margin, bool)
+            ):
+                distance = abs(float(control_margin) - float(margin))
+                eligible.append((round(distance, 15), control_id, distance, control))
+        if not eligible:
+            raise ValueError("no unique same-rate accepted control is available")
+        _, control_id, raw_distance, control = min(eligible, key=lambda item: (item[0], item[1]))
+        used.add(control_id)
+        control_features = _nested_mapping(control, "inference_features")
+        paired_differences: dict[str, float | None] = {}
+        for field in _MATCHED_DIAGNOSTIC_FIELDS:
+            mismatch_value = mismatch_features.get(field)
+            control_value = control_features.get(field)
+            paired_differences[field] = (
+                float(mismatch_value) - float(control_value)
+                if isinstance(mismatch_value, (int, float))
+                and not isinstance(mismatch_value, bool)
+                and isinstance(control_value, (int, float))
+                and not isinstance(control_value, bool)
+                else None
+            )
+        pairs.append(
+            {
+                "mismatch_shot_id": mismatch_identity.get("shot_id"),
+                "control_shot_id": control_id,
+                "error_rate": rate,
+                "mismatch_margin": float(margin),
+                "control_margin": float(control_features["tolerance_minimum_margin"]),
+                "absolute_margin_difference": raw_distance,
+                "paired_differences": paired_differences,
+            }
+        )
+    return pairs
+
+
+_AUDIT_SCORES = (
+    ("cross_view_total_variation", "inference_features", "tolerance_total_variation", 1.0),
+    ("cross_view_jensen_shannon", "inference_features", "tolerance_jensen_shannon", 1.0),
+    (
+        "cross_view_log_ratio_discrepancy",
+        "inference_features",
+        "tolerance_log_ratio_discrepancy",
+        1.0,
+    ),
+    ("negative_minimum_margin", "inference_features", "tolerance_minimum_margin", -1.0),
+    (
+        "maximum_discarded_squared_weight_fraction",
+        "inference_features",
+        "tolerance_maximum_discarded_squared_weight_fraction",
+        1.0,
+    ),
+    ("mean_spectral_entropy", "inference_features", "tolerance_mean_spectral_entropy", 1.0),
+    (
+        "post_refinement_column_drift",
+        "post_refinement_diagnostics",
+        "column_to_fixed_chi8_total_variation",
+        1.0,
+    ),
+)
+
+
+def _score_audit(
+    rows: Sequence[Mapping[str, object]], section: str, field: str, multiplier: float
+) -> dict[str, object]:
+    scores: list[float] = []
+    labels: list[bool] = []
+    for row in rows:
+        value = _nested_mapping(row, section).get(field)
+        label = _nested_mapping(row, "reference_labels").get("class_mismatch")
+        if (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and np.isfinite(value)
+            and type(label) is bool
+        ):
+            scores.append(multiplier * float(value))
+            labels.append(label)
+    positives = sum(labels)
+    negatives = len(labels) - positives
+    return {
+        "source_section": section,
+        "source_field": field,
+        "higher_score_means": "more_suspicious",
+        "observations": len(labels),
+        "reference_mismatches": positives,
+        "reference_matches": negatives,
+        "auc": rank_auc(scores, labels) if positives and negatives else None,
+        "unavailable_reason": None if positives and negatives else "requires both label classes",
+    }
+
+
+def _require_sha256(value: str) -> None:
+    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError("source_sha256 must be a lowercase SHA-256 digest")
+
+
+def build_diagnostic_audit(
+    source: Mapping[str, object], *, source_sha256: str
+) -> dict[str, object]:
+    """Build a development-only diagnostic audit from a frozen planar result."""
+    _require_sha256(source_sha256)
+    source_shots = source.get("shots")
+    source_per_rate = source.get("per_rate")
+    source_work = source.get("work")
+    if (
+        not isinstance(source_shots, list)
+        or not isinstance(source_per_rate, list)
+        or not isinstance(source_work, Mapping)
+        or not isinstance(source_work.get("totals"), Mapping)
+    ):
+        raise TypeError("source is missing shots, per-rate aggregates, or work totals")
+    rows = [extract_diagnostic_row(shot) for shot in source_shots]
+
+    derived_per_rate: list[dict[str, object]] = []
+    consistency_checks: list[dict[str, object]] = []
+    for declared in source_per_rate:
+        if not isinstance(declared, Mapping):
+            raise TypeError("source per-rate aggregate must be a mapping")
+        rate = declared.get("error_rate")
+        rate_rows = [row for row in rows if _nested_mapping(row, "identity")["error_rate"] == rate]
+        derived = {
+            "error_rate": rate,
+            "shots": len(rate_rows),
+            "class_mismatches": sum(
+                _nested_mapping(row, "reference_labels")["class_mismatch"] is True
+                for row in rate_rows
+            ),
+            "outcome_discordances": sum(
+                _nested_mapping(row, "physical_outcome_labels")["outcome_discordance"] is True
+                for row in rate_rows
+            ),
+            "fallbacks": sum(
+                _nested_mapping(row, "decision")["used_fallback"] is True for row in rate_rows
+            ),
+        }
+        for field in ("shots", "class_mismatches", "outcome_discordances", "fallbacks"):
+            if derived[field] != declared.get(field):
+                raise ValueError(
+                    f"source aggregate mismatch at error_rate={rate} for {field}: "
+                    f"derived {derived[field]}, declared {declared.get(field)}"
+                )
+        derived_per_rate.append(derived)
+        consistency_checks.append({"error_rate": rate, "checks": derived, "passed": True})
+
+    declared_totals = source_work["totals"]
+    assert isinstance(declared_totals, Mapping)
+    derived_work = {
+        "policy": sum(
+            int(_nested_mapping(row, "work")["policy_estimated_arithmetic_flops"])
+            for row in rows
+        ),
+        "fixed_chi8": sum(
+            int(_nested_mapping(row, "work")["fixed_chi8_estimated_arithmetic_flops"])
+            for row in rows
+        ),
+        "exact": sum(
+            int(_nested_mapping(row, "work")["exact_estimated_arithmetic_flops"])
+            for row in rows
+        ),
+    }
+    for field, value in derived_work.items():
+        if value != declared_totals.get(field):
+            raise ValueError(
+                f"source work total mismatch for {field}: derived {value}, "
+                f"declared {declared_totals.get(field)}"
+            )
+
+    accepted_agreements = [
+        row
+        for row in rows
+        if _nested_mapping(row, "decision")["accepted"] is True
+        and _nested_mapping(row, "inference_features")["tolerance_class_agreement"] is True
+    ]
+    score_audits: dict[str, object] = {}
+    for name, section, field, multiplier in _AUDIT_SCORES:
+        pooled = _score_audit(accepted_agreements, section, field, multiplier)
+        by_rate = {}
+        for rate in sorted(
+            {float(_nested_mapping(row, "identity")["error_rate"]) for row in accepted_agreements}
+        ):
+            rate_rows = [
+                row
+                for row in accepted_agreements
+                if float(_nested_mapping(row, "identity")["error_rate"]) == rate
+            ]
+            by_rate[f"{rate:.6f}"] = _score_audit(rate_rows, section, field, multiplier)
+        score_audits[name] = {"pooled": pooled, "by_error_rate": by_rate}
+
+    mismatches = [
+        row
+        for row in accepted_agreements
+        if _nested_mapping(row, "reference_labels")["class_mismatch"] is True
+    ]
+    return {
+        "schema_version": 1,
+        "artifact_kind": "adaptive_computation_diagnostic_audit",
+        "status": "development_open_exploratory_audit",
+        "source": {
+            "sha256": source_sha256,
+            "schema_version": source.get("schema_version"),
+            "status": source.get("status"),
+            "shots": len(rows),
+        },
+        "source_consistency": {
+            "passed": True,
+            "per_rate": consistency_checks,
+            "work_totals": derived_work,
+        },
+        "availability_ledger": diagnostic_availability_ledger(),
+        "rows": rows,
+        "common_mode_reference_mismatches": mismatches,
+        "margin_matched_controls": select_margin_matched_controls(rows),
+        "exploratory_discrimination": {
+            "development_only": True,
+            "accepted_agreement_shots": len(accepted_agreements),
+            "reference_mismatches": len(mismatches),
+            "scores": score_audits,
+        },
+        "derived_per_rate": derived_per_rate,
+        "nonclaims": [
+            "No threshold or diagnostic was evaluated on an untouched confirmation domain.",
+            "The eight revealed reference mismatches cannot establish calibrated safety.",
+            "AUCs on these development-open outcomes do not establish out-of-sample prediction.",
+            "Estimated arithmetic work is not measured latency, throughput, energy, or hardware fit.",
+        ],
+    }
