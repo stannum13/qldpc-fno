@@ -653,3 +653,297 @@ def test_summary_reports_work_and_candidate_gain_distributions_by_rate(monkeypat
     assert first["candidates"]["columns_chi2"]["observed_shots"] == 1
     assert summary["equal_rate"]["candidates"]["columns_chi2"]["gain_mean"] == pytest.approx(0.3)
     assert first["candidates"]["columns_chi2"]["composite_work_values"] == [300]
+
+
+def _artifact_fixture(tmp_path):
+    """Two replayable test rows; never a complete scientific pilot."""
+    from qecsim import paulitools as pt
+    from qecsim.models.generic import DepolarizingErrorModel
+
+    from qldpc_fno.decision import planar_shot_data as data
+
+    root = data._repository_root()
+    commit, dirty = data._git_provenance(root)
+    binding = data._file_binding(root, _SHOT_CONFIG, commit)
+    payload = {
+        "config": json.loads(_SHOT_CONFIG.read_text()),
+        "provenance": {
+            **data._runtime_provenance(root),
+            "git_commit": commit,
+            "git_dirty": dirty,
+            "source_sha256": data._source_hashes(root),
+            "qecsim_version": data.qecsim.__version__,
+            "config_sha256": binding["sha256"],
+            "config_path": binding["path"],
+            "config_scope": binding["scope"],
+            "config_committed": binding["committed"],
+            "config_content": _SHOT_CONFIG.read_text(),
+        },
+        "shots": [],
+    }
+    code = PlanarCode(5, 5)
+    for rate in (0.1, 0.15):
+        seed = data._shot_seed(payload["config"]["seed_domain"], error_rate=rate, shot_index=0)
+        error = DepolarizingErrorModel().generate(code, rate, np.random.default_rng(seed))
+        payload["shots"].append(
+            {
+                "shot_id": f"d5/p{rate:.6f}/i000000",
+                "shot_index": 0,
+                "sampler_seed": seed,
+                "error_rate": rate,
+                "error_bsf": error.tolist(),
+                "syndrome": pt.bsp(error, code.stabilizers.T).tolist(),
+            }
+        )
+    path = tmp_path / "fixture.json"
+    path.write_text(json.dumps(payload))
+    return path, payload
+
+
+def test_runner_validation_replays_joined_fixture_and_requires_full_scientific_count(tmp_path):
+    path, payload = _artifact_fixture(tmp_path)
+    assert hasattr(pilot, "validate_pilot_shots"), "pilot artifact validator is missing"
+    _, shots = pilot.validate_pilot_shots(path, _SHOT_CONFIG, non_scientific_fixture=True)
+    assert len(shots) == 2
+    assert shots[0]["shot_id"] == payload["shots"][0]["shot_id"]
+    with pytest.raises(ValueError, match="shot count"):
+        pilot.validate_pilot_shots(path, _SHOT_CONFIG)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "domain",
+        "count",
+        "seed",
+        "syndrome",
+        "error",
+        "source",
+        "dependency",
+        "config_hash",
+        "duplicate",
+        "index",
+        "extra_field",
+        "boolean_schema",
+    ],
+)
+def test_runner_rejects_mutated_shot_artifacts(tmp_path, mutation):
+    path, payload = _artifact_fixture(tmp_path)
+    assert hasattr(pilot, "validate_pilot_shots"), "pilot artifact validator is missing"
+    if mutation == "domain":
+        payload["config"]["seed_domain"] += "/wrong"
+    elif mutation == "count":
+        payload["shots"].pop()
+    elif mutation == "seed":
+        payload["shots"][0]["sampler_seed"] += 1
+    elif mutation == "syndrome":
+        payload["shots"][0]["syndrome"][0] ^= 1
+    elif mutation == "error":
+        payload["shots"][0]["error_bsf"][0] ^= 1
+    elif mutation == "source":
+        payload["provenance"]["source_sha256"] = {}
+    elif mutation == "dependency":
+        payload["provenance"]["dependencies"]["numpy"] = "wrong"
+    elif mutation == "config_hash":
+        payload["provenance"]["config_sha256"] = "0" * 64
+    elif mutation == "duplicate":
+        payload["shots"][1] = payload["shots"][0]
+    elif mutation == "index":
+        payload["shots"][0]["shot_index"] = True
+    elif mutation == "boolean_schema":
+        payload["config"]["schema_version"] = True
+    else:
+        payload["config"]["extra"] = True
+    path.write_text(json.dumps(payload))
+    with pytest.raises((ValueError, TypeError)):
+        pilot.validate_pilot_shots(path, _SHOT_CONFIG, non_scientific_fixture=True)
+
+
+def test_historical_domains_include_every_declared_seed_domain_and_reject_overlap(tmp_path):
+    assert hasattr(pilot, "historical_domain_bindings"), "historical domain audit is missing"
+    bindings = pilot.historical_domain_bindings(_ROOT)
+    declared = {
+        json.loads(path.read_text())["seed_domain"]
+        for path in (_ROOT / "configs").glob("*.json")
+        if "seed_domain" in json.loads(path.read_text()) and path != _SHOT_CONFIG
+    }
+    assert declared <= {domain for binding in bindings.values() for domain in binding["domains"]}
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "future_confirmation.json").write_text(
+        json.dumps(
+            {
+                "required_data_seed_domain": "qldpc-fno/adaptive-intervention-pilot/v1",
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="domain overlap"):
+        pilot.historical_domain_bindings(tmp_path)
+
+
+def test_scientific_provenance_rejects_dirty_and_uncommitted_inputs(tmp_path, monkeypatch):
+    assert hasattr(pilot, "pilot_provenance"), "runner provenance is missing"
+    path, _ = _artifact_fixture(tmp_path)
+    from qldpc_fno.decision import planar_shot_data as data
+
+    commit, _ = data._git_provenance(_ROOT)
+    monkeypatch.setattr(pilot, "_git_provenance", lambda root: (commit, True))
+    with pytest.raises(ValueError, match="clean committed"):
+        pilot.pilot_provenance(_PILOT_CONFIG, _SHOT_CONFIG, path, scientific=True)
+    monkeypatch.setattr(pilot, "_git_provenance", lambda root: (commit, False))
+    external_config = tmp_path / "pilot.json"
+    external_config.write_bytes(_PILOT_CONFIG.read_bytes())
+    with pytest.raises(ValueError, match="clean committed|committed scientific"):
+        pilot.pilot_provenance(external_config, _SHOT_CONFIG, path, scientific=True)
+
+
+def test_runner_binds_summary_and_all_work_without_physical_vectors(tmp_path, monkeypatch):
+    assert hasattr(pilot, "run_adaptive_intervention_pilot"), "pilot runner is missing"
+    from qldpc_fno.artifacts import sha256_file
+
+    path, _ = _artifact_fixture(tmp_path)
+    _fake_contractions(monkeypatch, invalid=("rows_chi2",))
+    out = tmp_path / "result"
+    result = pilot.run_adaptive_intervention_pilot(
+        _PILOT_CONFIG,
+        path,
+        out,
+        non_scientific_fixture=True,
+    )
+    summary = json.loads((out / "summary.json").read_text())
+    assert result["status"] == "reduced_non_scientific"
+    assert summary["raw_sha256"] == sha256_file(out / "intervention_pilot.json")
+    assert summary["provenance"]["inputs"]["shots"]["sha256"] == sha256_file(path)
+    assert summary["provenance"]["inputs"]["config"]["sha256"] == sha256_file(_PILOT_CONFIG)
+    assert summary["summary"] == result["summary"]
+    assert summary["summary"]["attempted_shots"] == 2
+    assert not any(
+        summary["summary"]["advancement"][key]
+        for key in (
+            "complete_pilot",
+            "margin_gate_clause",
+            "heterogeneous_efficiency_clause",
+        )
+    )
+    for rate in summary["summary"]["per_rate"]:
+        assert rate["actions"]["rows_chi2"]["attempted_shots"] == 1
+        assert rate["actions"]["rows_chi2"]["physical_failure_rate"] == 1
+    text = (out / "summary.json").read_text()
+    for excluded in ('"error"', '"error_bsf"', '"syndrome"', '"recovery"', '"truncation_events"'):
+        assert excluded not in text
+    with pytest.raises(FileExistsError):
+        pilot.run_adaptive_intervention_pilot(_PILOT_CONFIG, path, out, non_scientific_fixture=True)
+
+
+def test_runner_failure_does_not_publish_partial_output(tmp_path, monkeypatch):
+    assert hasattr(pilot, "run_adaptive_intervention_pilot"), "pilot runner is missing"
+    path, _ = _artifact_fixture(tmp_path)
+    _fake_contractions(monkeypatch, bug=RuntimeError("evaluator bug"))
+    out = tmp_path / "result"
+    with pytest.raises(RuntimeError, match="evaluator bug"):
+        pilot.run_adaptive_intervention_pilot(_PILOT_CONFIG, path, out, non_scientific_fixture=True)
+    assert not out.exists()
+
+
+def test_runner_serialization_failure_is_transactional(tmp_path, monkeypatch):
+    assert hasattr(pilot, "run_adaptive_intervention_pilot"), "pilot runner is missing"
+    path, _ = _artifact_fixture(tmp_path)
+    _fake_contractions(monkeypatch)
+    original = pilot.write_canonical_json
+
+    def write(path, payload):
+        if path.name == "summary.json":
+            raise OSError("disk failure")
+        original(path, payload)
+
+    monkeypatch.setattr(pilot, "write_canonical_json", write)
+    out = tmp_path / "result"
+    with pytest.raises(OSError, match="disk failure"):
+        pilot.run_adaptive_intervention_pilot(_PILOT_CONFIG, path, out, non_scientific_fixture=True)
+    assert not out.exists()
+
+
+def test_runner_rejects_input_mutation_during_validation(tmp_path, monkeypatch):
+    path, payload = _artifact_fixture(tmp_path)
+    original = pilot.validate_pilot_shots
+
+    def validate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        payload["shots"][0]["syndrome"][0] ^= 1
+        path.write_text(json.dumps(payload))
+        return result
+
+    monkeypatch.setattr(pilot, "validate_pilot_shots", validate)
+    _fake_contractions(monkeypatch)
+    out = tmp_path / "result"
+    with pytest.raises(ValueError, match="provenance changed"):
+        pilot.run_adaptive_intervention_pilot(_PILOT_CONFIG, path, out, non_scientific_fixture=True)
+    assert not out.exists()
+
+
+def test_fixture_mode_refuses_arbitrary_counts_and_nonboolean_flag(tmp_path):
+    path, payload = _artifact_fixture(tmp_path)
+    with pytest.raises(TypeError, match="boolean"):
+        pilot.validate_pilot_shots(path, _SHOT_CONFIG, non_scientific_fixture=1)
+    payload["shots"] *= 2
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="shot count"):
+        pilot.validate_pilot_shots(path, _SHOT_CONFIG, non_scientific_fixture=True)
+
+
+def test_clean_committed_scientific_provenance_binds_external_raw_shots(tmp_path, monkeypatch):
+    """Audit clean provenance in an isolated Git repo without executing science."""
+    import shutil
+    import subprocess
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    labels = (
+        *pilot._SOURCE_LABELS,
+        "src/qldpc_fno/decision/adaptive_intervention_pilot.py",
+        "src/qldpc_fno/decision/adaptive_diagnostics.py",
+        "experiments/35_run_adaptive_intervention_pilot.py",
+        "configs/adaptive_intervention_pilot.json",
+        "configs/adaptive_intervention_pilot_shots.json",
+        "configs/planar_shot_screen.json",
+        "uv.lock",
+    )
+    for label in labels:
+        target = root / label
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_ROOT / label, target)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(root), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init")
+    git("add", ".")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture")
+    monkeypatch.setattr(pilot, "_repository_root", lambda: root)
+    shots = tmp_path / "ignored-raw.json"
+    shots.write_text("{}")
+    provenance = pilot.pilot_provenance(
+        root / "configs/adaptive_intervention_pilot.json",
+        root / "configs/adaptive_intervention_pilot_shots.json",
+        shots,
+        scientific=True,
+    )
+    assert provenance["git_dirty"] is False
+    assert provenance["git_commit"] == git("rev-parse", "HEAD").stdout.strip()
+    assert provenance["inputs"]["config"]["committed"] is True
+    assert provenance["inputs"]["shots"]["committed"] is False
+    assert len(provenance["source_sha256"]) == len(pilot._SOURCE_LABELS) + 3
+    assert provenance["matching_backend"]["lockfile_sha256"]
+    assert provenance["dependencies"]["qecsim"]
+    (root / "uv.lock").write_text("tampered")
+    with pytest.raises(ValueError, match="clean committed"):
+        pilot.pilot_provenance(
+            root / "configs/adaptive_intervention_pilot.json",
+            root / "configs/adaptive_intervention_pilot_shots.json",
+            shots,
+            scientific=True,
+        )

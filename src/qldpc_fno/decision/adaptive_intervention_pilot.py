@@ -1,18 +1,21 @@
-"""Frozen configuration identity for the adaptive intervention pilot."""
+"""Frozen, replayable adaptive intervention pilot with fully charged action work."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import math
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
 from qecsim import paulitools as pt
+from qecsim.models.generic import DepolarizingErrorModel
 from qecsim.models.planar import PlanarCode
 
+from qldpc_fno.artifacts import sha256_file, write_canonical_json
 from qldpc_fno.decision import adaptive_diagnostics as _diagnostics
 from qldpc_fno.decision.planar_shot_accuracy import (
     _binary_vector,
@@ -20,6 +23,17 @@ from qldpc_fno.decision.planar_shot_accuracy import (
     certify_reference,
     logical_class_recovery,
     score_recovery,
+)
+from qldpc_fno.decision.planar_shot_data import (
+    _SOURCE_LABELS,
+    _committed_digest,
+    _file_binding,
+    _git_provenance,
+    _repository_root,
+    _runtime_provenance,
+    _shot_seed,
+    _validate_producer,
+    _validate_shot_manifest,
 )
 from qldpc_fno.decision.tensor_network import InvalidCosetMassError, planar_mps_coset_masses
 
@@ -1005,3 +1019,255 @@ def load_shot_config(path: Path) -> ShotConfig:
         shots_per_rate=64,
         noise_model=_NOISE_MODEL,
     )
+
+
+def historical_domain_bindings(root: Path) -> dict[str, dict]:
+    """Bind every declared non-pilot config domain, including future confirmations."""
+    bindings = {}
+    own_configs = {"adaptive_intervention_pilot.json", "adaptive_intervention_pilot_shots.json"}
+
+    def domains(value):
+        found = set()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key.endswith("seed_domain") and isinstance(item, str):
+                    found.add(item)
+                found.update(domains(item))
+        elif isinstance(value, list):
+            for item in value:
+                found.update(domains(item))
+        return found
+
+    for path in sorted((root / "configs").rglob("*.json")):
+        if path.parent == root / "configs" and path.name in own_configs:
+            continue
+        declared = domains(_load_object(path))
+        if _SEED_DOMAIN in declared:
+            raise ValueError(f"pilot/historical seed domain overlap: {path}")
+        if declared:
+            bindings[path.relative_to(root).as_posix()] = {
+                "sha256": sha256_file(path),
+                "domains": sorted(declared),
+            }
+    return bindings
+
+
+def validate_pilot_shots(
+    artifact_path: Path,
+    shot_config_path: Path,
+    *,
+    non_scientific_fixture: bool = False,
+) -> tuple[dict, list[dict]]:
+    """Validate identity, provenance and exact physical-error/syndrome replay.
+
+    The explicit fixture mode accepts only index zero at each frozen rate. It
+    changes no sampler, domain, action or scoring semantics.
+    """
+    if type(non_scientific_fixture) is not bool:
+        raise TypeError("non_scientific_fixture must be boolean")
+    config = load_shot_config(shot_config_path)
+    payload = _load_object(artifact_path)
+    _exact_fields(payload, {"config", "provenance", "shots"}, "shot artifact")
+    if json.dumps(payload["config"], sort_keys=True) != json.dumps(
+        _load_object(shot_config_path),
+        sort_keys=True,
+    ):
+        raise ValueError("shot artifact config does not match frozen config")
+    rows = payload["shots"]
+    per_rate = 1 if non_scientific_fixture else config.shots_per_rate
+    if not isinstance(rows, list) or len(rows) != per_rate * len(config.error_rates):
+        raise ValueError("shot count must match the exact per-rate requirement")
+    provenance = payload["provenance"]
+    if not isinstance(provenance, dict):
+        raise TypeError("shot artifact provenance missing")
+    clean = _validate_shot_manifest(payload, _repository_root())
+    if provenance["config_sha256"] != sha256_file(shot_config_path):
+        raise ValueError("shot configuration hash mismatch")
+    if not non_scientific_fixture and not clean:
+        raise ValueError("scientific shot artifact requires clean committed provenance")
+    historical_domain_bindings(_repository_root())
+    code, model = PlanarCode(5, 5), DepolarizingErrorModel()
+    seen, seeds, validated = set(), set(), []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TypeError("malformed shot row")
+        _exact_fields(
+            row,
+            {
+                "shot_id",
+                "shot_index",
+                "sampler_seed",
+                "error_rate",
+                "error_bsf",
+                "syndrome",
+            },
+            "shot row",
+        )
+        rate, index, seed = row["error_rate"], row["shot_index"], row["sampler_seed"]
+        if (
+            type(rate) not in (int, float)
+            or rate not in config.error_rates
+            or type(index) is not int
+            or index not in range(per_rate)
+            or type(seed) is not int
+            or seed != _shot_seed(config.seed_domain, error_rate=rate, shot_index=index)
+            or row["shot_id"] != f"d5/p{rate:.6f}/i{index:06d}"
+            or (rate, index) in seen
+            or seed in seeds
+        ):
+            raise ValueError("invalid or duplicate shot replay identity")
+        error = _binary_vector(np.asarray(row["error_bsf"]), length=82, name="error")
+        syndrome = _binary_vector(np.asarray(row["syndrome"]), length=40, name="syndrome")
+        replayed = model.generate(code, rate, np.random.default_rng(seed))
+        if not np.array_equal(error, replayed) or not np.array_equal(
+            syndrome,
+            pt.bsp(error, code.stabilizers.T),
+        ):
+            raise ValueError("physical error/syndrome replay mismatch")
+        seen.add((rate, index))
+        seeds.add(seed)
+        validated.append(
+            {
+                "shot_id": row["shot_id"],
+                "shot_index": index,
+                "sampler_seed": seed,
+                "error_rate": rate,
+                "error": error,
+                "syndrome": syndrome,
+            }
+        )
+    if seen != {(rate, index) for rate in config.error_rates for index in range(per_rate)}:
+        raise ValueError("shot count/index coverage mismatch")
+    return payload, sorted(validated, key=lambda row: (row["error_rate"], row["shot_index"]))
+
+
+def pilot_provenance(
+    config_path: Path,
+    shot_config_path: Path,
+    shots_path: Path,
+    *,
+    scientific: bool,
+) -> dict:
+    """Bind producer, scientific sources, dependencies and immutable input bytes."""
+    root = _repository_root()
+    commit, dirty = _git_provenance(root)
+    if scientific and dirty:
+        raise ValueError("scientific runner requires clean committed provenance")
+    sources = (
+        *_SOURCE_LABELS,
+        "src/qldpc_fno/decision/adaptive_intervention_pilot.py",
+        "src/qldpc_fno/decision/adaptive_diagnostics.py",
+        "experiments/35_run_adaptive_intervention_pilot.py",
+    )
+    provenance = {
+        "git_commit": commit,
+        "git_dirty": dirty,
+        "source_sha256": {label: sha256_file(root / label) for label in sources},
+        **_runtime_provenance(root),
+        "inputs": {
+            name: _file_binding(root, path, commit)
+            for name, path in (
+                ("config", config_path),
+                ("shot_config", shot_config_path),
+                ("shots", shots_path),
+            )
+        },
+        "historical_domains": historical_domain_bindings(root),
+    }
+    if scientific:
+        clean = _validate_producer(provenance, root, sources)
+        committed_configs = all(
+            provenance["inputs"][name]["committed"] for name in ("config", "shot_config")
+        )
+        committed_domains = all(
+            _committed_digest(root, commit, label) == binding["sha256"]
+            for label, binding in provenance["historical_domains"].items()
+        )
+        if not clean or not committed_configs or not committed_domains:
+            raise ValueError("scientific runner requires clean committed configs and sources")
+    # Raw shots live under ignored artifacts/; their clean producer and committed
+    # generator config are validated separately. The input bytes are hash-bound.
+    return provenance
+
+
+def run_adaptive_intervention_pilot(
+    config_path: Path,
+    shots_path: Path,
+    output_dir: Path,
+    *,
+    shot_config_path: Path | None = None,
+    non_scientific_fixture: bool = False,
+) -> dict:
+    """Replay frozen shots and atomically publish deterministic raw and compact JSON."""
+    if type(non_scientific_fixture) is not bool:
+        raise TypeError("non_scientific_fixture must be boolean")
+    config_path, shots_path, output_dir = map(Path, (config_path, shots_path, output_dir))
+    if output_dir.exists() or output_dir.is_symlink():
+        raise FileExistsError(f"refusing to overwrite existing output directory: {output_dir}")
+    shot_config_path = (
+        Path(shot_config_path)
+        if shot_config_path
+        else (_repository_root() / "configs/adaptive_intervention_pilot_shots.json")
+    )
+    provenance = pilot_provenance(
+        config_path,
+        shot_config_path,
+        shots_path,
+        scientific=not non_scientific_fixture,
+    )
+    config = load_pilot_config(config_path)
+    shot_payload, shots = validate_pilot_shots(
+        shots_path,
+        shot_config_path,
+        non_scientific_fixture=non_scientific_fixture,
+    )
+    results = [evaluate_shot(shot, config) for shot in shots]
+    summary = summarize_evaluations(results, config)
+    if non_scientific_fixture:
+        summary["advancement"].update(
+            {
+                "complete_pilot": False,
+                "margin_gate_clause": False,
+                "heterogeneous_efficiency_clause": False,
+            }
+        )
+    if (
+        pilot_provenance(
+            config_path,
+            shot_config_path,
+            shots_path,
+            scientific=not non_scientific_fixture,
+        )
+        != provenance
+    ):
+        raise ValueError("input/source provenance changed during evaluation")
+    result = {
+        "schema_version": 1,
+        "status": "reduced_non_scientific" if non_scientific_fixture else "development_pilot",
+        "scientific_eligible": not non_scientific_fixture,
+        "provenance": provenance,
+        "shot_provenance": shot_payload["provenance"],
+        "config": asdict(config),
+        "shots": results,
+        "summary": summary,
+        "timing": {"wall_seconds": None, "reason": "excluded_from_deterministic_artifact"},
+    }
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{output_dir.name}-", dir=output_dir.parent) as tmp:
+        staging = Path(tmp) / "publication"
+        raw_path = staging / "intervention_pilot.json"
+        write_canonical_json(raw_path, result)
+        compact = {
+            "schema_version": 1,
+            "status": result["status"],
+            "scientific_eligible": result["scientific_eligible"],
+            "raw_sha256": sha256_file(raw_path),
+            "raw_size_bytes": raw_path.stat().st_size,
+            "provenance": provenance,
+            "summary": summary,
+        }
+        write_canonical_json(staging / "summary.json", compact)
+        if output_dir.exists() or output_dir.is_symlink():
+            raise FileExistsError(f"refusing to overwrite existing output directory: {output_dir}")
+        staging.rename(output_dir)
+    return result
