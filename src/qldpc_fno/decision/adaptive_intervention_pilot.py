@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from qldpc_fno.decision import adaptive_diagnostics as _diagnostics
 
 _NOISE_MODEL = "qecsim_iid_depolarizing_code_capacity"
 _SEED_DOMAIN = "qldpc-fno/adaptive-intervention-pilot/v1"
@@ -31,6 +34,7 @@ ACTION_IDS = (
     "columns_tol003",
     "rows_tol003",
 )
+PROBE_ACTION_IDS = ("columns_tol01", "rows_tol01")
 _ACTION_TUPLES = (
     ("columns", 2, None),
     ("rows", 2, None),
@@ -122,6 +126,270 @@ class ShotConfig:
     error_rates: tuple[float, float]
     shots_per_rate: int
     noise_model: str
+
+
+@dataclass(frozen=True)
+class CandidateOpportunity:
+    """A valid-or-invalid candidate's posterior improvement and full cost."""
+
+    action_id: str
+    valid: bool
+    gain: float | None
+    composite_work: int
+
+    def __post_init__(self) -> None:
+        if self.action_id not in ACTION_IDS or self.action_id in PROBE_ACTION_IDS:
+            raise ValueError("candidate action_id must be a frozen action")
+        if type(self.valid) is not bool:
+            raise TypeError("candidate validity must be boolean")
+        if self.gain is not None and (
+            isinstance(self.gain, bool) or not math.isfinite(float(self.gain))
+        ):
+            raise ValueError("candidate gain must be finite or null")
+        if type(self.composite_work) is not int or self.composite_work < 0:
+            raise ValueError("candidate composite work must be a nonnegative integer")
+
+
+@dataclass(frozen=True)
+class OracleSelection:
+    """One deterministic offline oracle decision, or its explicit null result."""
+
+    action_id: str | None
+    gain: float | None
+    composite_work: int | None
+    efficiency: float | None
+    uniquely_separated: bool
+
+
+def normalized_probabilities(probabilities: Sequence[float]) -> tuple[float, float, float, float]:
+    """Return an immutable normalized four-logical-class posterior."""
+    normalized = _diagnostics._probabilities(probabilities)
+    return tuple(float(value) for value in normalized)  # type: ignore[return-value]
+
+
+def probability_margin(probabilities: Sequence[float]) -> float:
+    """Return the stable normalized winning-class probability margin."""
+    return _diagnostics.probability_margin(probabilities)
+
+
+def total_variation(left: Sequence[float], right: Sequence[float]) -> float:
+    """Return the stable total-variation distance between logical posteriors."""
+    return _diagnostics.total_variation(left, right)
+
+
+def jensen_shannon_divergence(left: Sequence[float], right: Sequence[float]) -> float:
+    """Return the stable natural-log Jensen-Shannon divergence in nats."""
+    return _diagnostics.jensen_shannon_divergence(left, right)
+
+
+def reference_conditional_excess_risk(
+    candidate: Sequence[float], reference: Sequence[float]
+) -> float:
+    """Return the extra reference-conditional MAP decision risk of ``candidate``.
+
+    The certified reference supplies both the posterior and its Bayes-optimal
+    class. The candidate only supplies the class it would select.
+    """
+    candidate_posterior = _diagnostics._probabilities(candidate)
+    reference_posterior = _diagnostics._probabilities(reference)
+    candidate_class = int(candidate_posterior.argmax())
+    return float(reference_posterior.max() - reference_posterior[candidate_class])
+
+
+def symmetric_reference_posterior(
+    columns: Sequence[float], rows: Sequence[float]
+) -> tuple[float, float, float, float]:
+    """Average separately normalized unrestricted views, then normalize again."""
+    mean = 0.5 * (
+        _diagnostics._probabilities(columns) + _diagnostics._probabilities(rows)
+    )
+    return normalized_probabilities(mean)
+
+
+def _valid_selected_class(selected_class: int | None) -> bool:
+    return type(selected_class) is int and 0 <= selected_class < 4
+
+
+def margin_gate_accepts(
+    columns: Sequence[float] | None,
+    columns_selected_class: int | None,
+    rows: Sequence[float] | None,
+    rows_selected_class: int | None,
+    *,
+    threshold: float = MARGIN_THRESHOLD,
+) -> bool:
+    """Accept only agreeing valid probes whose smaller margin strictly clears the gate."""
+    if columns is None or rows is None:
+        return False
+    if not _valid_selected_class(columns_selected_class) or not _valid_selected_class(
+        rows_selected_class
+    ):
+        return False
+    if columns_selected_class != rows_selected_class:
+        return False
+    if not math.isfinite(threshold):
+        raise ValueError("margin threshold must be finite")
+    minimum_margin = min(probability_margin(columns), probability_margin(rows))
+    return minimum_margin > threshold and not math.isclose(
+        minimum_margin, threshold, rel_tol=1e-12, abs_tol=0.0
+    )
+
+
+def _work_value(work: int, name: str) -> int:
+    if type(work) is not int or work < 0:
+        raise ValueError(f"{name} must be a nonnegative integer")
+    return work
+
+
+def composite_work(columns_probe_work: int, rows_probe_work: int, candidate_work: int) -> int:
+    """Charge both independent probes and the independently run candidate."""
+    return (
+        _work_value(columns_probe_work, "columns_probe_work")
+        + _work_value(rows_probe_work, "rows_probe_work")
+        + _work_value(candidate_work, "candidate_work")
+    )
+
+
+def candidate_benefit(
+    columns_probe: Sequence[float] | None,
+    rows_probe: Sequence[float] | None,
+    candidate: Sequence[float] | None,
+    reference: Sequence[float],
+) -> float | None:
+    """Return candidate TV reduction from the best available probe, or null.
+
+    A lone valid probe supplies the baseline. With no valid probe or candidate
+    there is no posterior-target utility, even though all attempted work remains
+    chargeable elsewhere.
+    """
+    if candidate is None:
+        return None
+    probe_distances = [
+        total_variation(probe, reference)
+        for probe in (columns_probe, rows_probe)
+        if probe is not None
+    ]
+    if not probe_distances:
+        return None
+    return float(min(probe_distances) - total_variation(candidate, reference))
+
+
+def _eligible_positive_candidates(
+    candidates: Sequence[CandidateOpportunity], *, require_work: bool
+) -> list[CandidateOpportunity]:
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.valid
+        and candidate.gain is not None
+        and _strictly_exceeds(candidate.gain, 1e-6)
+        and (not require_work or candidate.composite_work > 0)
+    ]
+
+
+def _literal_action_rank(action_id: str) -> int:
+    return ACTION_IDS.index(action_id)
+
+
+def _strictly_exceeds(value: float, floor: float) -> bool:
+    """Apply a strict threshold without admitting round-off equality."""
+    return value > floor and not math.isclose(value, floor, rel_tol=0.0, abs_tol=1e-15)
+
+
+def _select_by_metric(
+    candidates: Sequence[CandidateOpportunity], metric: object
+) -> CandidateOpportunity:
+    """Select the maximum metric, resolving near ties by work then frozen order."""
+    selected = candidates[0]
+    for candidate in candidates[1:]:
+        selected_metric = float(metric(selected))  # type: ignore[operator]
+        candidate_metric = float(metric(candidate))  # type: ignore[operator]
+        if math.isclose(
+            candidate_metric,
+            selected_metric,
+            rel_tol=1e-12,
+            abs_tol=0.0,
+        ):
+            if (candidate.composite_work, _literal_action_rank(candidate.action_id)) < (
+                selected.composite_work,
+                _literal_action_rank(selected.action_id),
+            ):
+                selected = candidate
+        elif candidate_metric > selected_metric:
+            selected = candidate
+    return selected
+
+
+def _selection(
+    candidates: Sequence[CandidateOpportunity], *, efficiency: bool
+) -> OracleSelection:
+    eligible = _eligible_positive_candidates(candidates, require_work=efficiency)
+    if not eligible:
+        return OracleSelection(None, None, None, None, False)
+    metric = (
+        (lambda candidate: float(candidate.gain) / candidate.composite_work)
+        if efficiency
+        else (lambda candidate: float(candidate.gain))
+    )
+    winner = _select_by_metric(eligible, metric)
+    winner_metric = float(metric(winner))
+    runner_metrics = [float(metric(candidate)) for candidate in eligible if candidate != winner]
+    if not runner_metrics:
+        uniquely_separated = True
+    elif efficiency:
+        runner_metric = max(runner_metrics)
+        uniquely_separated = _strictly_exceeds(
+            (winner_metric - runner_metric) / runner_metric, 0.01
+        )
+    else:
+        uniquely_separated = _strictly_exceeds(winner_metric - max(runner_metrics), 1e-6)
+    return OracleSelection(
+        action_id=winner.action_id,
+        gain=float(winner.gain),
+        composite_work=winner.composite_work,
+        efficiency=winner_metric if efficiency else None,
+        uniquely_separated=uniquely_separated,
+    )
+
+
+def select_accuracy_oracle(candidates: Sequence[CandidateOpportunity]) -> OracleSelection:
+    """Choose the positive-gain candidate with the greatest TV reduction."""
+    return _selection(candidates, efficiency=False)
+
+
+def select_efficiency_oracle(candidates: Sequence[CandidateOpportunity]) -> OracleSelection:
+    """Choose the positive-gain candidate with the greatest gain per full FLOP cost."""
+    return _selection(candidates, efficiency=True)
+
+
+def class_mismatch_transition(
+    baseline_class: int, candidate_class: int, reference_class: int
+) -> str:
+    """Label whether a candidate repairs or introduces a reference-class mismatch."""
+    if not all(_valid_selected_class(value) for value in (baseline_class, candidate_class, reference_class)):
+        raise ValueError("logical classes must be integers from 0 through 3")
+    baseline_mismatch = baseline_class != reference_class
+    candidate_mismatch = candidate_class != reference_class
+    if baseline_mismatch and not candidate_mismatch:
+        return "repaired_mismatch"
+    if not baseline_mismatch and candidate_mismatch:
+        return "introduced_mismatch"
+    if baseline_mismatch:
+        return "persistent_mismatch"
+    return "matched"
+
+
+def physical_outcome_transition(baseline_discordance: bool, candidate_discordance: bool) -> str:
+    """Label repair, introduction, or persistence of physical-outcome discordance."""
+    if type(baseline_discordance) is not bool or type(candidate_discordance) is not bool:
+        raise TypeError("outcome discordance values must be boolean")
+    if baseline_discordance and not candidate_discordance:
+        return "repaired_discordance"
+    if not baseline_discordance and candidate_discordance:
+        return "introduced_discordance"
+    if baseline_discordance:
+        return "persistent_discordance"
+    return "agreed"
 
 
 def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
