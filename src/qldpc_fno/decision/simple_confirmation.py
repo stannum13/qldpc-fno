@@ -6,13 +6,22 @@ import json
 import math
 from pathlib import Path
 
-SCIENTIFIC_DOMAIN = "qldpc-fno/simple-planar-confirmation/v1"
-FIXTURE_DOMAIN = "qldpc-fno/simple-planar-confirmation/test-fixture/v1"
-BOOTSTRAP_DOMAIN = "qldpc-fno/simple-planar-confirmation/bootstrap/v1"
-SCIENTIFIC_CAMPAIGN_SEED = 2409828766515432030
-FIXTURE_CAMPAIGN_SEED = 3697382327853009454
-BOOTSTRAP_SEED = 2713269656809941213
-MARGIN_THRESHOLD = 0.30710401263493464
+_SCIENTIFIC_DOMAIN_LITERAL = "qldpc-fno/simple-planar-confirmation/v1"
+_FIXTURE_DOMAIN_LITERAL = "qldpc-fno/simple-planar-confirmation/test-fixture/v1"
+_BOOTSTRAP_DOMAIN_LITERAL = "qldpc-fno/simple-planar-confirmation/bootstrap/v1"
+_SCIENTIFIC_CAMPAIGN_SEED_LITERAL = 2409828766515432030
+_FIXTURE_CAMPAIGN_SEED_LITERAL = 3697382327853009454
+_BOOTSTRAP_SEED_LITERAL = 2713269656809941213
+_MARGIN_THRESHOLD_LITERAL = 0.30710401263493464
+
+# Public scalar snapshots are conveniences, never validator inputs.
+SCIENTIFIC_DOMAIN = _SCIENTIFIC_DOMAIN_LITERAL
+FIXTURE_DOMAIN = _FIXTURE_DOMAIN_LITERAL
+BOOTSTRAP_DOMAIN = _BOOTSTRAP_DOMAIN_LITERAL
+SCIENTIFIC_CAMPAIGN_SEED = _SCIENTIFIC_CAMPAIGN_SEED_LITERAL
+FIXTURE_CAMPAIGN_SEED = _FIXTURE_CAMPAIGN_SEED_LITERAL
+BOOTSTRAP_SEED = _BOOTSTRAP_SEED_LITERAL
+MARGIN_THRESHOLD = _MARGIN_THRESHOLD_LITERAL
 
 _NOISE_MODEL = "qecsim_iid_depolarizing_code_capacity"
 _SHOT_KEYS = {
@@ -71,8 +80,10 @@ _CONFIG_KEYS = frozenset(
 def _shot_config(*, fixture: bool) -> dict[str, object]:
     return {
         "schema_version": 1,
-        "seed_domain": FIXTURE_DOMAIN if fixture else SCIENTIFIC_DOMAIN,
-        "campaign_seed": FIXTURE_CAMPAIGN_SEED if fixture else SCIENTIFIC_CAMPAIGN_SEED,
+        "seed_domain": _FIXTURE_DOMAIN_LITERAL if fixture else _SCIENTIFIC_DOMAIN_LITERAL,
+        "campaign_seed": (
+            _FIXTURE_CAMPAIGN_SEED_LITERAL if fixture else _SCIENTIFIC_CAMPAIGN_SEED_LITERAL
+        ),
         "code_distance": 5,
         "error_rates": [0.1, 0.15],
         "shots_per_rate": 2 if fixture else 2048,
@@ -91,8 +102,8 @@ def _analysis_config() -> dict[str, object]:
     return {
         "schema_version": 1,
         "contract_id": "simple_planar_confirmation_v1",
-        "required_shot_seed_domain": SCIENTIFIC_DOMAIN,
-        "fixture_seed_domain": FIXTURE_DOMAIN,
+        "required_shot_seed_domain": _SCIENTIFIC_DOMAIN_LITERAL,
+        "fixture_seed_domain": _FIXTURE_DOMAIN_LITERAL,
         "code_distance": 5,
         "noise_model": _NOISE_MODEL,
         "required_error_rates": [0.1, 0.15],
@@ -100,7 +111,7 @@ def _analysis_config() -> dict[str, object]:
         "policy_ids": ["fixed_rows_tol003", "margin_columns_chi8"],
         "comparator_id": "fixed_columns_chi8",
         "actions": _frozen_actions(),
-        "margin_threshold": MARGIN_THRESHOLD,
+        "margin_threshold": _MARGIN_THRESHOLD_LITERAL,
         "reference_probability_tolerance": 1e-10,
         "reference_log_ratio_tolerance": 1e-8,
         "reference_margin_discrepancy_factor": 2.0,
@@ -108,8 +119,8 @@ def _analysis_config() -> dict[str, object]:
         "family_alpha": 0.05,
         "primary_alpha": 0.00625,
         "discrepancy_budget": 0.005,
-        "bootstrap_domain": BOOTSTRAP_DOMAIN,
-        "bootstrap_seed": BOOTSTRAP_SEED,
+        "bootstrap_domain": _BOOTSTRAP_DOMAIN_LITERAL,
+        "bootstrap_seed": _BOOTSTRAP_SEED_LITERAL,
         "bootstrap_replicates": 10_000,
         "bootstrap_generator": "PCG64",
         "bootstrap_quantile": 0.05,

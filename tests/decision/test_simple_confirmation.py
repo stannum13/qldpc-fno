@@ -133,6 +133,57 @@ def test_loaded_config_mutation_does_not_affect_later_load() -> None:
     assert second["required_error_rates"] == [0.1, 0.15]
 
 
+@pytest.mark.parametrize(
+    ("export_name", "config_key", "changed"),
+    [
+        ("SCIENTIFIC_DOMAIN", "required_shot_seed_domain", "changed/scientific"),
+        ("FIXTURE_DOMAIN", "fixture_seed_domain", "changed/fixture"),
+        ("BOOTSTRAP_DOMAIN", "bootstrap_domain", "changed/bootstrap"),
+        ("BOOTSTRAP_SEED", "bootstrap_seed", 1),
+        ("MARGIN_THRESHOLD", "margin_threshold", 0.25),
+    ],
+)
+def test_rebinding_exported_analysis_scalar_cannot_redefine_validator(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    export_name: str,
+    config_key: str,
+    changed: object,
+) -> None:
+    payload = json.loads(_CONFIG.read_text())
+    payload[config_key] = changed
+    monkeypatch.setattr(confirmation, export_name, changed)
+
+    with pytest.raises(ValueError):
+        load_config(_write_json(tmp_path / "config.json", payload))
+
+
+@pytest.mark.parametrize(
+    ("fixture", "export_name", "config_key", "changed"),
+    [
+        (False, "SCIENTIFIC_DOMAIN", "seed_domain", "changed/scientific"),
+        (False, "SCIENTIFIC_CAMPAIGN_SEED", "campaign_seed", 1),
+        (True, "FIXTURE_DOMAIN", "seed_domain", "changed/fixture"),
+        (True, "FIXTURE_CAMPAIGN_SEED", "campaign_seed", 1),
+    ],
+)
+def test_rebinding_exported_shot_scalar_cannot_redefine_validator(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fixture: bool,
+    export_name: str,
+    config_key: str,
+    changed: object,
+) -> None:
+    source = _FIXTURE_SHOTS if fixture else _SHOTS
+    payload = json.loads(source.read_text())
+    payload[config_key] = changed
+    monkeypatch.setattr(confirmation, export_name, changed)
+
+    with pytest.raises(ValueError):
+        load_shot_config(_write_json(tmp_path / "shots.json", payload), fixture=fixture)
+
+
 @pytest.mark.parametrize("count", [2, 2047, 2049, True, 2048.0])
 def test_scientific_count_is_frozen(tmp_path: Path, count: object) -> None:
     payload = dict(FROZEN_SHOT_CONFIG, shots_per_rate=count)
