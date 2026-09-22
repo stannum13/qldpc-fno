@@ -1,4 +1,4 @@
-"""Run the frozen adaptive intervention development pilot on replayed physical shots."""
+"""Run the frozen v2 development pilot, publishing raw, compact and host-timing JSON."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def run(argv: Sequence[str] | None = None) -> dict:
     parser.add_argument(
         "--non-scientific-fixture",
         action="store_true",
-        help="exactly one shot per frozen rate; never scientific or eligible for advancement",
+        help="reserved test-fixture/v1 domain only, one shot/rate; never eligible for advancement",
     )
     args = parser.parse_args(argv)
     return run_adaptive_intervention_pilot(

@@ -38,16 +38,17 @@ from qldpc_fno.decision.tensor_network import InvalidContractionError, PlanarCos
 _ROOT = Path(__file__).resolve().parents[2]
 _PILOT_CONFIG = _ROOT / "configs" / "adaptive_intervention_pilot.json"
 _SHOT_CONFIG = _ROOT / "configs" / "adaptive_intervention_pilot_shots.json"
+_FIXTURE_SHOT_CONFIG = _ROOT / "configs" / "adaptive_intervention_pilot_fixture_shots.json"
 
 
 def test_config_freezes_the_literal_action_table_and_policy_constants() -> None:
     config = load_pilot_config(_PILOT_CONFIG)
 
     assert config.schema_version == 1
-    assert config.pilot_id == "adaptive_intervention_pilot_v1"
+    assert config.pilot_id == "adaptive_intervention_pilot_v2"
     assert config.code_distance == 5
     assert config.noise_model == "qecsim_iid_depolarizing_code_capacity"
-    assert config.required_shot_seed_domain == "qldpc-fno/adaptive-intervention-pilot/v1"
+    assert config.required_shot_seed_domain == "qldpc-fno/adaptive-intervention-pilot/v2"
     assert config.required_shots_per_rate == 64
     assert config.required_error_rates == (0.1, 0.15)
     assert config.reference_modes == ("columns", "rows")
@@ -83,8 +84,8 @@ def test_shot_config_has_the_frozen_identity_and_derived_seed() -> None:
     config = load_shot_config(_SHOT_CONFIG)
 
     assert config.schema_version == 1
-    assert config.seed_domain == "qldpc-fno/adaptive-intervention-pilot/v1"
-    assert config.campaign_seed == CAMPAIGN_SEED == 16980117767564665917
+    assert config.seed_domain == "qldpc-fno/adaptive-intervention-pilot/v2"
+    assert config.campaign_seed == CAMPAIGN_SEED == 8908597917812360592
     assert config.campaign_seed == int.from_bytes(
         hashlib.sha256(config.seed_domain.encode()).digest()[:8], "big"
     )
@@ -135,8 +136,8 @@ def test_config_parser_rejects_noncanonical_values(
         (
             "shots",
             (
-                '"campaign_seed": 16980117767564665917',
-                '"campaign_seed": 0,\n  "campaign_seed": 16980117767564665917',
+                '"campaign_seed": 8908597917812360592',
+                '"campaign_seed": 0,\n  "campaign_seed": 8908597917812360592',
             ),
         ),
         (
@@ -662,11 +663,13 @@ def _artifact_fixture(tmp_path):
 
     from qldpc_fno.decision import planar_shot_data as data
 
+    fixture_config = load_shot_config(_FIXTURE_SHOT_CONFIG, non_scientific_fixture=True)
+    assert fixture_config.seed_domain == "qldpc-fno/adaptive-intervention-pilot/test-fixture/v1"
     root = data._repository_root()
     commit, dirty = data._git_provenance(root)
-    binding = data._file_binding(root, _SHOT_CONFIG, commit)
+    binding = data._file_binding(root, _FIXTURE_SHOT_CONFIG, commit)
     payload = {
-        "config": json.loads(_SHOT_CONFIG.read_text()),
+        "config": json.loads(_FIXTURE_SHOT_CONFIG.read_text()),
         "provenance": {
             **data._runtime_provenance(root),
             "git_commit": commit,
@@ -677,7 +680,7 @@ def _artifact_fixture(tmp_path):
             "config_path": binding["path"],
             "config_scope": binding["scope"],
             "config_committed": binding["committed"],
-            "config_content": _SHOT_CONFIG.read_text(),
+            "config_content": _FIXTURE_SHOT_CONFIG.read_text(),
         },
         "shots": [],
     }
@@ -703,11 +706,11 @@ def _artifact_fixture(tmp_path):
 def test_runner_validation_replays_joined_fixture_and_requires_full_scientific_count(tmp_path):
     path, payload = _artifact_fixture(tmp_path)
     assert hasattr(pilot, "validate_pilot_shots"), "pilot artifact validator is missing"
-    _, shots = pilot.validate_pilot_shots(path, _SHOT_CONFIG, non_scientific_fixture=True)
+    _, shots = pilot.validate_pilot_shots(path, _FIXTURE_SHOT_CONFIG, non_scientific_fixture=True)
     assert len(shots) == 2
     assert shots[0]["shot_id"] == payload["shots"][0]["shot_id"]
-    with pytest.raises(ValueError, match="shot count"):
-        pilot.validate_pilot_shots(path, _SHOT_CONFIG)
+    with pytest.raises(ValueError, match="domain"):
+        pilot.validate_pilot_shots(path, _FIXTURE_SHOT_CONFIG)
 
 
 @pytest.mark.parametrize(
@@ -756,7 +759,7 @@ def test_runner_rejects_mutated_shot_artifacts(tmp_path, mutation):
         payload["config"]["extra"] = True
     path.write_text(json.dumps(payload))
     with pytest.raises((ValueError, TypeError)):
-        pilot.validate_pilot_shots(path, _SHOT_CONFIG, non_scientific_fixture=True)
+        pilot.validate_pilot_shots(path, _FIXTURE_SHOT_CONFIG, non_scientific_fixture=True)
 
 
 def test_historical_domains_include_every_declared_seed_domain_and_reject_overlap(tmp_path):
@@ -772,7 +775,7 @@ def test_historical_domains_include_every_declared_seed_domain_and_reject_overla
     (tmp_path / "configs" / "future_confirmation.json").write_text(
         json.dumps(
             {
-                "required_data_seed_domain": "qldpc-fno/adaptive-intervention-pilot/v1",
+                "required_data_seed_domain": "qldpc-fno/adaptive-intervention-pilot/v2",
             }
         )
     )
@@ -883,11 +886,11 @@ def test_runner_rejects_input_mutation_during_validation(tmp_path, monkeypatch):
 def test_fixture_mode_refuses_arbitrary_counts_and_nonboolean_flag(tmp_path):
     path, payload = _artifact_fixture(tmp_path)
     with pytest.raises(TypeError, match="boolean"):
-        pilot.validate_pilot_shots(path, _SHOT_CONFIG, non_scientific_fixture=1)
+        pilot.validate_pilot_shots(path, _FIXTURE_SHOT_CONFIG, non_scientific_fixture=1)
     payload["shots"] *= 2
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="shot count"):
-        pilot.validate_pilot_shots(path, _SHOT_CONFIG, non_scientific_fixture=True)
+        pilot.validate_pilot_shots(path, _FIXTURE_SHOT_CONFIG, non_scientific_fixture=True)
 
 
 def test_clean_committed_scientific_provenance_binds_external_raw_shots(tmp_path, monkeypatch):
@@ -1102,3 +1105,131 @@ def test_published_compact_reference_work_reconstructs_from_raw(tmp_path, monkey
             r["reference"]["views"][mode]["estimated_arithmetic_flops"] for r in raw["shots"]
         )
         assert reference["invalid_shots"] == (2 if mode == "rows" else 0)
+
+
+def test_fixture_config_reserves_its_own_domain_and_both_modes_reject_cross_use():
+    assert _FIXTURE_SHOT_CONFIG.is_file(), "reserved test-fixture config is missing"
+    config = load_shot_config(_FIXTURE_SHOT_CONFIG, non_scientific_fixture=True)
+    assert config.seed_domain == "qldpc-fno/adaptive-intervention-pilot/test-fixture/v1"
+    assert config.campaign_seed == 1727822112359709271
+    assert config.shots_per_rate == 1
+    with pytest.raises(ValueError, match="domain"):
+        load_shot_config(_FIXTURE_SHOT_CONFIG)
+    with pytest.raises(ValueError, match="domain"):
+        load_shot_config(_SHOT_CONFIG, non_scientific_fixture=True)
+
+
+def test_retired_scientific_domain_is_rejected_without_sampling(tmp_path):
+    payload = json.loads(_SHOT_CONFIG.read_text())
+    payload.update(
+        seed_domain="qldpc-fno/adaptive-intervention-pilot/v1", campaign_seed=16980117767564665917
+    )
+    path = tmp_path / "retired.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="domain"):
+        load_shot_config(path)
+
+
+def test_accuracy_oracle_compares_runner_up_below_positive_gain_threshold():
+    selection = select_accuracy_oracle(
+        [
+            _opportunity("columns_chi2", 1.1e-6, 100),
+            _opportunity("rows_chi2", 0.9e-6, 1),
+            _opportunity("columns_chi4", 10, 1, valid=False),
+        ]
+    )
+    assert selection.action_id == "columns_chi2"
+    assert not selection.uniquely_separated
+    assert select_efficiency_oracle(
+        [
+            _opportunity("columns_chi2", 1.1e-6, 100),
+            _opportunity("rows_chi2", 0.9e-6, 1),
+        ]
+    ).uniquely_separated
+
+
+def test_timing_sidecar_binds_outputs_and_captures_every_attempt(tmp_path, monkeypatch):
+    from qldpc_fno.artifacts import sha256_file
+
+    artifact, _ = _artifact_fixture(tmp_path)
+    _fake_contractions(monkeypatch, invalid=("exact_rows", "rows_chi2"))
+    ticks = itertools.count(step=0.25)
+    monkeypatch.setattr(pilot, "perf_counter", lambda: next(ticks), raising=False)
+    out = tmp_path / "result"
+    result = pilot.run_adaptive_intervention_pilot(
+        _PILOT_CONFIG,
+        artifact,
+        out,
+        non_scientific_fixture=True,
+    )
+    assert (out / "timing.json").is_file(), "atomic timing sidecar is missing"
+    timing = json.loads((out / "timing.json").read_text())
+    assert set(timing) == {
+        "schema_version",
+        "status",
+        "measurement",
+        "host",
+        "total_host_wall_seconds",
+        "raw_sha256",
+        "summary_sha256",
+        "provenance",
+        "shots",
+    }
+    assert timing["status"] == "nondeterministic_engineering_metadata"
+    assert timing["measurement"] == "research_host_wall_time_not_decoder_latency"
+    assert timing["raw_sha256"] == sha256_file(out / "intervention_pilot.json")
+    assert timing["summary_sha256"] == sha256_file(out / "summary.json")
+    assert timing["provenance"] == result["provenance"]
+    assert set(timing["host"]) == {"node", "platform", "machine"}
+    assert timing["total_host_wall_seconds"] > 32 * 0.25
+    assert len(timing["shots"]) == 2
+    for timed, raw in zip(timing["shots"], result["shots"], strict=True):
+        assert timed["shot_id"] == raw["shot"]["shot_id"]
+        assert timed["error_rate"] == raw["shot"]["error_rate"]
+        assert timed["shot_index"] == raw["shot"]["shot_index"]
+        assert [attempt["action_id"] for attempt in timed["actions"]] == [
+            "exact_columns",
+            "exact_rows",
+            *ACTION_IDS,
+        ]
+        for attempt in timed["actions"]:
+            assert set(attempt) == {
+                "action_id",
+                "valid",
+                "wall_seconds",
+                "exception_type",
+                "unavailable_reason",
+            }
+            invalid = attempt["action_id"] in {"exact_rows", "rows_chi2"}
+            assert attempt["valid"] is not invalid
+            assert attempt["wall_seconds"] == (None if invalid else 0.25)
+            assert attempt["exception_type"] == ("InvalidContractionError" if invalid else None)
+            assert attempt["unavailable_reason"] == ("invalid_contraction" if invalid else None)
+    for name in ("intervention_pilot.json", "summary.json"):
+        text = (out / name).read_text()
+        assert '"wall_seconds"' not in text
+        assert '"timing"' not in text
+        assert '"total_host_wall_seconds"' not in text
+
+
+def test_timing_write_failure_publishes_none_of_the_three_artifacts(tmp_path, monkeypatch):
+    artifact, _ = _artifact_fixture(tmp_path)
+    _fake_contractions(monkeypatch)
+    write = pilot._write_pilot_json
+
+    def fail_timing(path, payload):
+        if path.name == "timing.json":
+            raise OSError("timing disk failure")
+        write(path, payload)
+
+    monkeypatch.setattr(pilot, "_write_pilot_json", fail_timing)
+    out = tmp_path / "result"
+    with pytest.raises(OSError, match="timing disk failure"):
+        pilot.run_adaptive_intervention_pilot(
+            _PILOT_CONFIG,
+            artifact,
+            out,
+            non_scientific_fixture=True,
+        )
+    assert not out.exists()
+    assert not list(tmp_path.glob(".result-*"))

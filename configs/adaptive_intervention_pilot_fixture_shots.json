@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "seed_domain": "qldpc-fno/adaptive-intervention-pilot/test-fixture/v1",
+  "campaign_seed": 1727822112359709271,
+  "code_distance": 5,
+  "error_rates": [0.1, 0.15],
+  "shots_per_rate": 1,
+  "noise_model": "qecsim_iid_depolarizing_code_capacity"
+}

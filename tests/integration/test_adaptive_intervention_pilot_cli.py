@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+from qldpc_fno.decision import adaptive_intervention_pilot as pilot
 from tests.decision.test_adaptive_intervention_pilot import (
     _PILOT_CONFIG,
     _artifact_fixture,
@@ -24,8 +26,10 @@ def test_reduced_cli_replay_is_byte_identical_and_never_advances(tmp_path, monke
     spec.loader.exec_module(module)
     artifact, _ = _artifact_fixture(tmp_path)
     outputs = [tmp_path / "first", tmp_path / "second"]
-    for out in outputs:
+    for index, out in enumerate(outputs):
         _fake_contractions(monkeypatch)
+        ticks = itertools.count(step=(index + 1) * 0.125)
+        monkeypatch.setattr(pilot, "perf_counter", lambda ticks=ticks: next(ticks), raising=False)
         result = module.run(
             [
                 "--config",
@@ -43,6 +47,8 @@ def test_reduced_cli_replay_is_byte_identical_and_never_advances(tmp_path, monke
         assert result["summary"]["advancement"]["heterogeneous_efficiency_clause"] is False
     for filename in ("intervention_pilot.json", "summary.json"):
         assert (outputs[0] / filename).read_bytes() == (outputs[1] / filename).read_bytes()
+    assert (outputs[0] / "timing.json").is_file(), "timing sidecar is missing"
+    assert (outputs[0] / "timing.json").read_bytes() != (outputs[1] / "timing.json").read_bytes()
 
 
 def test_cli_invalid_artifact_exits_nonzero_without_published_output(tmp_path):

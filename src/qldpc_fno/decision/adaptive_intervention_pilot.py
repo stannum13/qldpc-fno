@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import platform
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 from qecsim import paulitools as pt
@@ -38,11 +40,13 @@ from qldpc_fno.decision.planar_shot_data import (
 from qldpc_fno.decision.tensor_network import InvalidCosetMassError, planar_mps_coset_masses
 
 _NOISE_MODEL = "qecsim_iid_depolarizing_code_capacity"
-_SEED_DOMAIN = "qldpc-fno/adaptive-intervention-pilot/v1"
+_SEED_DOMAIN = "qldpc-fno/adaptive-intervention-pilot/v2"
+_FIXTURE_SEED_DOMAIN = "qldpc-fno/adaptive-intervention-pilot/test-fixture/v1"
 _ERROR_RATES = (0.1, 0.15)
 _REFERENCE_MODES = ("columns", "rows")
 
-CAMPAIGN_SEED = 16980117767564665917
+CAMPAIGN_SEED = 8908597917812360592
+_FIXTURE_CAMPAIGN_SEED = 1727822112359709271
 MARGIN_THRESHOLD = 0.30710401263493464
 ACTION_IDS = (
     "columns_chi2",
@@ -362,7 +366,18 @@ def _selection(candidates: Sequence[CandidateOpportunity], *, efficiency: bool) 
 
     winner = _select_by_metric(eligible, metric)
     winner_metric = float(metric(winner))
-    runner_metrics = [float(metric(candidate)) for candidate in eligible if candidate != winner]
+    comparators = (
+        eligible
+        if efficiency
+        else [
+            candidate for candidate in candidates if candidate.valid and candidate.gain is not None
+        ]
+    )
+    runner_metrics = [
+        float(metric(candidate))
+        for candidate in comparators
+        if candidate.action_id != winner.action_id
+    ]
     if not runner_metrics:
         uniquely_separated = True
     elif efficiency:
@@ -442,7 +457,14 @@ def compact_spectral_summary(work: Mapping | None, *, available: bool) -> dict[s
     }
 
 
-def _run_action(action: ActionConfig, shot: Mapping, config: PilotConfig) -> dict:
+def _run_action(
+    action: ActionConfig,
+    shot: Mapping,
+    config: PilotConfig,
+    *,
+    timing_records: list[dict] | None = None,
+) -> dict:
+    started = perf_counter() if timing_records is not None else None
     try:
         result = planar_mps_coset_masses(
             rows=config.code_distance,
@@ -478,6 +500,17 @@ def _run_action(action: ActionConfig, shot: Mapping, config: PilotConfig) -> dic
     record.update(asdict(action))
     record["estimated_arithmetic_flops"] = int((work or {}).get("estimated_arithmetic_flops", 0))
     record["spectral_summary"] = compact_spectral_summary(work, available=record["valid"])
+    if timing_records is not None:
+        elapsed = perf_counter() - started
+        timing_records.append(
+            {
+                "action_id": action.action_id,
+                "valid": record["valid"],
+                "wall_seconds": elapsed if record["valid"] else None,
+                "exception_type": record["exception_type"],
+                "unavailable_reason": None if record["valid"] else "invalid_contraction",
+            }
+        )
     return record
 
 
@@ -545,13 +578,19 @@ def _pre_action_features(shot: Mapping, probes: Sequence[dict]) -> dict:
     }
 
 
-def evaluate_shot(shot: Mapping[str, object], config: PilotConfig) -> dict[str, object]:
+def evaluate_shot(
+    shot: Mapping[str, object],
+    config: PilotConfig,
+    *,
+    timing_records: list[dict] | None = None,
+) -> dict[str, object]:
     """Evaluate one joined physical shot, retaining every independent run's work.
 
     ``features`` contains only frozen probe observations. Physical outcomes,
     reference targets, retrospective utilities and oracles live under ``labels``.
     Caller-supplied shot identity is copied alongside error and syndrome; this
-    function neither samples errors nor writes artifacts.
+    function neither samples errors nor writes artifacts. Optional timing is
+    appended out of band and never enters the returned inference or oracle data.
     """
     code = PlanarCode(config.code_distance, config.code_distance)
     syndrome = _binary_vector(shot["syndrome"], length=len(code.stabilizers), name="syndrome")
@@ -561,7 +600,12 @@ def evaluate_shot(shot: Mapping[str, object], config: PilotConfig) -> dict[str, 
     if shot["error_rate"] not in config.required_error_rates:
         raise ValueError("shot error_rate is not a frozen pilot rate")
     references = {
-        mode: _run_action(ActionConfig(f"exact_{mode}", mode, None, None), shot, config)
+        mode: _run_action(
+            ActionConfig(f"exact_{mode}", mode, None, None),
+            shot,
+            config,
+            timing_records=timing_records,
+        )
         for mode in config.reference_modes
     }
     certificate, reference_error, reference_message = None, None, None
@@ -587,7 +631,10 @@ def evaluate_shot(shot: Mapping[str, object], config: PilotConfig) -> dict[str, 
     reference_physical = (
         _physical_label(code, shot, reference_class) if target is not None else None
     )
-    actions = {action.action_id: _run_action(action, shot, config) for action in config.actions}
+    actions = {
+        action.action_id: _run_action(action, shot, config, timing_records=timing_records)
+        for action in config.actions
+    }
     probes = [actions[action_id] for action_id in config.probe_action_ids]
     columns, rows = probes
     accepted = margin_gate_accepts(
@@ -968,7 +1015,7 @@ def load_pilot_config(path: Path) -> PilotConfig:
     if (
         type(payload["schema_version"]) is not int
         or payload["schema_version"] != 1
-        or payload["pilot_id"] != "adaptive_intervention_pilot_v1"
+        or payload["pilot_id"] != "adaptive_intervention_pilot_v2"
     ):
         raise ValueError("unsupported pilot schema or identity")
     if payload["required_shot_seed_domain"] != _SEED_DOMAIN:
@@ -1029,7 +1076,7 @@ def load_pilot_config(path: Path) -> PilotConfig:
     actions = _parse_actions(payload["actions"])
     return PilotConfig(
         schema_version=1,
-        pilot_id="adaptive_intervention_pilot_v1",
+        pilot_id="adaptive_intervention_pilot_v2",
         required_shot_seed_domain=_SEED_DOMAIN,
         required_shots_per_rate=64,
         required_error_rates=_ERROR_RATES,
@@ -1048,17 +1095,22 @@ def load_pilot_config(path: Path) -> PilotConfig:
     )
 
 
-def load_shot_config(path: Path) -> ShotConfig:
-    """Load only the frozen 128-shot physical-error configuration."""
+def load_shot_config(path: Path, *, non_scientific_fixture: bool = False) -> ShotConfig:
+    """Load the frozen scientific v2 or explicitly reserved two-shot test identity."""
+    if type(non_scientific_fixture) is not bool:
+        raise TypeError("non_scientific_fixture must be boolean")
     payload = _load_object(path)
     _exact_fields(payload, _SHOT_CONFIG_KEYS, "shot configuration")
     domain = payload["seed_domain"]
-    if not isinstance(domain, str) or domain != _SEED_DOMAIN:
-        raise ValueError("seed_domain must use the frozen pilot domain")
+    required_domain = _FIXTURE_SEED_DOMAIN if non_scientific_fixture else _SEED_DOMAIN
+    required_seed = _FIXTURE_CAMPAIGN_SEED if non_scientific_fixture else CAMPAIGN_SEED
+    required_count = 1 if non_scientific_fixture else 64
+    if not isinstance(domain, str) or domain != required_domain:
+        raise ValueError(f"seed_domain must use the required domain: {required_domain}")
     expected_seed = int.from_bytes(hashlib.sha256(domain.encode()).digest()[:8], "big")
     if type(payload["campaign_seed"]) is not int or payload["campaign_seed"] != expected_seed:
         raise ValueError("campaign_seed must be the SHA-256 derivation of seed_domain")
-    if expected_seed != CAMPAIGN_SEED:
+    if expected_seed != required_seed:
         raise ValueError("campaign_seed does not match the frozen pilot seed")
     rates = payload["error_rates"]
     if (
@@ -1072,7 +1124,7 @@ def load_shot_config(path: Path) -> ShotConfig:
         or type(payload["code_distance"]) is not int
         or payload["code_distance"] != 5
         or type(payload["shots_per_rate"]) is not int
-        or payload["shots_per_rate"] != 64
+        or payload["shots_per_rate"] != required_count
         or payload["noise_model"] != _NOISE_MODEL
     ):
         raise ValueError("shot configuration must match the frozen pilot identity")
@@ -1082,7 +1134,7 @@ def load_shot_config(path: Path) -> ShotConfig:
         campaign_seed=expected_seed,
         code_distance=5,
         error_rates=_ERROR_RATES,
-        shots_per_rate=64,
+        shots_per_rate=required_count,
         noise_model=_NOISE_MODEL,
     )
 
@@ -1126,12 +1178,12 @@ def validate_pilot_shots(
 ) -> tuple[dict, list[dict]]:
     """Validate identity, provenance and exact physical-error/syndrome replay.
 
-    The explicit fixture mode accepts only index zero at each frozen rate. It
-    changes no sampler, domain, action or scoring semantics.
+    Fixture mode accepts only index zero at each frozen rate in the reserved
+    test domain. Neither mode accepts the other's domain or the retired v1.
     """
     if type(non_scientific_fixture) is not bool:
         raise TypeError("non_scientific_fixture must be boolean")
-    config = load_shot_config(shot_config_path)
+    config = load_shot_config(shot_config_path, non_scientific_fixture=non_scientific_fixture)
     payload = _load_object(artifact_path)
     _exact_fields(payload, {"config", "provenance", "shots"}, "shot artifact")
     if json.dumps(payload["config"], sort_keys=True) != json.dumps(
@@ -1272,7 +1324,8 @@ def run_adaptive_intervention_pilot(
     shot_config_path: Path | None = None,
     non_scientific_fixture: bool = False,
 ) -> dict:
-    """Replay frozen shots and atomically publish deterministic raw and compact JSON."""
+    """Atomically publish deterministic results plus a separate host-timing sidecar."""
+    started = perf_counter()
     if type(non_scientific_fixture) is not bool:
         raise TypeError("non_scientific_fixture must be boolean")
     config_path, shots_path, output_dir = map(Path, (config_path, shots_path, output_dir))
@@ -1281,7 +1334,15 @@ def run_adaptive_intervention_pilot(
     shot_config_path = (
         Path(shot_config_path)
         if shot_config_path
-        else (_repository_root() / "configs/adaptive_intervention_pilot_shots.json")
+        else (
+            _repository_root()
+            / "configs"
+            / (
+                "adaptive_intervention_pilot_fixture_shots.json"
+                if non_scientific_fixture
+                else "adaptive_intervention_pilot_shots.json"
+            )
+        )
     )
     provenance = pilot_provenance(
         config_path,
@@ -1295,7 +1356,18 @@ def run_adaptive_intervention_pilot(
         shot_config_path,
         non_scientific_fixture=non_scientific_fixture,
     )
-    results = [evaluate_shot(shot, config) for shot in shots]
+    results, timed_shots = [], []
+    for shot in shots:
+        attempts = []
+        results.append(evaluate_shot(shot, config, timing_records=attempts))
+        timed_shots.append(
+            {
+                "shot_id": shot["shot_id"],
+                "shot_index": shot["shot_index"],
+                "error_rate": shot["error_rate"],
+                "actions": attempts,
+            }
+        )
     summary = summarize_evaluations(results, config)
     if non_scientific_fixture:
         summary["advancement"].update(
@@ -1324,7 +1396,6 @@ def run_adaptive_intervention_pilot(
         "config": asdict(config),
         "shots": results,
         "summary": summary,
-        "timing": {"wall_seconds": None, "reason": "excluded_from_deterministic_artifact"},
     }
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f".{output_dir.name}-", dir=output_dir.parent) as tmp:
@@ -1341,6 +1412,22 @@ def run_adaptive_intervention_pilot(
             "summary": summary,
         }
         _write_pilot_json(staging / "summary.json", compact)
+        timing = {
+            "schema_version": 1,
+            "status": "nondeterministic_engineering_metadata",
+            "measurement": "research_host_wall_time_not_decoder_latency",
+            "host": {
+                "node": platform.node(),
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+            },
+            "raw_sha256": sha256_file(raw_path),
+            "summary_sha256": sha256_file(staging / "summary.json"),
+            "provenance": provenance,
+            "shots": timed_shots,
+            "total_host_wall_seconds": perf_counter() - started,
+        }
+        _write_pilot_json(staging / "timing.json", timing)
         if output_dir.exists() or output_dir.is_symlink():
             raise FileExistsError(f"refusing to overwrite existing output directory: {output_dir}")
         staging.rename(output_dir)
