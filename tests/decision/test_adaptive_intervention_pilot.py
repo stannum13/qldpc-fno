@@ -848,14 +848,14 @@ def test_runner_serialization_failure_is_transactional(tmp_path, monkeypatch):
     assert hasattr(pilot, "run_adaptive_intervention_pilot"), "pilot runner is missing"
     path, _ = _artifact_fixture(tmp_path)
     _fake_contractions(monkeypatch)
-    original = pilot.write_canonical_json
+    original = pilot._write_pilot_json
 
     def write(path, payload):
         if path.name == "summary.json":
             raise OSError("disk failure")
         original(path, payload)
 
-    monkeypatch.setattr(pilot, "write_canonical_json", write)
+    monkeypatch.setattr(pilot, "_write_pilot_json", write)
     out = tmp_path / "result"
     with pytest.raises(OSError, match="disk failure"):
         pilot.run_adaptive_intervention_pilot(_PILOT_CONFIG, path, out, non_scientific_fixture=True)
@@ -947,3 +947,158 @@ def test_clean_committed_scientific_provenance_binds_external_raw_shots(tmp_path
             shots,
             scientific=True,
         )
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_pilot_json_loader_rejects_nonstandard_constants(tmp_path, constant):
+    path = tmp_path / "nonstandard.json"
+    path.write_text('{"provenance": {"unexpected": ' + constant + "}}")
+    with pytest.raises(ValueError, match="JSON constant"):
+        pilot._load_object(path)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), 123])
+def test_runner_rejects_extra_provenance_without_publishing(tmp_path, monkeypatch, value):
+    artifact, payload = _artifact_fixture(tmp_path)
+    payload["provenance"]["unexpected"] = value
+    artifact.write_text(json.dumps(payload))
+    _, calls = _fake_contractions(monkeypatch)
+    out = tmp_path / "result"
+    with pytest.raises(ValueError, match="JSON constant|provenance.*fields"):
+        pilot.run_adaptive_intervention_pilot(
+            _PILOT_CONFIG,
+            artifact,
+            out,
+            non_scientific_fixture=True,
+        )
+    assert not calls
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_pilot_writer_rejects_nonfinite_values_before_creating_a_file(tmp_path, value):
+    assert hasattr(pilot, "_write_pilot_json"), "strict pilot writer is missing"
+    out = tmp_path / "result.json"
+    with pytest.raises(ValueError, match="JSON compliant"):
+        pilot._write_pilot_json(out, {"nested": {"value": value}})
+    assert not out.exists()
+
+
+def test_runner_nonfinite_result_does_not_publish(tmp_path, monkeypatch):
+    artifact, _ = _artifact_fixture(tmp_path)
+    _fake_contractions(monkeypatch)
+    evaluate = pilot.evaluate_shot
+
+    def corrupted(*args, **kwargs):
+        result = evaluate(*args, **kwargs)
+        result["reference"]["views"]["columns"]["work"]["unexpected"] = float("nan")
+        return result
+
+    monkeypatch.setattr(pilot, "evaluate_shot", corrupted)
+    out = tmp_path / "result"
+    with pytest.raises(ValueError, match="JSON compliant"):
+        pilot.run_adaptive_intervention_pilot(
+            _PILOT_CONFIG,
+            artifact,
+            out,
+            non_scientific_fixture=True,
+        )
+    assert not out.exists()
+
+
+def test_reference_summaries_reconstruct_each_view_and_equal_rate_work(monkeypatch):
+    config, _ = _fake_contractions(monkeypatch)
+    records = [pilot.evaluate_shot(_shot(0.1, 0), config)]
+    _fake_contractions(monkeypatch, invalid=("exact_rows",))
+    records.extend(
+        [
+            pilot.evaluate_shot(_shot(0.1, 1), config),
+            pilot.evaluate_shot(_shot(0.15, 0), config),
+        ]
+    )
+    summary = pilot.summarize_evaluations(records, config)
+    assert "references" in summary["equal_rate"], "separate reference work summaries are missing"
+    for mode in ("columns", "rows"):
+        rate_means, rate_validity = [], []
+        for rate_summary in summary["per_rate"]:
+            views = [
+                r["reference"]["views"][mode]
+                for r in records
+                if r["shot"]["error_rate"] == rate_summary["error_rate"]
+            ]
+            work = [view["estimated_arithmetic_flops"] for view in views]
+            valid = sum(view["valid"] for view in views)
+            invalid_work = sum(
+                view["estimated_arithmetic_flops"] for view in views if not view["valid"]
+            )
+            ref = rate_summary["references"]["exact_" + mode]
+            assert ref["attempted_shots"] == len(views)
+            assert ref["valid_shots"] == valid
+            assert ref["invalid_shots"] == len(views) - valid
+            assert ref["validity_rate"] == valid / len(views)
+            assert ref["estimated_arithmetic_flops_values"] == work
+            assert ref["estimated_arithmetic_flops_total"] == sum(work)
+            assert ref["estimated_arithmetic_flops_mean"] == sum(work) / len(work)
+            assert ref["invalid_estimated_arithmetic_flops_total"] == invalid_work
+            rate_means.append(sum(work) / len(work))
+            rate_validity.append(valid / len(views))
+        equal = summary["equal_rate"]["references"]["exact_" + mode]
+        views = [r["reference"]["views"][mode] for r in records]
+        assert equal["attempted_shots"] == len(views)
+        assert equal["valid_shots"] == sum(v["valid"] for v in views)
+        assert equal["invalid_shots"] == sum(not v["valid"] for v in views)
+        assert equal["estimated_arithmetic_flops_values"] == [
+            v["estimated_arithmetic_flops"] for v in views
+        ]
+        assert equal["estimated_arithmetic_flops_weights"] == [0.25, 0.25, 0.5]
+        assert equal["estimated_arithmetic_flops_total"] == sum(
+            v["estimated_arithmetic_flops"] for v in views
+        )
+        assert equal["invalid_estimated_arithmetic_flops_total"] == sum(
+            v["estimated_arithmetic_flops"] for v in views if not v["valid"]
+        )
+        assert equal["estimated_arithmetic_flops_mean"] == sum(rate_means) / 2
+        assert equal["validity_rate"] == sum(rate_validity) / 2
+    assert summary["equal_rate"]["references"]["exact_rows"]["invalid_shots"] == 2
+    assert (
+        summary["equal_rate"]["references"]["exact_rows"][
+            "invalid_estimated_arithmetic_flops_total"
+        ]
+        == 200
+    )
+
+
+def test_reference_equal_rate_summary_is_null_when_one_rate_is_missing(monkeypatch):
+    config, _ = _fake_contractions(monkeypatch)
+    summary = pilot.summarize_evaluations([pilot.evaluate_shot(_shot(), config)], config)
+    assert "references" in summary["equal_rate"], "separate reference work summaries are missing"
+    for reference in summary["equal_rate"]["references"].values():
+        assert reference["attempted_shots"] == 1
+        assert reference["estimated_arithmetic_flops_mean"] is None
+        assert reference["estimated_arithmetic_flops_weights"] is None
+        assert reference["validity_rate"] is None
+
+
+def test_published_compact_reference_work_reconstructs_from_raw(tmp_path, monkeypatch):
+    artifact, _ = _artifact_fixture(tmp_path)
+    _fake_contractions(monkeypatch, invalid=("exact_rows",))
+    out = tmp_path / "result"
+    pilot.run_adaptive_intervention_pilot(
+        _PILOT_CONFIG,
+        artifact,
+        out,
+        non_scientific_fixture=True,
+    )
+    raw = json.loads((out / "intervention_pilot.json").read_text())
+    compact = json.loads((out / "summary.json").read_text())
+    assert "references" in compact["summary"]["equal_rate"], "reference work absent from compact"
+    assert compact["summary"] == pilot.summarize_evaluations(
+        raw["shots"],
+        load_pilot_config(_PILOT_CONFIG),
+    )
+    for mode in ("columns", "rows"):
+        reference = compact["summary"]["equal_rate"]["references"]["exact_" + mode]
+        assert reference["estimated_arithmetic_flops_total"] == sum(
+            r["reference"]["views"][mode]["estimated_arithmetic_flops"] for r in raw["shots"]
+        )
+        assert reference["invalid_shots"] == (2 if mode == "rows" else 0)

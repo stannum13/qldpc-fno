@@ -15,7 +15,7 @@ from qecsim import paulitools as pt
 from qecsim.models.generic import DepolarizingErrorModel
 from qecsim.models.planar import PlanarCode
 
-from qldpc_fno.artifacts import sha256_file, write_canonical_json
+from qldpc_fno.artifacts import sha256_file
 from qldpc_fno.decision import adaptive_diagnostics as _diagnostics
 from qldpc_fno.decision.planar_shot_accuracy import (
     _binary_vector,
@@ -106,6 +106,19 @@ _SHOT_CONFIG_KEYS = {
     "noise_model",
 }
 _ACTION_KEYS = {"action_id", "mode", "chi", "tol"}
+_SHOT_PROVENANCE_KEYS = {
+    "qecsim_version",
+    "git_commit",
+    "git_dirty",
+    "config_sha256",
+    "config_path",
+    "config_scope",
+    "config_committed",
+    "config_content",
+    "source_sha256",
+    "dependencies",
+    "matching_backend",
+}
 
 
 @dataclass(frozen=True)
@@ -697,6 +710,24 @@ def _mean(values: Sequence) -> float | None:
     return float(sum(values) / len(values)) if values else None
 
 
+def _reference_work_summary(views: Sequence[dict]) -> dict:
+    """Account for each attempted view, independently of two-view certification."""
+    valid = sum(view["valid"] for view in views)
+    work = [view["estimated_arithmetic_flops"] for view in views]
+    return {
+        "attempted_shots": len(views),
+        "valid_shots": valid,
+        "invalid_shots": len(views) - valid,
+        "validity_rate": _mean([view["valid"] for view in views]),
+        "estimated_arithmetic_flops_values": work,
+        "estimated_arithmetic_flops_total": sum(work),
+        "estimated_arithmetic_flops_mean": _mean(work),
+        "invalid_estimated_arithmetic_flops_total": sum(
+            view["estimated_arithmetic_flops"] for view in views if not view["valid"]
+        ),
+    }
+
+
 def _rate_summary(results: Sequence[dict], rate: float) -> dict:
     certified = sum(r["reference"]["certified"] for r in results)
     summary = {
@@ -708,6 +739,12 @@ def _rate_summary(results: Sequence[dict], rate: float) -> dict:
         "escalated_shots": sum(r["gate"]["escalated"] for r in results),
         "actions": {},
         "candidates": {},
+        "references": {
+            f"exact_{mode}": _reference_work_summary(
+                [r["reference"]["views"][mode] for r in results]
+            )
+            for mode in _REFERENCE_MODES
+        },
         "total_estimated_arithmetic_flops": sum(
             r["total_estimated_arithmetic_flops"] for r in results
         ),
@@ -795,9 +832,30 @@ def summarize_evaluations(results: Sequence[dict], config: PilotConfig) -> dict[
         },
         key=ACTION_IDS.index,
     )
-    equal_rate = {"actions": {}, "candidates": {}}
+    equal_rate = {"actions": {}, "candidates": {}, "references": {}}
     gate_rates = [rate["gate_acceptance_rate"] for rate in per_rate]
     equal_rate["gate_acceptance_rate"] = _mean(gate_rates) if None not in gate_rates else None
+    for mode in _REFERENCE_MODES:
+        # Counts and totals describe actual attempts. Means and empirical weights
+        # describe an equal-rate mixture, even for unequal diagnostic sample sizes.
+        reference = _reference_work_summary(
+            [
+                r["reference"]["views"][mode]
+                for rate in config.required_error_rates
+                for r in results
+                if r["shot"]["error_rate"] == rate
+            ]
+        )
+        for metric in ("estimated_arithmetic_flops_mean", "validity_rate"):
+            values = [rate["references"][f"exact_{mode}"][metric] for rate in per_rate]
+            reference[metric] = _mean(values) if None not in values else None
+        counts = [rate["attempted_shots"] for rate in per_rate]
+        reference["estimated_arithmetic_flops_weights"] = (
+            [1 / (len(counts) * count) for count in counts for _ in range(count)]
+            if all(counts)
+            else None
+        )
+        equal_rate["references"][f"exact_{mode}"] = reference
     for action_id in ACTION_IDS:
         action = {}
         for key in per_rate[0]["actions"][action_id]:
@@ -836,9 +894,17 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
     return result
 
 
+def _reject_nonstandard_json_constant(value: str) -> None:
+    raise ValueError(f"nonstandard JSON constant: {value}")
+
+
 def _load_object(path: Path) -> dict[str, object]:
     try:
-        value = json.loads(Path(path).read_text(), object_pairs_hook=_reject_duplicate_json_keys)
+        value = json.loads(
+            Path(path).read_text(),
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"invalid JSON configuration: {path}") from error
     if not isinstance(value, dict):
@@ -1080,6 +1146,7 @@ def validate_pilot_shots(
     provenance = payload["provenance"]
     if not isinstance(provenance, dict):
         raise TypeError("shot artifact provenance missing")
+    _exact_fields(provenance, _SHOT_PROVENANCE_KEYS, "shot provenance")
     clean = _validate_shot_manifest(payload, _repository_root())
     if provenance["config_sha256"] != sha256_file(shot_config_path):
         raise ValueError("shot configuration hash mismatch")
@@ -1190,6 +1257,13 @@ def pilot_provenance(
     return provenance
 
 
+def _write_pilot_json(path: Path, value: Mapping[str, object]) -> None:
+    """Serialize strict canonical JSON completely before creating the output file."""
+    content = json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
 def run_adaptive_intervention_pilot(
     config_path: Path,
     shots_path: Path,
@@ -1256,7 +1330,7 @@ def run_adaptive_intervention_pilot(
     with tempfile.TemporaryDirectory(prefix=f".{output_dir.name}-", dir=output_dir.parent) as tmp:
         staging = Path(tmp) / "publication"
         raw_path = staging / "intervention_pilot.json"
-        write_canonical_json(raw_path, result)
+        _write_pilot_json(raw_path, result)
         compact = {
             "schema_version": 1,
             "status": result["status"],
@@ -1266,7 +1340,7 @@ def run_adaptive_intervention_pilot(
             "provenance": provenance,
             "summary": summary,
         }
-        write_canonical_json(staging / "summary.json", compact)
+        _write_pilot_json(staging / "summary.json", compact)
         if output_dir.exists() or output_dir.is_symlink():
             raise FileExistsError(f"refusing to overwrite existing output directory: {output_dir}")
         staging.rename(output_dir)
