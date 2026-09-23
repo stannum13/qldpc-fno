@@ -311,18 +311,14 @@ def bootstrap_saving(paired: np.ndarray) -> dict[str, object]:
     """Bootstrap the frozen equal-rate mean paired relative-work saving."""
     if not isinstance(paired, np.ndarray):
         raise TypeError("paired data must be a NumPy array")
-    if paired.shape == (2, 2, 11):
-        return _bootstrap_record(
-            status="fixture_only",
-            estimate=None,
-            lower_bound=None,
-            passed=False,
-            unavailable_reason="fixture_analysis_is_noninferential",
-        )
-    if paired.shape != (2, 2048, 11):
-        raise ValueError("paired data must have shape (2,2048,11)")
-    if not np.issubdtype(paired.dtype, np.number) or np.issubdtype(paired.dtype, np.bool_):
-        raise ValueError("paired data must have a non-boolean numeric dtype")
+    fixture = paired.shape == (2, 2, 11)
+    if not fixture and paired.shape != (2, 2048, 11):
+        raise ValueError("paired data must have shape (2,2048,11) or fixture shape (2,2,11)")
+    real_numeric = np.issubdtype(paired.dtype, np.integer) or np.issubdtype(
+        paired.dtype, np.floating
+    )
+    if not real_numeric or np.issubdtype(paired.dtype, np.bool_):
+        raise ValueError("paired data must have a real numeric non-boolean dtype")
 
     numeric = np.asarray(paired, dtype=np.float64)
     if not bool(np.all(np.isfinite(numeric))):
@@ -337,6 +333,14 @@ def bootstrap_saving(paired: np.ndarray) -> dict[str, object]:
     outcomes = numeric[:, :, 3:]
     if not bool(np.all((outcomes == 0.0) | (outcomes == 1.0))):
         return _unavailable_bootstrap("nonbinary_outcomes")
+    if fixture:
+        return _bootstrap_record(
+            status="fixture_only",
+            estimate=None,
+            lower_bound=None,
+            passed=False,
+            unavailable_reason="fixture_analysis_is_noninferential",
+        )
 
     rng = np.random.Generator(np.random.PCG64(_BOOTSTRAP_SEED_LITERAL))
     replicates = np.empty(10_000, dtype=np.float64)

@@ -733,15 +733,58 @@ def test_bootstrap_rejects_wrong_shape_or_nonnumeric_array(paired: np.ndarray) -
         bootstrap_saving(paired)
 
 
+@pytest.mark.parametrize("shots", [2, 2048])
+def test_bootstrap_rejects_complex_arrays_before_imaginary_work_is_discarded(
+    shots: int,
+) -> None:
+    paired = np.zeros((2, shots, 11), dtype=np.complex128)
+    paired[:, :, 0] = 25.0 + 999.0j
+    paired[:, :, 1] = 100.0
+
+    with pytest.raises(ValueError, match="real numeric"):
+        bootstrap_saving(paired)
+
+
 def test_bootstrap_rejects_non_array_input() -> None:
     with pytest.raises(TypeError):
         bootstrap_saving([])  # type: ignore[arg-type]
 
 
 def test_bootstrap_fixture_shape_never_runs_inference() -> None:
-    result = bootstrap_saving(np.zeros((2, 2, 11), dtype=np.float64))
+    paired = np.zeros((2, 2, 11), dtype=np.float64)
+    paired[:, :, 0] = 25.0
+    paired[:, :, 1] = 100.0
+    paired[:, :, 2] = 40.0
+    result = bootstrap_saving(paired)
     assert result["status"] == "fixture_only"
     assert result["estimate"] is None
     assert result["lower_bound"] is None
     assert result["passed"] is False
     assert result["unavailable_reason"] == "fixture_analysis_is_noninferential"
+
+
+@pytest.mark.parametrize(
+    ("index", "value", "reason"),
+    [
+        ((0, 0, 0), np.nan, "nonfinite_values"),
+        ((0, 0, 0), -1.0, "negative_work"),
+        ((0, 0, 0), 1.5, "noninteger_work"),
+        ((0, 0, 1), 0.0, "nonpositive_comparator_work"),
+        ((0, 0, 3), 2.0, "nonbinary_outcomes"),
+    ],
+)
+def test_bootstrap_fixture_contents_are_validated_before_fixture_status(
+    index: tuple[int, int, int], value: float, reason: str
+) -> None:
+    paired = np.zeros((2, 2, 11), dtype=np.float64)
+    paired[:, :, 0] = 25.0
+    paired[:, :, 1] = 100.0
+    paired[:, :, 2] = 40.0
+    paired[index] = value
+
+    result = bootstrap_saving(paired)
+    assert result["status"] == "unavailable"
+    assert result["unavailable_reason"] == reason
+    assert result["estimate"] is None
+    assert result["lower_bound"] is None
+    assert result["passed"] is False
