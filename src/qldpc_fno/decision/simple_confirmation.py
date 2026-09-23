@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 from pathlib import Path
@@ -25,6 +26,9 @@ SCIENTIFIC_CAMPAIGN_SEED = _SCIENTIFIC_CAMPAIGN_SEED_LITERAL
 FIXTURE_CAMPAIGN_SEED = _FIXTURE_CAMPAIGN_SEED_LITERAL
 BOOTSTRAP_SEED = _BOOTSTRAP_SEED_LITERAL
 MARGIN_THRESHOLD = _MARGIN_THRESHOLD_LITERAL
+
+POLICY_IDS = ("fixed_rows_tol003", "margin_columns_chi8", "fixed_columns_chi8")
+_ARM_ORDERS = tuple(itertools.permutations(POLICY_IDS))
 
 _NOISE_MODEL = "qecsim_iid_depolarizing_code_capacity"
 _SHOT_KEYS = {
@@ -272,6 +276,13 @@ def event_indicators(
     if not reference_valid or not policy_valid:
         return True, True
     return policy_class != reference_class, policy_failure != reference_failure
+
+
+def arm_order(shot_index: int) -> tuple[str, str, str]:
+    """Return the frozen counterbalanced policy order for one within-rate index."""
+    if type(shot_index) is not int or shot_index < 0:
+        raise ValueError("invalid shot index")
+    return _ARM_ORDERS[shot_index % len(_ARM_ORDERS)]
 
 
 def _bootstrap_record(
