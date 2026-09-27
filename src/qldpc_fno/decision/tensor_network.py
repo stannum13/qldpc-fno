@@ -139,6 +139,21 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
     original_einsum_path = qecsim_mps.np.einsum_path
     original_mps2d_contract = qecsim_mps2d.contract
     active_sweep_index: int | None = None
+    active_sweep_counters: dict[str, int] | None = None
+
+    def empty_scope_counters() -> dict[str, int]:
+        return {
+            "pairwise_contractions": 0,
+            "einsum_calls": 0,
+            "einsum_estimated_flops": 0,
+            "pairwise_output_elements": 0,
+            "peak_observed_array_elements": 0,
+        }
+
+    terminal_counters = empty_scope_counters()
+
+    def current_scope() -> dict[str, int]:
+        return terminal_counters if active_sweep_counters is None else active_sweep_counters
 
     def cumulative_flops() -> int:
         return int(trace["einsum_estimated_flops"]) + int(
@@ -146,15 +161,23 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         )
 
     def observe(*values: Any) -> None:
+        elements = sum(_array_elements(value) for value in values)
         trace["peak_observed_array_elements"] = max(
-            int(trace["peak_observed_array_elements"]),
-            sum(_array_elements(value) for value in values),
+            int(trace["peak_observed_array_elements"]), elements
+        )
+        scope = current_scope()
+        scope["peak_observed_array_elements"] = max(
+            scope["peak_observed_array_elements"], elements
         )
 
     def pairwise(left: Any, right: Any) -> Any:
         result = original_pairwise(left, right)
+        output_elements = _array_elements(result)
         trace["pairwise_contractions"] += 1
-        trace["pairwise_output_elements"] += _array_elements(result)
+        trace["pairwise_output_elements"] += output_elements
+        scope = current_scope()
+        scope["pairwise_contractions"] += 1
+        scope["pairwise_output_elements"] += output_elements
         observe(left, right, result)
         return result
 
@@ -199,7 +222,11 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         if match is None:
             raise RuntimeError("NumPy einsum path omitted its FLOP estimate")
         trace["einsum_calls"] += 1
-        trace["einsum_estimated_flops"] += int(float(match.group(1)))
+        estimated_flops = int(float(match.group(1)))
+        trace["einsum_estimated_flops"] += estimated_flops
+        scope = current_scope()
+        scope["einsum_calls"] += 1
+        scope["einsum_estimated_flops"] += estimated_flops
         result = original_einsum(subscripts, *operands, **kwargs)
         observe(operands, result)
         return result
@@ -281,7 +308,7 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         return result
 
     def contract_2d(tn: Any, *args: Any, **kwargs: Any) -> Any:
-        nonlocal active_sweep_index
+        nonlocal active_sweep_counters, active_sweep_index
         if active_sweep_index is not None:
             raise RuntimeError("nested qecsim 2-D contraction trace is unsupported")
         sweeps = trace["contraction_sweeps"]
@@ -290,6 +317,7 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         assert isinstance(truncation_events, list)
         sweep_index = len(sweeps)
         active_sweep_index = sweep_index
+        active_sweep_counters = empty_scope_counters()
         start_flops = cumulative_flops()
         start_pairwise = int(trace["pairwise_contractions"])
         start_truncations = len(truncation_events)
@@ -302,7 +330,10 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
             failure = {"exception_type": type(error).__name__, "message": str(error)}
             raise
         finally:
+            assert active_sweep_counters is not None
+            scope_counters = active_sweep_counters
             active_sweep_index = None
+            active_sweep_counters = None
             sweep = {
                 "index": sweep_index,
                 "network_rows": int(tn.shape[0]),
@@ -313,6 +344,7 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
                 "truncation_event_start": start_truncations,
                 "truncation_event_stop": len(truncation_events),
                 "estimated_arithmetic_flops": cumulative_flops() - start_flops,
+                **scope_counters,
             }
             if failure is not None:
                 sweep["failure"] = failure
@@ -342,6 +374,12 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         trace["terminal_residual_estimated_arithmetic_flops"] = cumulative_flops() - sum(
             int(sweep["estimated_arithmetic_flops"]) for sweep in sweeps
         )
+        trace["terminal_trace_counters"] = {
+            **terminal_counters,
+            "estimated_arithmetic_flops": trace[
+                "terminal_residual_estimated_arithmetic_flops"
+            ],
+        }
         qecsim_mps.contract_pairwise = original_pairwise
         qecsim_mps.truncate = original_truncate
         qecsim_mps.sp_linalg.svd = original_svd

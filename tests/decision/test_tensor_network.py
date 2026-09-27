@@ -107,6 +107,42 @@ def test_successful_decomposition_attempt_metadata(kind: str, expected_flops: in
     ]
     assert work["estimated_dense_decomposition_flops"] == expected_flops
     assert work["estimated_arithmetic_flops"] == expected_flops
+    assert work["terminal_trace_counters"] == {
+        "pairwise_contractions": 0,
+        "einsum_calls": 0,
+        "einsum_estimated_flops": 0,
+        "pairwise_output_elements": 0,
+        "peak_observed_array_elements": work["peak_observed_array_elements"],
+        "estimated_arithmetic_flops": expected_flops,
+    }
+
+
+def test_trace_scope_counters_exactly_reconstruct_global_counters() -> None:
+    result = planar_mps_coset_masses(
+        rows=3,
+        columns=3,
+        syndrome=np.zeros(12, dtype=np.uint8),
+        error_rate=0.1,
+        chi=4,
+        tol=None,
+        mode="columns",
+        trace_work=True,
+    )
+    work = result.work
+    assert work is not None
+    scopes = [*work["contraction_sweeps"], work["terminal_trace_counters"]]
+
+    for field in (
+        "pairwise_contractions",
+        "einsum_calls",
+        "einsum_estimated_flops",
+        "pairwise_output_elements",
+        "estimated_arithmetic_flops",
+    ):
+        assert sum(scope[field] for scope in scopes) == work[field]
+    assert max(scope["peak_observed_array_elements"] for scope in scopes) == work[
+        "peak_observed_array_elements"
+    ]
 
 
 def test_svd_retry_charges_both_attempts_and_only_summarizes_success(

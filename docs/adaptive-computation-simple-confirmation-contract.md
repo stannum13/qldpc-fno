@@ -337,6 +337,15 @@ this contract, including action table, counts, domains, thresholds, ordering,
 bootstrap algorithm, and invalidity/status rules. No runtime scientific overrides
 are permitted. The plan specifies exact nested summary/provenance field sets.
 
+For this pre-opening confirmation version, each contraction sweep additionally
+records `einsum_calls, einsum_estimated_flops, pairwise_output_elements,
+peak_observed_array_elements`, alongside its existing pairwise and arithmetic
+counters. Work records also contain `terminal_trace_counters` with those fields
+plus `pairwise_contractions` and `estimated_arithmetic_flops` for operations
+outside a named 2-D sweep. Global additive counters must equal the sum of all
+sweep and terminal scopes, and the global peak must equal their maximum. This
+adds audit evidence without changing the arithmetic-work definition.
+
 The immutable run status is `complete_pending_replay` (or
 `reduced_non_scientific` for fixtures). Before independent replay, a numerical
 policy pass is labeled `gates_passed_pending_replay`, never a final confirmation
