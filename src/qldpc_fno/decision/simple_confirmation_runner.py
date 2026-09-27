@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from time import perf_counter
+from types import MappingProxyType
 
 import numpy as np
 from qecsim import paulitools as pt
@@ -18,29 +19,32 @@ from qldpc_fno.decision.planar_shot_accuracy import (
     logical_class_recovery,
     score_recovery,
 )
-from qldpc_fno.decision.simple_confirmation import (
-    MARGIN_THRESHOLD,
-    arm_order,
-    event_indicators,
-)
+from qldpc_fno.decision.simple_confirmation import arm_order, event_indicators
 from qldpc_fno.decision.tensor_network import (
     InvalidCosetMassError,
     planar_mps_coset_masses,
 )
 
-_ACTION_SPECS: dict[str, tuple[str, int | None, float | None]] = {
-    "rows_tol003": ("rows", None, 0.003),
-    "columns_tol01": ("columns", None, 0.01),
-    "rows_tol01": ("rows", None, 0.01),
-    "columns_chi8": ("columns", 8, None),
-    "exact_columns": ("columns", None, None),
-    "exact_rows": ("rows", None, None),
-}
-_POLICY_ACTIONS = {
-    "fixed_rows_tol003": ("rows_tol003",),
-    "margin_columns_chi8": ("columns_tol01", "rows_tol01"),
-    "fixed_columns_chi8": ("columns_chi8",),
-}
+_MARGIN_THRESHOLD_LITERAL = 0.30710401263493464
+# Public snapshot for diagnostics only; scientific routing uses the private literal.
+MARGIN_THRESHOLD = _MARGIN_THRESHOLD_LITERAL
+_ACTION_SPECS = MappingProxyType(
+    {
+        "rows_tol003": ("rows", None, 0.003),
+        "columns_tol01": ("columns", None, 0.01),
+        "rows_tol01": ("rows", None, 0.01),
+        "columns_chi8": ("columns", 8, None),
+        "exact_columns": ("columns", None, None),
+        "exact_rows": ("rows", None, None),
+    }
+)
+_POLICY_ACTIONS = MappingProxyType(
+    {
+        "fixed_rows_tol003": ("rows_tol003",),
+        "margin_columns_chi8": ("columns_tol01", "rows_tol01"),
+        "fixed_columns_chi8": ("columns_chi8",),
+    }
+)
 _RATES = (0.1, 0.15)
 
 
@@ -259,7 +263,7 @@ def run_policy(
             columns["selected_class"],
             rows["probabilities"],
             rows["selected_class"],
-            threshold=MARGIN_THRESHOLD,
+            threshold=_MARGIN_THRESHOLD_LITERAL,
         )
         if not accepted:
             actions.append(

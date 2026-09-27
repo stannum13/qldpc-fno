@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from types import MappingProxyType
 
 import numpy as np
 import pytest
 from qecsim import paulitools as pt
 from qecsim.models.planar import PlanarCode
 
+from qldpc_fno.decision import simple_confirmation as confirmation
 from qldpc_fno.decision import simple_confirmation_runner as runner
 from qldpc_fno.decision.simple_confirmation import MARGIN_THRESHOLD, arm_order
 from qldpc_fno.decision.tensor_network import (
@@ -187,8 +189,40 @@ def test_margin_at_threshold_escalates_without_reference_input(monkeypatch) -> N
     assert len(calls) == 7
 
 
+def test_public_threshold_rebinding_cannot_change_scientific_routing(monkeypatch) -> None:
+    below_frozen_threshold = (0.55, 0.3, 0.1, 0.05)
+
+    def chooser(mode, chi, tol, call):
+        del mode, chi, call
+        return below_frozen_threshold if tol == 0.01 else (0.8, 0.1, 0.06, 0.04)
+
+    contract, calls = _fake_contractor(chooser)
+    monkeypatch.setattr(runner, "planar_mps_coset_masses", contract)
+    monkeypatch.setattr(confirmation, "MARGIN_THRESHOLD", 0.0)
+    monkeypatch.setattr(runner, "MARGIN_THRESHOLD", 0.0)
+
+    row = runner.evaluate_shot(_shot(), timing=[])
+
+    margin = next(
+        policy for policy in row["policies"]
+        if policy["policy_id"] == "margin_columns_chi8"
+    )
+    assert margin["gate_accepted"] is False
+    assert len(margin["action_invocation_ids"]) == 3
+    assert len(calls) == 7
+
+
+def test_frozen_action_and_policy_tables_reject_reachable_mutation() -> None:
+    assert isinstance(runner._ACTION_SPECS, MappingProxyType)
+    assert isinstance(runner._POLICY_ACTIONS, MappingProxyType)
+    with pytest.raises(TypeError):
+        runner._ACTION_SPECS["rows_tol003"] = ("columns", 8, None)
+    with pytest.raises(TypeError):
+        runner._POLICY_ACTIONS["fixed_rows_tol003"] = ("columns_chi8",)
+
+
 def test_probe_disagreement_runs_fallback_separately_from_fixed_column(monkeypatch) -> None:
-    chi8_object_ids: list[int] = []
+    chi8_results: list[PlanarCosetMasses] = []
 
     def contract(**kwargs):
         if kwargs["tol"] == 0.01:
@@ -197,14 +231,14 @@ def test_probe_disagreement_runs_fallback_separately_from_fixed_column(monkeypat
             masses = (0.8, 0.1, 0.06, 0.04)
         result = _result(masses, mode=kwargs["mode"], chi=kwargs["chi"], tol=kwargs["tol"])
         if kwargs["chi"] == 8:
-            chi8_object_ids.append(id(result))
+            chi8_results.append(result)
         return result
 
     monkeypatch.setattr(runner, "planar_mps_coset_masses", contract)
     row = runner.evaluate_shot(_shot(), timing=[])
 
-    assert len(chi8_object_ids) == 2
-    assert len(set(chi8_object_ids)) == 2
+    assert len(chi8_results) == 2
+    assert chi8_results[0] is not chi8_results[1]
     chi8_actions = [action for action in row["actions"] if action["action_id"] == "columns_chi8"]
     assert [action["invocation_id"] for action in chi8_actions] == [
         "margin_columns_chi8/columns_chi8",
@@ -236,6 +270,34 @@ def test_invalid_probes_are_all_attempted_and_valid_fallback_is_scored(
     assert margin["valid_recovery"] is True
     assert margin["physical_failure"] is False
     assert margin["estimated_arithmetic_flops"] == invalid_probe_count * 13 + (3 - invalid_probe_count) * 10
+
+
+def test_second_probe_only_invalid_is_charged_before_valid_fallback(monkeypatch) -> None:
+    probe_count = 0
+
+    def chooser(mode, chi, tol, call):
+        nonlocal probe_count
+        del mode, call
+        if tol == 0.01:
+            probe_count += 1
+            if probe_count == 2:
+                return InvalidCosetMassError(np.array([np.nan] * 4), _work(19))
+        return (0.8, 0.1, 0.06, 0.04)
+
+    contract, calls = _fake_contractor(chooser)
+    monkeypatch.setattr(runner, "planar_mps_coset_masses", contract)
+
+    row = runner.evaluate_shot(_shot(), timing=[])
+
+    margin = next(
+        policy for policy in row["policies"]
+        if policy["policy_id"] == "margin_columns_chi8"
+    )
+    assert probe_count == 2
+    assert len(calls) == 7
+    assert margin["gate_accepted"] is False
+    assert margin["valid_recovery"] is True
+    assert margin["estimated_arithmetic_flops"] == 39
 
 
 def test_invalid_fallback_forces_both_events_and_retains_partial_work(monkeypatch) -> None:
