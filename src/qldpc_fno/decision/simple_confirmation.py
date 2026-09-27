@@ -122,6 +122,7 @@ _WORK_KEYS = {
     "estimated_dense_decomposition_flops", "estimated_arithmetic_flops",
     "decomposition_attempts", "peak_observed_array_elements", "truncation_events",
     "contraction_sweeps", "terminal_residual_estimated_arithmetic_flops",
+    "terminal_trace_counters",
 }
 _ATTEMPT_KEYS = {
     "decomposition_kind", "matrix_rows", "matrix_columns", "estimated_flops", "succeeded",
@@ -140,9 +141,15 @@ _SPECTRUM_KEYS = {
 _SWEEP_KEYS = {
     "index", "network_rows", "network_columns", "requested_chi", "requested_tol",
     "pairwise_contractions", "truncation_event_start", "truncation_event_stop",
-    "estimated_arithmetic_flops", "label",
+    "estimated_arithmetic_flops", "label", "einsum_calls", "einsum_estimated_flops",
+    "pairwise_output_elements", "peak_observed_array_elements",
 }
 _FAILURE_KEYS = {"exception_type", "message"}
+_TERMINAL_TRACE_KEYS = {
+    "pairwise_contractions", "einsum_calls", "einsum_estimated_flops",
+    "pairwise_output_elements", "peak_observed_array_elements",
+    "estimated_arithmetic_flops",
+}
 _SELECTED_POLICIES = ("fixed_rows_tol003", "margin_columns_chi8")
 _ENDPOINTS = ("class_mismatch", "outcome_discordance")
 _RATES = (0.1, 0.15)
@@ -518,11 +525,21 @@ def _decomposition_cost(kind: str, rows: int, columns: int) -> int:
     raise ValueError("unknown decomposition kind")
 
 
-def _validate_work(value: object) -> int | None:
+def _validate_work(
+    value: object,
+    *,
+    mode: str,
+    chi: int | None,
+    tolerance: float | None,
+    action_valid: bool,
+) -> int | None:
     if value is None:
         return None
     work = _exact_fields(value, _WORK_KEYS, "work")
-    integer_fields = _WORK_KEYS - {"decomposition_attempts", "truncation_events", "contraction_sweeps"}
+    integer_fields = _WORK_KEYS - {
+        "decomposition_attempts", "truncation_events", "contraction_sweeps",
+        "terminal_trace_counters",
+    }
     for field in integer_fields:
         _strict_int(work[field], f"work.{field}")
     attempts = work["decomposition_attempts"]
@@ -562,8 +579,10 @@ def _validate_work(value: object) -> int | None:
     truncations = work["truncation_events"]
     if not isinstance(truncations, list):
         raise TypeError("work.truncation_events must be a list")
-    for raw in truncations:
+    for event_index, raw in enumerate(truncations):
         event = _exact_fields(raw, _TRUNCATION_KEYS, "truncation event")
+        if event["index"] != event_index:
+            raise ValueError("truncation event index is not canonical")
         for field in (
             "index", "input_bond_dimension", "input_elements", "output_bond_dimension",
             "output_elements", "cumulative_estimated_arithmetic_flops",
@@ -579,6 +598,13 @@ def _validate_work(value: object) -> int | None:
         if event["requested_chi"] is not None:
             _strict_int(event["requested_chi"], "truncation.requested_chi", minimum=1)
         _nullable_positive(event["requested_tol"], "truncation.requested_tol")
+        if (
+            type(event["requested_chi"]) is not type(chi)
+            or type(event["requested_tol"]) is not type(tolerance)
+            or event["requested_chi"] != chi
+            or event["requested_tol"] != tolerance
+        ):
+            raise ValueError("truncation event parameters differ from the action")
         _finite_number(event["normalization_factor"], "normalization_factor")
         spectra = event["spectral_summaries"]
         if not isinstance(spectra, list):
@@ -607,9 +633,19 @@ def _validate_work(value: object) -> int | None:
     sweeps = work["contraction_sweeps"]
     if not isinstance(sweeps, list):
         raise TypeError("work.contraction_sweeps must be a list")
+    expected_labels = (
+        ("columns:I-X", "columns:Z-Y")
+        if mode == "columns"
+        else ("rows:I-Z", "rows:X-Y")
+    )
+    if len(sweeps) != len(expected_labels):
+        raise ValueError("action must contain exactly its two contraction sweeps")
     sweep_work = 0
-    sweep_pairwise = 0
-    for raw in sweeps:
+    previous_stop = 0
+    scopes: list[dict] = []
+    for sweep_index, (raw, expected_label) in enumerate(
+        zip(sweeps, expected_labels, strict=True)
+    ):
         if not isinstance(raw, dict):
             raise TypeError("contraction sweep must be an object")
         allowed = _SWEEP_KEYS | ({"failure"} if "failure" in raw else set())
@@ -619,43 +655,71 @@ def _validate_work(value: object) -> int | None:
             "truncation_event_start", "truncation_event_stop", "estimated_arithmetic_flops",
         ):
             _strict_int(sweep[field], f"sweep.{field}")
+        for field in (
+            "einsum_calls", "einsum_estimated_flops", "pairwise_output_elements",
+            "peak_observed_array_elements",
+        ):
+            _strict_int(sweep[field], f"sweep.{field}")
+        if sweep["index"] != sweep_index:
+            raise ValueError("sweep index is not canonical")
+        if sweep["network_rows"] != 9 or sweep["network_columns"] != 9:
+            raise ValueError("sweep network dimensions differ from the frozen code")
         if sweep["requested_chi"] is not None:
             _strict_int(sweep["requested_chi"], "sweep.requested_chi", minimum=1)
         _nullable_positive(sweep["requested_tol"], "sweep.requested_tol")
-        if not isinstance(sweep["label"], str):
-            raise TypeError("sweep label must be a string")
+        if (
+            type(sweep["requested_chi"]) is not type(chi)
+            or type(sweep["requested_tol"]) is not type(tolerance)
+            or sweep["requested_chi"] != chi
+            or sweep["requested_tol"] != tolerance
+        ):
+            raise ValueError("sweep parameters differ from the action")
+        if sweep["label"] != expected_label:
+            raise ValueError("sweep label differs from the canonical mode order")
         if "failure" in sweep:
             failure = _exact_fields(sweep["failure"], _FAILURE_KEYS, "sweep failure")
             if not all(isinstance(failure[field], str) for field in _FAILURE_KEYS):
                 raise ValueError("sweep failure fields must be strings")
+            if action_valid or failure["exception_type"] not in {"ValueError", "LinAlgError"}:
+                raise ValueError("sweep failure is not a declared numerical action failure")
         sweep_work += sweep["estimated_arithmetic_flops"]
-        sweep_pairwise += sweep["pairwise_contractions"]
-        if not 0 <= sweep["truncation_event_start"] <= sweep["truncation_event_stop"] <= len(
-            truncations
+        if not (
+            sweep["truncation_event_start"] == previous_stop
+            and previous_stop <= sweep["truncation_event_stop"] <= len(truncations)
         ):
             raise ValueError("sweep truncation range does not reconcile")
-    if sweep_work + work["terminal_residual_estimated_arithmetic_flops"] != total:
-        raise ValueError("sweep work does not reconcile")
-    if sweep_pairwise > work["pairwise_contractions"]:
-        raise ValueError("pairwise contraction count does not reconcile")
-    if (work["einsum_calls"] == 0) != (work["einsum_estimated_flops"] == 0):
-        raise ValueError("einsum trace counters do not reconcile")
-    if work["einsum_estimated_flops"] < work["einsum_calls"]:
-        raise ValueError("einsum trace work is smaller than its call count")
-    if (work["pairwise_contractions"] == 0) != (work["pairwise_output_elements"] == 0):
-        raise ValueError("pairwise trace counters do not reconcile")
-    if work["pairwise_output_elements"] < work["pairwise_contractions"]:
-        raise ValueError("pairwise output trace is smaller than its call count")
-    activity = (
-        work["einsum_calls"]
-        + work["pairwise_contractions"]
-        + work["svd_calls"]
-        + work["qr_calls"]
+        for event_index in range(
+            sweep["truncation_event_start"], sweep["truncation_event_stop"]
+        ):
+            if truncations[event_index]["sweep_index"] != sweep_index:
+                raise ValueError("truncation event sweep membership does not reconcile")
+        previous_stop = sweep["truncation_event_stop"]
+        scopes.append(sweep)
+    if previous_stop != len(truncations):
+        raise ValueError("sweeps do not cover every truncation event")
+    terminal = _exact_fields(
+        work["terminal_trace_counters"], _TERMINAL_TRACE_KEYS, "terminal trace counters"
     )
-    if activity > 0:
-        observed_element_lower_bound = max(observed_element_lower_bound, 1)
-    if work["peak_observed_array_elements"] < observed_element_lower_bound:
-        raise ValueError("peak observed array trace does not reconcile")
+    for field in _TERMINAL_TRACE_KEYS:
+        _strict_int(terminal[field], f"terminal_trace_counters.{field}")
+    if terminal["estimated_arithmetic_flops"] != work[
+        "terminal_residual_estimated_arithmetic_flops"
+    ]:
+        raise ValueError("terminal arithmetic trace does not reconcile")
+    scopes.append(terminal)
+    if sweep_work + terminal["estimated_arithmetic_flops"] != total:
+        raise ValueError("sweep work does not reconcile")
+    for field in (
+        "pairwise_contractions", "einsum_calls", "einsum_estimated_flops",
+        "pairwise_output_elements", "estimated_arithmetic_flops",
+    ):
+        if sum(scope[field] for scope in scopes) != work[field]:
+            raise ValueError(f"{field} scope trace does not reconcile")
+    scoped_peak = max(scope["peak_observed_array_elements"] for scope in scopes)
+    if work["peak_observed_array_elements"] != scoped_peak:
+        raise ValueError("peak observed array scope trace does not reconcile")
+    if scoped_peak < observed_element_lower_bound:
+        raise ValueError("peak observed array trace is below a recorded shape")
     return total
 
 
@@ -684,7 +748,13 @@ def _validate_action(value: object, expected_invocation: str) -> dict:
     valid = _boolean(action["valid"], "action.valid")
     exception_type = _nullable_string(action["exception_type"], "action.exception_type")
     _nullable_string(action["exception_message"], "action.exception_message")
-    work_total = _validate_work(action["work"])
+    work_total = _validate_work(
+        action["work"],
+        mode=mode,
+        chi=chi,
+        tolerance=tolerance,
+        action_valid=valid,
+    )
     recorded_work = action["estimated_arithmetic_flops"]
     if recorded_work is not None:
         _strict_int(recorded_work, "action.estimated_arithmetic_flops")
@@ -810,7 +880,12 @@ def _validate_policy(
         if any(action["estimated_arithmetic_flops"] is None for action in actions)
         else sum(action["estimated_arithmetic_flops"] for action in actions)
     )
-    if policy["estimated_arithmetic_flops"] != expected_work:
+    if expected_work is None:
+        if policy["estimated_arithmetic_flops"] is not None:
+            raise ValueError("policy work must be null when an action is unmetered")
+    elif (
+        _strict_int(policy["estimated_arithmetic_flops"], "policy work") != expected_work
+    ):
         raise ValueError("policy work does not equal its action sum")
     _validate_score(
         code=code,
@@ -858,7 +933,13 @@ def _validate_reference(
         if any(action["estimated_arithmetic_flops"] is None for action in actions)
         else sum(action["estimated_arithmetic_flops"] for action in actions)
     )
-    if reference["estimated_arithmetic_flops"] != expected_work:
+    if expected_work is None:
+        if reference["estimated_arithmetic_flops"] is not None:
+            raise ValueError("reference work must be null when an action is unmetered")
+    elif (
+        _strict_int(reference["estimated_arithmetic_flops"], "reference work")
+        != expected_work
+    ):
         raise ValueError("reference work does not equal its action sum")
     numerical: dict[str, object] | None = None
     if all(action["valid"] for action in actions):

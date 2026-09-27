@@ -49,6 +49,14 @@ def _summary_work(value: int) -> dict[str, object]:
         "peak_observed_array_elements": 1,
         "truncation_events": [],
         "contraction_sweeps": [],
+        "terminal_trace_counters": {
+            "pairwise_contractions": 0,
+            "einsum_calls": 1,
+            "einsum_estimated_flops": value,
+            "pairwise_output_elements": 0,
+            "peak_observed_array_elements": 1,
+            "estimated_arithmetic_flops": value,
+        },
     }
 
 
@@ -62,6 +70,31 @@ def _summary_action(invocation_id: str, action_id: str, work: int) -> dict[str, 
         "exact_rows": ("rows", None, None),
     }
     mode, chi, tol = specs[action_id]
+    work_record = _summary_work(work)
+    labels = (
+        ["columns:I-X", "columns:Z-Y"]
+        if mode == "columns"
+        else ["rows:I-Z", "rows:X-Y"]
+    )
+    work_record["contraction_sweeps"] = [
+        {
+            "index": index,
+            "network_rows": 9,
+            "network_columns": 9,
+            "requested_chi": chi,
+            "requested_tol": tol,
+            "pairwise_contractions": 0,
+            "truncation_event_start": 0,
+            "truncation_event_stop": 0,
+            "estimated_arithmetic_flops": 0,
+            "label": label,
+            "einsum_calls": 0,
+            "einsum_estimated_flops": 0,
+            "pairwise_output_elements": 0,
+            "peak_observed_array_elements": 0,
+        }
+        for index, label in enumerate(labels)
+    ]
     return {
         "invocation_id": invocation_id,
         "action_id": action_id,
@@ -74,7 +107,7 @@ def _summary_action(invocation_id: str, action_id: str, work: int) -> dict[str, 
         "masses": [0.8, 0.1, 0.06, 0.04],
         "probabilities": [0.8, 0.1, 0.06, 0.04],
         "selected_class": 0,
-        "work": _summary_work(work),
+        "work": work_record,
         "estimated_arithmetic_flops": work,
     }
 
@@ -914,6 +947,65 @@ def test_validator_rejects_programming_exceptions_as_numerical_actions(
     rows[0] = row
 
     with pytest.raises(ValueError, match="exception"):
+        validate_result_rows(rows, fixture=True)
+
+
+@pytest.mark.parametrize("owner", ["policy", "reference"])
+def test_validator_rejects_float_aggregate_work(owner: str) -> None:
+    rows = _summary_rows(fixture=True)
+    if owner == "policy":
+        rows[0]["policies"][0]["estimated_arithmetic_flops"] = 10.0
+    else:
+        rows[0]["reference"]["estimated_arithmetic_flops"] = 100.0
+
+    with pytest.raises(ValueError, match="work|integer"):
+        validate_result_rows(rows, fixture=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("index", 99),
+        ("requested_chi", 8),
+        ("requested_tol", 0.01),
+        ("label", "columns:I-X"),
+        ("failure", {"exception_type": "TypeError", "message": "bug"}),
+    ],
+)
+def test_validator_rejects_fabricated_or_misparameterized_sweep(
+    field: str, value: object
+) -> None:
+    rows = _summary_rows(fixture=True)
+    sweep = rows[0]["actions"][0]["work"]["contraction_sweeps"][0]
+    sweep[field] = value
+
+    with pytest.raises(ValueError, match="sweep|failure|parameter|label|index"):
+        validate_result_rows(rows, fixture=True)
+
+
+@pytest.mark.parametrize(
+    ("scope", "field", "delta"),
+    [
+        ("sweep", "pairwise_contractions", 1),
+        ("sweep", "einsum_calls", 1),
+        ("sweep", "einsum_estimated_flops", 1),
+        ("sweep", "pairwise_output_elements", 1),
+        ("terminal", "peak_observed_array_elements", 1),
+    ],
+)
+def test_validator_requires_exact_scope_trace_closure(
+    scope: str, field: str, delta: int
+) -> None:
+    rows = _summary_rows(fixture=True)
+    work = rows[0]["actions"][0]["work"]
+    record = (
+        work["contraction_sweeps"][0]
+        if scope == "sweep"
+        else work["terminal_trace_counters"]
+    )
+    record[field] += delta
+
+    with pytest.raises(ValueError, match="reconcile|trace|closure"):
         validate_result_rows(rows, fixture=True)
 
 
