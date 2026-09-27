@@ -240,6 +240,8 @@ def test_generation_validation_rejects_manifest_extra_field(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("field", "forged"),
     [
+        ("schema_version", 2),
+        ("contract_id", "foreign_contract"),
         ("producer_commit", "0" * 40),
         ("source_sha256", {"forged.py": "0" * 64}),
         ("release_binding", {"path": "forged", "size_bytes": 1, "sha256": "0" * 64}),
@@ -300,7 +302,10 @@ def test_atomic_publication_failure_leaves_receipt_not_partial(tmp_path: Path) -
     assert receipt["exception_type"] == "RuntimeError"
     assert receipt["stage"] == "populate"
     assert receipt["approved_hashes"] == {"input": "abc"}
-    assert not (tmp_path / "result.lock").exists()
+    lock = json.loads((tmp_path / "result.lock").read_text())
+    assert lock["kind"] == "permanent_publication_reservation"
+    assert lock["approved_hashes"] == {"input": "abc"}
+    assert lock["intended_destination"] == str(out)
 
 
 def test_generate_failure_receipt_binds_sources_and_inputs(
@@ -420,22 +425,26 @@ def test_atomic_publication_does_not_remove_foreign_replaced_lock(
     assert lock.read_text() == "foreign"
 
 
-def test_lock_cleanup_does_not_unlink_replacement_after_ownership_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_success_leaves_permanent_owned_lock_audit_marker(tmp_path: Path) -> None:
     out = tmp_path / "result"
     lock = tmp_path / "result.lock"
-    original_open = os.open
+    observed: list[tuple[int, str]] = []
 
-    def replace_at_reopen(path: str | Path, flags: int, *args: object, **kwargs: object) -> int:
-        if Path(path).name == lock.name and not flags & os.O_CREAT:
-            lock.unlink()
-            lock.write_text("foreign-after-check")
-        return original_open(path, flags, *args, **kwargs)
+    def populate(stage: Path) -> None:
+        observed.append((lock.stat().st_ino, lock.read_text()))
+        (stage / "value").write_text("ok")
 
-    monkeypatch.setattr(os, "open", replace_at_reopen)
-    io._publish_directory(out, lambda stage: (stage / "value").write_text("ok"))
-    assert lock.read_text() == "foreign-after-check"
+    io._publish_directory(out, populate, approved_hashes={"source": "abc"})
+    assert lock.stat().st_ino == observed[0][0]
+    assert lock.read_text() == observed[0][1]
+    marker = json.loads(lock.read_text())
+    assert marker == {
+        "approved_hashes": {"source": "abc"},
+        "intended_destination": str(out),
+        "kind": "permanent_publication_reservation",
+        "process_id": os.getpid(),
+        "schema_version": 1,
+    }
 
 
 def test_fixture_run_publishes_transactional_result(tmp_path: Path) -> None:

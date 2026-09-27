@@ -523,29 +523,6 @@ def _fsync_tree(path: Path) -> None:
         os.close(directory)
 
 
-def _release_owned_lock(lock: Path, owner_stat: os.stat_result) -> None:
-    """Remove the lock only after reopening and rechecking the named inode."""
-    parent_descriptor = os.open(lock.parent, os.O_RDONLY)
-    candidate_descriptor = -1
-    try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        try:
-            candidate_descriptor = os.open(lock.name, flags, dir_fd=parent_descriptor)
-        except FileNotFoundError:
-            return
-        candidate = os.fstat(candidate_descriptor)
-        if candidate.st_dev != owner_stat.st_dev or candidate.st_ino != owner_stat.st_ino:
-            return
-        current = os.stat(lock.name, dir_fd=parent_descriptor, follow_symlinks=False)
-        if current.st_dev != owner_stat.st_dev or current.st_ino != owner_stat.st_ino:
-            return
-        os.unlink(lock.name, dir_fd=parent_descriptor)
-    finally:
-        if candidate_descriptor >= 0:
-            os.close(candidate_descriptor)
-        os.close(parent_descriptor)
-
-
 def _publish_directory(
     out: Path,
     populate: Callable[[Path], None],
@@ -560,10 +537,16 @@ def _publish_directory(
     if out.exists() or out.is_symlink():
         raise FileExistsError(f"refusing existing destination: {out}")
     descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    lock_stat = os.fstat(descriptor)
     stage_name = "lock"
     try:
-        os.write(descriptor, f"pid={os.getpid()}\n".encode())
+        marker = {
+            "schema_version": 1,
+            "kind": "permanent_publication_reservation",
+            "process_id": os.getpid(),
+            "intended_destination": str(out),
+            "approved_hashes": dict(approved_hashes or {}),
+        }
+        os.write(descriptor, _canonical_bytes(marker))
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1
@@ -597,7 +580,6 @@ def _publish_directory(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        _release_owned_lock(lock, lock_stat)
 
 
 def _base_provenance(
@@ -715,6 +697,8 @@ def _validate_generation_directory(
     manifest = _strict_json(stage / "generation_manifest.json")
     if not isinstance(manifest, dict) or set(manifest) != _GENERATION_MANIFEST_KEYS:
         raise ValueError("generation manifest fields do not match the frozen schema")
+    if manifest["schema_version"] != 1 or manifest["contract_id"] != _CONTRACT_ID:
+        raise ValueError("generation manifest provenance has a foreign schema or contract")
     if expected_provenance is not None:
         provenance_fields = _GENERATION_MANIFEST_KEYS - {
             "schema_version",
