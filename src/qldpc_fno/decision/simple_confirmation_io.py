@@ -7,6 +7,7 @@ those functions requires an independently issued release receipt.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -41,13 +42,14 @@ _CONTRACT_ID = "simple_planar_confirmation_v1"
 _SCIENTIFIC_DOMAIN = "qldpc-fno/simple-planar-confirmation/v1"
 _BOOTSTRAP_DOMAIN = "qldpc-fno/simple-planar-confirmation/bootstrap/v1"
 _CONTRACT_PATH = "docs/adaptive-computation-simple-confirmation-contract.md"
+_TASK6_CLI_PATH = "experiments/36_run_simple_planar_confirmation.py"
 _THREAD_KEYS = (
     "OMP_NUM_THREADS",
     "OPENBLAS_NUM_THREADS",
     "MKL_NUM_THREADS",
     "VECLIB_MAXIMUM_THREADS",
 )
-_SOURCE_PATHS = (
+_SOURCE_ENTRY_PATHS = (
     "pyproject.toml",
     "uv.lock",
     "src/qldpc_fno/decision/simple_confirmation.py",
@@ -169,10 +171,56 @@ def _binding(root: Path, path: Path) -> dict[str, object]:
 
 
 def _source_hashes(root: Path) -> dict[str, str]:
-    missing = [label for label in _SOURCE_PATHS if not (root / label).is_file()]
+    labels = _source_inventory_paths(root)
+    missing = [label for label in labels if not (root / label).is_file()]
     if missing:
         raise ValueError(f"missing scientific source inventory: {missing}")
-    return {label: sha256_file(root / label) for label in _SOURCE_PATHS}
+    return {label: sha256_file(root / label) for label in labels}
+
+
+def _module_candidates(root: Path, module: str) -> list[str]:
+    if not module.startswith("qldpc_fno"):
+        return []
+    parts = module.split(".")
+    candidates: list[str] = []
+    for stop in range(1, len(parts)):
+        package = root / "src" / Path(*parts[:stop]) / "__init__.py"
+        if package.is_file():
+            candidates.append(package.relative_to(root).as_posix())
+    module_file = root / "src" / Path(*parts).with_suffix(".py")
+    package_file = root / "src" / Path(*parts) / "__init__.py"
+    if module_file.is_file():
+        candidates.append(module_file.relative_to(root).as_posix())
+    elif package_file.is_file():
+        candidates.append(package_file.relative_to(root).as_posix())
+    return candidates
+
+
+def _source_inventory_paths(root: Path) -> tuple[str, ...]:
+    """Compute the transitive in-project import closure of scientific entries."""
+    pending = list(_SOURCE_ENTRY_PATHS)
+    seen: set[str] = set()
+    while pending:
+        label = pending.pop()
+        if label in seen:
+            continue
+        path = root / label
+        if not path.is_file():
+            raise ValueError(f"missing scientific source inventory: {label}")
+        seen.add(label)
+        if path.suffix != ".py":
+            continue
+        tree = ast.parse(path.read_text(), filename=label)
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.Import):
+                modules.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules.append(node.module)
+                modules.extend(f"{node.module}.{alias.name}" for alias in node.names)
+            for module in modules:
+                pending.extend(_module_candidates(root, module))
+    return tuple(sorted(seen))
 
 
 def _runtime_identity(root: Path) -> dict[str, object]:
@@ -247,10 +295,7 @@ def _historical_domain_inventory(
     for path in sorted(root.rglob("*.json")):
         if path.resolve() in excluded:
             continue
-        try:
-            value = json.loads(path.read_text())
-        except (OSError, UnicodeError, json.JSONDecodeError) as error:
-            raise ValueError(f"invalid historical config JSON: {path}") from error
+        value = _strict_json(path)
         domains = sorted(_collect_domains(value))
         if not domains:
             continue
@@ -400,7 +445,17 @@ def validate_release(receipt_path: Path, preflight_record: dict) -> dict:
         or preflight_record.get("committed_closure") is not True
     ):
         raise ValueError("release receipt cannot authorize dirty or uncommitted inputs")
+    if not _task6_release_ready(_root()):
+        raise ValueError("Task 6 release inventory/verifier is incomplete")
     return receipt
+
+
+def _task6_release_ready(root: Path) -> bool:
+    return (
+        (root / _TASK6_CLI_PATH).is_file()
+        and _TASK6_CLI_PATH in _SOURCE_ENTRY_PATHS
+        and callable(globals().get("verify"))
+    )
 
 
 def _release_receipt_for_test(
@@ -468,6 +523,29 @@ def _fsync_tree(path: Path) -> None:
         os.close(directory)
 
 
+def _release_owned_lock(lock: Path, owner_stat: os.stat_result) -> None:
+    """Remove the lock only after reopening and rechecking the named inode."""
+    parent_descriptor = os.open(lock.parent, os.O_RDONLY)
+    candidate_descriptor = -1
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            candidate_descriptor = os.open(lock.name, flags, dir_fd=parent_descriptor)
+        except FileNotFoundError:
+            return
+        candidate = os.fstat(candidate_descriptor)
+        if candidate.st_dev != owner_stat.st_dev or candidate.st_ino != owner_stat.st_ino:
+            return
+        current = os.stat(lock.name, dir_fd=parent_descriptor, follow_symlinks=False)
+        if current.st_dev != owner_stat.st_dev or current.st_ino != owner_stat.st_ino:
+            return
+        os.unlink(lock.name, dir_fd=parent_descriptor)
+    finally:
+        if candidate_descriptor >= 0:
+            os.close(candidate_descriptor)
+        os.close(parent_descriptor)
+
+
 def _publish_directory(
     out: Path,
     populate: Callable[[Path], None],
@@ -519,12 +597,7 @@ def _publish_directory(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        try:
-            current = lock.stat(follow_symlinks=False)
-            if current.st_dev == lock_stat.st_dev and current.st_ino == lock_stat.st_ino:
-                lock.unlink()
-        except FileNotFoundError:
-            pass
+        _release_owned_lock(lock, lock_stat)
 
 
 def _base_provenance(
@@ -548,6 +621,48 @@ def _base_provenance(
         "historical_domains": _historical_domains(root, config_path, shot_config_path),
         "release_binding": release_binding,
     }
+
+
+def _release_provenance(
+    receipt: Mapping[str, object], *, release_binding: dict[str, object]
+) -> dict[str, object]:
+    return {
+        "producer_commit": receipt["approved_commit"],
+        "git_dirty": False,
+        "source_sha256": receipt["source_sha256"],
+        "config_bindings": receipt["config_bindings"],
+        "runtime": receipt["runtime"],
+        "code_identity": receipt["code_identity"],
+        "historical_domains": receipt["historical_domains"],
+        "release_binding": release_binding,
+    }
+
+
+def _assert_release_current(
+    receipt: Mapping[str, object],
+    release_binding: Mapping[str, object],
+    config_path: Path,
+    shot_config_path: Path,
+) -> None:
+    _validate_file_binding(dict(release_binding), base=_root(), label="release receipt")
+    current = preflight(config_path, shot_config_path)
+    for key in (
+        "schema_version",
+        "contract_id",
+        "contract_sha256",
+        "approved_commit",
+        "source_sha256",
+        "config_bindings",
+        "runtime",
+        "code_identity",
+        "historical_domains",
+        "unopened_domain",
+        "expected_shots",
+    ):
+        if receipt.get(key) != current.get(key):
+            raise ValueError(f"approved release provenance changed: {key}")
+    if current["git_dirty"] is not False or current["committed_closure"] is not True:
+        raise ValueError("approved release provenance changed: repository state")
 
 
 def _assert_base_provenance_current(
@@ -592,12 +707,22 @@ def _coordinate_seeds(config: Mapping[str, object]) -> list[int]:
     ]
 
 
-def _validate_generation_directory(stage: Path) -> None:
+def _validate_generation_directory(
+    stage: Path, *, expected_provenance: Mapping[str, object] | None = None
+) -> None:
     if {path.name for path in stage.iterdir()} != {"planar_shots.json", "generation_manifest.json"}:
         raise ValueError("generation output has unexpected file closure")
     manifest = _strict_json(stage / "generation_manifest.json")
     if not isinstance(manifest, dict) or set(manifest) != _GENERATION_MANIFEST_KEYS:
         raise ValueError("generation manifest fields do not match the frozen schema")
+    if expected_provenance is not None:
+        provenance_fields = _GENERATION_MANIFEST_KEYS - {
+            "schema_version",
+            "contract_id",
+            "shots_binding",
+        }
+        if any(manifest.get(key) != expected_provenance.get(key) for key in provenance_fields):
+            raise ValueError("generation manifest provenance does not match approved inputs")
     binding = manifest.get("shots_binding")
     if (
         not isinstance(binding, dict)
@@ -626,15 +751,19 @@ def generate(
     load_config(config_path)
     shots_config = load_shot_config(shot_config_path, fixture=fixture)
     release_binding: dict[str, object] | None = None
+    receipt: dict | None = None
     if fixture:
         if release_path is not None:
             raise ValueError("fixture generation cannot consume production release authority")
+        provenance = _base_provenance(config_path, shot_config_path, release_binding=None)
     else:
         if release_path is None:
             raise ValueError("production generation requires a release receipt")
         record = preflight(config_path, shot_config_path)
-        validate_release(release_path, record)
+        receipt = validate_release(release_path, record)
         release_binding = _binding(_root(), Path(release_path))
+        _assert_release_current(receipt, release_binding, config_path, shot_config_path)
+        provenance = _release_provenance(receipt, release_binding=release_binding)
         seeds = _coordinate_seeds(shots_config)
         if len(seeds) != len(set(seeds)):
             raise RuntimeError("confirmation sampler seed collision")
@@ -647,7 +776,6 @@ def generate(
         collision = next((seed for seed in seeds if seed in reserved), None)
         if collision is not None:
             raise RuntimeError(f"confirmation sampler seed collides with reserved seed {collision}")
-    provenance = _base_provenance(config_path, shot_config_path, release_binding=release_binding)
 
     def populate(stage: Path) -> None:
         sampler = stage / "sampler"
@@ -680,11 +808,16 @@ def generate(
         result.update({"shots": payload, "manifest": manifest})
 
     def validate(stage: Path) -> None:
-        _validate_generation_directory(stage)
-        _assert_base_provenance_current(provenance, config_path, shot_config_path)
+        _validate_generation_directory(stage, expected_provenance=provenance)
+        if receipt is None:
+            _assert_base_provenance_current(provenance, config_path, shot_config_path)
+        else:
+            assert release_binding is not None
+            _assert_release_current(receipt, release_binding, config_path, shot_config_path)
 
     result: dict[str, Any] = {}
-    approved = _approved_hashes(provenance)
+    extra = {"release:receipt": release_binding["sha256"]} if release_binding is not None else None
+    approved = _approved_hashes(provenance, extra=extra)
     _publish_directory(out, populate, approved_hashes=approved, validate=validate)
     return result
 
@@ -716,77 +849,84 @@ def run(
     )
     load_config(config_path)
     load_shot_config(shot_config_path, fixture=fixture)
+    receipt: dict | None = None
     if fixture:
         if release_path is not None:
             raise ValueError("fixture run cannot consume production release authority")
         release_binding = None
+        provenance = _base_provenance(config_path, shot_config_path, release_binding=None)
     else:
         if release_path is None:
             raise ValueError("production run requires a release receipt")
         record = preflight(config_path, shot_config_path)
-        validate_release(release_path, record)
+        receipt = validate_release(release_path, record)
         release_binding = _binding(_root(), Path(release_path))
+        _assert_release_current(receipt, release_binding, config_path, shot_config_path)
+        provenance = _release_provenance(receipt, release_binding=release_binding)
     try:
-        _validate_generation_directory(shots_path.parent)
+        _validate_generation_directory(shots_path.parent, expected_provenance=provenance)
     except (FileNotFoundError, ValueError, TypeError, KeyError) as error:
-        raise ValueError("shots must come from a valid two-file generation directory") from error
-    shot_payload = json.loads(shots_path.read_text())
+        raise ValueError(
+            "shots must come from a valid two-file generation directory with approved provenance"
+        ) from error
+    manifest_path = shots_path.with_name("generation_manifest.json")
+    shots_binding = {
+        "path": shots_path.name,
+        "size_bytes": shots_path.stat().st_size,
+        "sha256": sha256_file(shots_path),
+    }
+    manifest_binding = {
+        "path": manifest_path.name,
+        "size_bytes": manifest_path.stat().st_size,
+        "sha256": sha256_file(manifest_path),
+    }
+    provenance.update(
+        {
+            "shots_binding": shots_binding,
+            "generation_manifest_binding": manifest_binding,
+        }
+    )
+    shot_payload = _strict_json(shots_path)
     if not isinstance(shot_payload, dict) or set(shot_payload) != {"config", "shots", "provenance"}:
         raise ValueError("invalid planar-shot artifact")
     _validate_shot_manifest(shot_payload, _root())
     expected_config = load_shot_config(shot_config_path, fixture=fixture)
     if shot_payload["config"] != expected_config:
         raise ValueError("shot artifact config does not match requested run")
-    rows: list[dict] = []
-    shot_timings: list[dict] = []
-    started = time.perf_counter()
-    for shot in shot_payload["shots"]:
-        rows.append(evaluate_shot(shot, timing=shot_timings))
-    run_seconds = time.perf_counter() - started
-    validate_result_rows(rows, fixture=fixture)
-    summary = summarize(rows, fixture=fixture)
-    provenance = _base_provenance(config_path, shot_config_path, release_binding=release_binding)
-    provenance.update(
-        {
-            "shots_binding": {
-                "path": shots_path.name,
-                "size_bytes": shots_path.stat().st_size,
-                "sha256": sha256_file(shots_path),
-            },
-            "generation_manifest_binding": None,
-        }
-    )
-    manifest_path = shots_path.with_name("generation_manifest.json")
-    if manifest_path.is_file():
-        provenance["generation_manifest_binding"] = {
-            "path": manifest_path.name,
-            "size_bytes": manifest_path.stat().st_size,
-            "sha256": sha256_file(manifest_path),
-        }
-    raw = {
-        "schema_version": 1,
-        "contract_id": _CONTRACT_ID,
-        "status": "reduced_non_scientific" if fixture else "complete_pending_replay",
-        "scientific_eligible": bool(not fixture and summary["decision"]["execution_eligible"]),
-        "config": load_config(config_path),
-        "shot_config": expected_config,
-        "shot_provenance": shot_payload["provenance"],
-        "rows": rows,
-        "summary": summary,
-        "provenance": provenance,
-    }
-    timing = {
-        "schema_version": 1,
-        "contract_id": _CONTRACT_ID,
-        "host": _host_identity(),
-        "shots": shot_timings,
-        "run_wall_seconds": run_seconds,
-    }
+    result: dict[str, Any] = {}
 
     def populate(stage: Path) -> None:
+        rows: list[dict] = []
+        shot_timings: list[dict] = []
+        started = time.perf_counter()
+        for shot in shot_payload["shots"]:
+            rows.append(evaluate_shot(shot, timing=shot_timings))
+        run_seconds = time.perf_counter() - started
+        validate_result_rows(rows, fixture=fixture)
+        summary = summarize(rows, fixture=fixture)
+        raw = {
+            "schema_version": 1,
+            "contract_id": _CONTRACT_ID,
+            "status": "reduced_non_scientific" if fixture else "complete_pending_replay",
+            "scientific_eligible": bool(not fixture and summary["decision"]["execution_eligible"]),
+            "config": load_config(config_path),
+            "shot_config": expected_config,
+            "shot_provenance": shot_payload["provenance"],
+            "rows": rows,
+            "summary": summary,
+            "provenance": provenance,
+        }
+        timing = {
+            "schema_version": 1,
+            "contract_id": _CONTRACT_ID,
+            "host": _host_identity(),
+            "shots": shot_timings,
+            "run_wall_seconds": run_seconds,
+        }
         write_canonical_json(stage / "result.json", raw)
         write_canonical_json(stage / "summary.json", summary)
         write_canonical_json(stage / "timing.json", timing)
+        result.update({"raw": raw, "summary": summary, "timing": timing})
 
     def validate(stage: Path) -> None:
         if {path.name for path in stage.iterdir()} != {
@@ -795,20 +935,39 @@ def run(
             "timing.json",
         }:
             raise ValueError("run output has unexpected file closure")
-        persisted = json.loads((stage / "result.json").read_text())
+        persisted = _strict_json(stage / "result.json")
         validate_result_rows(persisted["rows"], fixture=fixture)
         if persisted["summary"] != summarize(persisted["rows"], fixture=fixture):
             raise ValueError("persisted summary does not replay")
-        _assert_base_provenance_current(provenance, config_path, shot_config_path)
-        if sha256_file(shots_path) != provenance["shots_binding"]["sha256"]:
+        if receipt is None:
+            _assert_base_provenance_current(provenance, config_path, shot_config_path)
+        else:
+            assert release_binding is not None
+            _assert_release_current(receipt, release_binding, config_path, shot_config_path)
+        _validate_generation_directory(
+            shots_path.parent,
+            expected_provenance={
+                key: value
+                for key, value in provenance.items()
+                if key not in {"shots_binding", "generation_manifest_binding"}
+            },
+        )
+        if (
+            sha256_file(shots_path) != shots_binding["sha256"]
+            or sha256_file(manifest_path) != manifest_binding["sha256"]
+        ):
             raise ValueError("joined shot input changed during publication")
 
+    extra = {
+        "input:shots": shots_binding["sha256"],
+        "input:generation_manifest": manifest_binding["sha256"],
+    }
+    if release_binding is not None:
+        extra["release:receipt"] = release_binding["sha256"]
     _publish_directory(
         out,
         populate,
-        approved_hashes=_approved_hashes(
-            provenance, extra={"input:shots": sha256_file(shots_path)}
-        ),
+        approved_hashes=_approved_hashes(provenance, extra=extra),
         validate=validate,
     )
-    return {"raw": raw, "summary": summary, "timing": timing}
+    return result

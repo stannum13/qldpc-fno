@@ -48,6 +48,21 @@ def test_recursive_domain_inventory_rejects_duplicate_domains(tmp_path: Path) ->
         io._historical_domain_inventory(tmp_path, excluded_paths=frozenset())
 
 
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ('{"seed_domain":"visible","seed_domain":"hidden"}', "duplicate JSON key"),
+        ('{"seed_domain":"visible","weight":NaN}', "nonfinite JSON constant"),
+    ],
+)
+def test_historical_domain_inventory_strictly_parses_every_config(
+    tmp_path: Path, payload: str, message: str
+) -> None:
+    (tmp_path / "hostile.json").write_text(payload)
+    with pytest.raises(ValueError, match=message):
+        io._historical_domain_inventory(tmp_path, excluded_paths=frozenset())
+
+
 def test_historical_sampler_inventory_finds_nested_planar_artifacts(tmp_path: Path) -> None:
     artifact = tmp_path / "old" / "planar_shots.json"
     artifact.parent.mkdir()
@@ -94,6 +109,21 @@ def test_validate_release_rejects_foreign_preflight(tmp_path: Path) -> None:
         io.validate_release(path, record)
 
 
+def test_validate_release_blocks_until_task6_closes_inventory(tmp_path: Path) -> None:
+    review = tmp_path / "review.md"
+    review.write_text("accepted\n")
+    record = io.preflight(ANALYSIS, SCIENTIFIC)
+    record["git_dirty"] = False
+    record["committed_closure"] = True
+    receipt = io._release_receipt_for_test(
+        record, contract_review=review, implementation_review=review
+    )
+    path = tmp_path / "release.json"
+    path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="Task 6.*incomplete"):
+        io.validate_release(path, record)
+
+
 def test_validate_release_rejects_duplicate_json_key(tmp_path: Path) -> None:
     path = tmp_path / "release.json"
     path.write_text('{"schema_version":1,"schema_version":1}')
@@ -106,6 +136,26 @@ def test_provenance_recheck_detects_changed_source(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(io, "_source_hashes", lambda root: {"changed": "digest"})
     with pytest.raises(ValueError, match="provenance changed"):
         io._assert_base_provenance_current(baseline, ANALYSIS, FIXTURE)
+
+
+def test_source_inventory_mechanically_closes_package_imports() -> None:
+    paths = set(io._source_hashes(ROOT))
+    assert {
+        "src/qldpc_fno/__init__.py",
+        "src/qldpc_fno/decision/__init__.py",
+        "src/qldpc_fno/decision/exact_css.py",
+        "src/qldpc_fno/metrics/__init__.py",
+    }.issubset(paths)
+
+
+def test_source_inventory_rejects_missing_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        io,
+        "_SOURCE_ENTRY_PATHS",
+        (*io._SOURCE_ENTRY_PATHS, "src/qldpc_fno/decision/missing.py"),
+    )
+    with pytest.raises(ValueError, match="missing scientific source inventory"):
+        io._source_hashes(ROOT)
 
 
 def test_fixture_generate_publishes_exact_two_file_closure(tmp_path: Path) -> None:
@@ -124,6 +174,58 @@ def test_fixture_cannot_escalate_to_scientific_config(tmp_path: Path) -> None:
         io.generate(ANALYSIS, SCIENTIFIC, tmp_path / "out", release_path=None, fixture=True)
 
 
+def test_production_generate_rechecks_release_before_coordinate_derivation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = io.preflight(ANALYSIS, SCIENTIFIC)
+    receipt = {
+        key: value for key, value in record.items() if key not in {"git_dirty", "committed_closure"}
+    }
+    receipt.update({"review_bindings": {}, "decision": "approved_to_open"})
+    monkeypatch.setattr(io, "validate_release", lambda path, current: receipt)
+    original_hashes = io._source_hashes
+    calls = 0
+
+    def mutate_after_validation(root: Path) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return original_hashes(root)
+        return {"forged": "0" * 64}
+
+    monkeypatch.setattr(io, "_source_hashes", mutate_after_validation)
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("coordinate derivation happened after approved source mutation")
+
+    monkeypatch.setattr(io, "_coordinate_seeds", forbidden)
+    with pytest.raises(ValueError, match="approved release provenance changed"):
+        io.generate(
+            ANALYSIS,
+            SCIENTIFIC,
+            tmp_path / "out",
+            release_path=ANALYSIS,
+            fixture=False,
+        )
+
+
+def test_release_recheck_reopens_bound_receipt(tmp_path: Path) -> None:
+    release = tmp_path / "release.json"
+    release.write_text("approved")
+    record = io.preflight(ANALYSIS, SCIENTIFIC)
+    receipt = {
+        key: value for key, value in record.items() if key not in {"git_dirty", "committed_closure"}
+    }
+    binding = {
+        "path": str(release),
+        "size_bytes": release.stat().st_size,
+        "sha256": sha256_file(release),
+    }
+    release.write_text("replaced")
+    with pytest.raises(ValueError, match="release receipt binding bytes changed"):
+        io._assert_release_current(receipt, binding, ANALYSIS, SCIENTIFIC)
+
+
 def test_generation_validation_rejects_manifest_extra_field(tmp_path: Path) -> None:
     out = tmp_path / "generated"
     io.generate(ANALYSIS, FIXTURE, out, release_path=None, fixture=True)
@@ -133,6 +235,38 @@ def test_generation_validation_rejects_manifest_extra_field(tmp_path: Path) -> N
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="generation manifest fields"):
         io._validate_generation_directory(out)
+
+
+@pytest.mark.parametrize(
+    ("field", "forged"),
+    [
+        ("producer_commit", "0" * 40),
+        ("source_sha256", {"forged.py": "0" * 64}),
+        ("release_binding", {"path": "forged", "size_bytes": 1, "sha256": "0" * 64}),
+        ("runtime", {"forged": True}),
+        ("code_identity", {"forged": True}),
+        ("historical_domains", {"forged": True}),
+        ("config_bindings", {"forged": True}),
+    ],
+)
+def test_run_rejects_semantically_forged_generation_manifest(
+    tmp_path: Path, field: str, forged: object
+) -> None:
+    generated = tmp_path / "generated"
+    io.generate(ANALYSIS, FIXTURE, generated, release_path=None, fixture=True)
+    manifest_path = generated / "generation_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest[field] = forged
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match="generation.*provenance"):
+        io.run(
+            ANALYSIS,
+            FIXTURE,
+            generated / "planar_shots.json",
+            tmp_path / "run",
+            release_path=None,
+            fixture=True,
+        )
 
 
 @pytest.mark.parametrize("kind", ["directory", "file", "symlink", "lock"])
@@ -187,6 +321,88 @@ def test_generate_failure_receipt_binds_sources_and_inputs(
     )
 
 
+def test_run_solver_failure_writes_receipt_with_full_input_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generated = tmp_path / "generated"
+    io.generate(ANALYSIS, FIXTURE, generated, release_path=None, fixture=True)
+
+    def fail(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("solver failed")
+
+    monkeypatch.setattr(io, "evaluate_shot", fail)
+    out = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="solver failed"):
+        io.run(
+            ANALYSIS, FIXTURE, generated / "planar_shots.json", out, release_path=None, fixture=True
+        )
+    assert not out.exists()
+    receipt = json.loads((tmp_path / "run.failure.json").read_text())
+    assert receipt["stage"] == "populate"
+    assert receipt["approved_hashes"]["input:shots"] == sha256_file(generated / "planar_shots.json")
+    assert receipt["approved_hashes"]["input:generation_manifest"] == sha256_file(
+        generated / "generation_manifest.json"
+    )
+
+
+def test_run_detects_source_change_during_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generated = tmp_path / "generated"
+    io.generate(ANALYSIS, FIXTURE, generated, release_path=None, fixture=True)
+    original_evaluate = io.evaluate_shot
+    original_hashes = io._source_hashes
+    calls = 0
+
+    def mutate_after_last(shot: dict, *, timing: list[dict]) -> dict:
+        nonlocal calls
+        row = original_evaluate(shot, timing=timing)
+        calls += 1
+        if calls == 4:
+            monkeypatch.setattr(io, "_source_hashes", lambda root: {"forged": "0" * 64})
+        return row
+
+    monkeypatch.setattr(io, "evaluate_shot", mutate_after_last)
+    out = tmp_path / "run"
+    with pytest.raises(ValueError, match="provenance changed"):
+        io.run(
+            ANALYSIS, FIXTURE, generated / "planar_shots.json", out, release_path=None, fixture=True
+        )
+    monkeypatch.setattr(io, "_source_hashes", original_hashes)
+    assert not out.exists()
+
+
+def test_run_detects_generation_manifest_replacement_before_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generated = tmp_path / "generated"
+    io.generate(ANALYSIS, FIXTURE, generated, release_path=None, fixture=True)
+    manifest = generated / "generation_manifest.json"
+    original_evaluate = io.evaluate_shot
+    calls = 0
+
+    def replace_after_last(shot: dict, *, timing: list[dict]) -> dict:
+        nonlocal calls
+        row = original_evaluate(shot, timing=timing)
+        calls += 1
+        if calls == 4:
+            value = json.loads(manifest.read_text())
+            value["producer_commit"] = "0" * 40
+            manifest.write_text(json.dumps(value))
+        return row
+
+    monkeypatch.setattr(io, "evaluate_shot", replace_after_last)
+    with pytest.raises(ValueError, match="generation"):
+        io.run(
+            ANALYSIS,
+            FIXTURE,
+            generated / "planar_shots.json",
+            tmp_path / "run",
+            release_path=None,
+            fixture=True,
+        )
+
+
 def test_atomic_publication_does_not_remove_foreign_replaced_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -202,6 +418,24 @@ def test_atomic_publication_does_not_remove_foreign_replaced_lock(
     monkeypatch.setattr(io.os, "replace", replace_lock)
     io._publish_directory(out, lambda stage: (stage / "value").write_text("ok"))
     assert lock.read_text() == "foreign"
+
+
+def test_lock_cleanup_does_not_unlink_replacement_after_ownership_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "result"
+    lock = tmp_path / "result.lock"
+    original_open = os.open
+
+    def replace_at_reopen(path: str | Path, flags: int, *args: object, **kwargs: object) -> int:
+        if Path(path).name == lock.name and not flags & os.O_CREAT:
+            lock.unlink()
+            lock.write_text("foreign-after-check")
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_at_reopen)
+    io._publish_directory(out, lambda stage: (stage / "value").write_text("ok"))
+    assert lock.read_text() == "foreign-after-check"
 
 
 def test_fixture_run_publishes_transactional_result(tmp_path: Path) -> None:
