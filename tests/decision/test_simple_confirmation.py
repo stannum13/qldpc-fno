@@ -46,7 +46,7 @@ def _summary_work(value: int) -> dict[str, object]:
         "estimated_arithmetic_flops": value,
         "terminal_residual_estimated_arithmetic_flops": value,
         "decomposition_attempts": [],
-        "peak_observed_array_elements": 0,
+        "peak_observed_array_elements": 1,
         "truncation_events": [],
         "contraction_sweeps": [],
     }
@@ -815,6 +815,105 @@ def test_validator_recomputes_persisted_events_and_logical_scores() -> None:
     rows[0]["policies"][0]["logical_signature"] = [1, 0]
     rows[0]["policies"][0]["physical_failure"] = False
     with pytest.raises(ValueError, match="logical|physical"):
+        validate_result_rows(rows, fixture=True)
+
+
+def test_validator_rejects_recovery_from_wrong_claimed_logical_class() -> None:
+    rows = _summary_rows(fixture=True)
+    code = PlanarCode(5, 5)
+    policy = rows[0]["policies"][0]
+    wrong = logical_class_recovery(code, np.zeros(40, dtype=np.uint8), 1)
+    score = score_recovery(
+        code,
+        np.zeros(82, dtype=np.uint8),
+        np.zeros(40, dtype=np.uint8),
+        wrong,
+    )
+    policy["recovery_bsf"] = wrong.tolist()
+    policy["logical_signature"] = score["logical_signature"].tolist()
+    policy["physical_failure"] = bool(score["logical_failure"])
+    policy["outcome_discordance"] = True
+
+    with pytest.raises(ValueError, match="logical class|representative"):
+        validate_result_rows(rows, fixture=True)
+
+
+def test_validator_accepts_stabilizer_equivalent_recovery_representative() -> None:
+    rows = _summary_rows(fixture=True)
+    code = PlanarCode(5, 5)
+    policy = rows[0]["policies"][0]
+    equivalent = np.asarray(policy["recovery_bsf"], dtype=np.uint8) ^ np.asarray(
+        code.stabilizers[0], dtype=np.uint8
+    )
+    score = score_recovery(
+        code,
+        np.zeros(82, dtype=np.uint8),
+        np.zeros(40, dtype=np.uint8),
+        equivalent,
+    )
+    policy["recovery_bsf"] = equivalent.tolist()
+    policy["logical_signature"] = score["logical_signature"].tolist()
+    policy["physical_failure"] = bool(score["logical_failure"])
+
+    validate_result_rows(rows, fixture=True)
+
+
+@pytest.mark.parametrize(
+    ("invocation_id", "field", "value"),
+    [
+        ("fixed_columns_chi8/columns_chi8", "chi", 8.0),
+        ("fixed_rows_tol003/rows_tol003", "tol", np.float64(0.003)),
+        ("fixed_rows_tol003/rows_tol003", "estimated_arithmetic_flops", 10.0),
+    ],
+)
+def test_validator_rejects_coercible_but_noncanonical_action_types(
+    invocation_id: str, field: str, value: object
+) -> None:
+    rows = _summary_rows(fixture=True)
+    action = next(item for item in rows[0]["actions"] if item["invocation_id"] == invocation_id)
+    action[field] = value
+
+    with pytest.raises(ValueError, match="parameters|work|integer"):
+        validate_result_rows(rows, fixture=True)
+
+
+@pytest.mark.parametrize(
+    ("counter", "value"),
+    [
+        ("einsum_calls", 0),
+        ("pairwise_output_elements", 1),
+        ("peak_observed_array_elements", 0),
+    ],
+)
+def test_validator_rejects_unreconciled_trace_counters(counter: str, value: int) -> None:
+    rows = _summary_rows(fixture=True)
+    rows[0]["actions"][0]["work"][counter] = value
+
+    with pytest.raises(ValueError, match="reconcile|trace"):
+        validate_result_rows(rows, fixture=True)
+
+
+@pytest.mark.parametrize("exception_type", ["TypeError", "KeyError", "RuntimeError"])
+def test_validator_rejects_programming_exceptions_as_numerical_actions(
+    exception_type: str,
+) -> None:
+    rows = _summary_rows(fixture=True)
+    row = _summary_row(0.1, 0, margin_accepted=False)
+    probe = next(
+        item for item in row["actions"]
+        if item["invocation_id"] == "margin_columns_chi8/columns_tol01"
+    )
+    probe.update(
+        valid=False,
+        exception_type=exception_type,
+        exception_message="programming failure",
+        masses=None,
+        probabilities=None,
+        selected_class=None,
+    )
+    rows[0] = row
+
+    with pytest.raises(ValueError, match="exception"):
         validate_result_rows(rows, fixture=True)
 
 

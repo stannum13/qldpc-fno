@@ -12,7 +12,11 @@ from qecsim import paulitools as pt
 from qecsim.models.planar import PlanarCode
 from scipy.stats import beta
 
-from qldpc_fno.decision.planar_shot_accuracy import certify_reference, score_recovery
+from qldpc_fno.decision.planar_shot_accuracy import (
+    certify_reference,
+    logical_class_recovery,
+    score_recovery,
+)
 
 _SCIENTIFIC_DOMAIN_LITERAL = "qldpc-fno/simple-planar-confirmation/v1"
 _FIXTURE_DOMAIN_LITERAL = "qldpc-fno/simple-planar-confirmation/test-fixture/v1"
@@ -151,6 +155,7 @@ _INVOCATIONS = (
     "reference/exact_columns",
     "reference/exact_rows",
 )
+_NUMERICAL_ACTION_EXCEPTIONS = {"InvalidCosetMassError", "InvalidContractionError"}
 
 
 def _shot_config(*, fixture: bool) -> dict[str, object]:
@@ -525,6 +530,7 @@ def _validate_work(value: object) -> int | None:
         raise TypeError("work.decomposition_attempts must be a list")
     dense = 0
     decomposition_elements = 0
+    observed_element_lower_bound = 0
     counts = {"svd": 0, "qr": 0}
     for raw in attempts:
         attempt = _exact_fields(raw, _ATTEMPT_KEYS, "decomposition attempt")
@@ -543,6 +549,7 @@ def _validate_work(value: object) -> int | None:
         counts[kind] += 1
         dense += expected
         decomposition_elements += rows * columns
+        observed_element_lower_bound = max(observed_element_lower_bound, rows * columns)
     if work["svd_calls"] != counts["svd"] or work["qr_calls"] != counts["qr"]:
         raise ValueError("decomposition counters do not reconcile")
     if work["estimated_dense_decomposition_flops"] != dense:
@@ -562,6 +569,11 @@ def _validate_work(value: object) -> int | None:
             "output_elements", "cumulative_estimated_arithmetic_flops",
         ):
             _strict_int(event[field], f"truncation.{field}")
+        observed_element_lower_bound = max(
+            observed_element_lower_bound,
+            event["input_elements"],
+            event["output_elements"],
+        )
         if event["sweep_index"] is not None:
             _strict_int(event["sweep_index"], "truncation.sweep_index")
         if event["requested_chi"] is not None:
@@ -577,6 +589,10 @@ def _validate_work(value: object) -> int | None:
                 "matrix_rows", "matrix_columns", "singular_value_count", "retained_rank",
             ):
                 _strict_int(spectrum[field], f"spectrum.{field}")
+            observed_element_lower_bound = max(
+                observed_element_lower_bound,
+                spectrum["matrix_rows"] * spectrum["matrix_columns"],
+            )
             if spectrum["requested_chi"] is not None:
                 _strict_int(spectrum["requested_chi"], "spectrum.requested_chi", minimum=1)
             _nullable_positive(spectrum["requested_tol"], "spectrum.requested_tol")
@@ -592,6 +608,7 @@ def _validate_work(value: object) -> int | None:
     if not isinstance(sweeps, list):
         raise TypeError("work.contraction_sweeps must be a list")
     sweep_work = 0
+    sweep_pairwise = 0
     for raw in sweeps:
         if not isinstance(raw, dict):
             raise TypeError("contraction sweep must be an object")
@@ -612,8 +629,33 @@ def _validate_work(value: object) -> int | None:
             if not all(isinstance(failure[field], str) for field in _FAILURE_KEYS):
                 raise ValueError("sweep failure fields must be strings")
         sweep_work += sweep["estimated_arithmetic_flops"]
+        sweep_pairwise += sweep["pairwise_contractions"]
+        if not 0 <= sweep["truncation_event_start"] <= sweep["truncation_event_stop"] <= len(
+            truncations
+        ):
+            raise ValueError("sweep truncation range does not reconcile")
     if sweep_work + work["terminal_residual_estimated_arithmetic_flops"] != total:
         raise ValueError("sweep work does not reconcile")
+    if sweep_pairwise > work["pairwise_contractions"]:
+        raise ValueError("pairwise contraction count does not reconcile")
+    if (work["einsum_calls"] == 0) != (work["einsum_estimated_flops"] == 0):
+        raise ValueError("einsum trace counters do not reconcile")
+    if work["einsum_estimated_flops"] < work["einsum_calls"]:
+        raise ValueError("einsum trace work is smaller than its call count")
+    if (work["pairwise_contractions"] == 0) != (work["pairwise_output_elements"] == 0):
+        raise ValueError("pairwise trace counters do not reconcile")
+    if work["pairwise_output_elements"] < work["pairwise_contractions"]:
+        raise ValueError("pairwise output trace is smaller than its call count")
+    activity = (
+        work["einsum_calls"]
+        + work["pairwise_contractions"]
+        + work["svd_calls"]
+        + work["qr_calls"]
+    )
+    if activity > 0:
+        observed_element_lower_bound = max(observed_element_lower_bound, 1)
+    if work["peak_observed_array_elements"] < observed_element_lower_bound:
+        raise ValueError("peak observed array trace does not reconcile")
     return total
 
 
@@ -632,7 +674,12 @@ def _validate_action(value: object, expected_invocation: str) -> dict:
     if action["action_id"] != action_id:
         raise ValueError("action_id does not match invocation")
     mode, chi, tolerance = _action_spec(action_id)
-    if (action["mode"], action["chi"], action["tol"]) != (mode, chi, tolerance):
+    if (
+        type(action["mode"]) is not type(mode)
+        or type(action["chi"]) is not type(chi)
+        or type(action["tol"]) is not type(tolerance)
+        or (action["mode"], action["chi"], action["tol"]) != (mode, chi, tolerance)
+    ):
         raise ValueError("action parameters differ from frozen specification")
     valid = _boolean(action["valid"], "action.valid")
     exception_type = _nullable_string(action["exception_type"], "action.exception_type")
@@ -662,6 +709,8 @@ def _validate_action(value: object, expected_invocation: str) -> dict:
     else:
         if exception_type is None or not isinstance(action["exception_message"], str):
             raise ValueError("invalid action requires exception details")
+        if exception_type not in _NUMERICAL_ACTION_EXCEPTIONS:
+            raise ValueError("invalid action contains an undeclared exception type")
         if action["probabilities"] is not None or action["selected_class"] is not None:
             raise ValueError("invalid action cannot retain a posterior decision")
         if action["masses"] is not None:
@@ -695,6 +744,7 @@ def _validate_score(
     signature: object,
     physical_failure: object,
     valid: bool,
+    selected_class: object,
     name: str,
 ) -> None:
     _boolean(syndrome_valid, f"{name}.syndrome_valid")
@@ -711,7 +761,16 @@ def _validate_score(
             raise ValueError(f"invalid {name} retains a syndrome-valid recovery")
         return
     recovery_values = _binary_list(recovery, 82, f"{name}.recovery_bsf")
-    score = score_recovery(code, error, syndrome, np.asarray(recovery_values, dtype=np.uint8))
+    if type(selected_class) is not int or not 0 <= selected_class <= 3:
+        raise ValueError(f"valid {name} requires a logical class")
+    recovery_array = np.asarray(recovery_values, dtype=np.uint8)
+    canonical = logical_class_recovery(code, syndrome, selected_class)
+    difference = recovery_array ^ canonical
+    difference_syndrome = np.asarray(pt.bsp(difference, code.stabilizers.T), dtype=np.uint8)
+    difference_logical = np.asarray(pt.bsp(difference, code.logicals.T), dtype=np.uint8)
+    if np.any(difference_syndrome) or np.any(difference_logical):
+        raise ValueError(f"{name} recovery is not a stabilizer-equivalent class representative")
+    score = score_recovery(code, error, syndrome, recovery_array)
     expected_signature = score["logical_signature"].tolist()
     expected_failure = not bool(score["syndrome_valid"]) or bool(score["logical_failure"])
     if (
@@ -762,6 +821,7 @@ def _validate_policy(
         signature=policy["logical_signature"],
         physical_failure=policy["physical_failure"],
         valid=valid_recovery,
+        selected_class=policy["selected_class"],
         name="policy",
     )
     expected_events = event_indicators(
@@ -858,6 +918,7 @@ def _validate_reference(
             signature=reference["logical_signature"],
             physical_failure=reference["physical_failure"],
             valid=True,
+            selected_class=reference["selected_class"],
             name="reference",
         )
     else:
