@@ -7,9 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from qecsim.models.planar import PlanarCode
 
 from qldpc_fno.decision import planar_shot_data
 from qldpc_fno.decision import simple_confirmation as confirmation
+from qldpc_fno.decision.planar_shot_accuracy import logical_class_recovery, score_recovery
 from qldpc_fno.decision.simple_confirmation import (
     FIXTURE_SHOT_CONFIG,
     FROZEN_CONFIG,
@@ -20,12 +22,188 @@ from qldpc_fno.decision.simple_confirmation import (
     load_config,
     load_shot_config,
     primary_upper,
+    summarize,
+    validate_result_rows,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CONFIG = _ROOT / "configs" / "simple_planar_confirmation.json"
 _SHOTS = _ROOT / "configs" / "simple_planar_confirmation_shots.json"
 _FIXTURE_SHOTS = _ROOT / "configs" / "simple_planar_confirmation_fixture_shots.json"
+
+
+def _summary_work(value: int) -> dict[str, object]:
+    return {
+        "pairwise_contractions": 0,
+        "truncation_calls": 0,
+        "svd_calls": 0,
+        "qr_calls": 0,
+        "einsum_calls": 1,
+        "einsum_estimated_flops": value,
+        "pairwise_output_elements": 0,
+        "decomposition_input_elements": 0,
+        "estimated_dense_decomposition_flops": 0,
+        "estimated_arithmetic_flops": value,
+        "terminal_residual_estimated_arithmetic_flops": value,
+        "decomposition_attempts": [],
+        "peak_observed_array_elements": 0,
+        "truncation_events": [],
+        "contraction_sweeps": [],
+    }
+
+
+def _summary_action(invocation_id: str, action_id: str, work: int) -> dict[str, object]:
+    specs = {
+        "rows_tol003": ("rows", None, 0.003),
+        "columns_tol01": ("columns", None, 0.01),
+        "rows_tol01": ("rows", None, 0.01),
+        "columns_chi8": ("columns", 8, None),
+        "exact_columns": ("columns", None, None),
+        "exact_rows": ("rows", None, None),
+    }
+    mode, chi, tol = specs[action_id]
+    return {
+        "invocation_id": invocation_id,
+        "action_id": action_id,
+        "mode": mode,
+        "chi": chi,
+        "tol": tol,
+        "valid": True,
+        "exception_type": None,
+        "exception_message": None,
+        "masses": [0.8, 0.1, 0.06, 0.04],
+        "probabilities": [0.8, 0.1, 0.06, 0.04],
+        "selected_class": 0,
+        "work": _summary_work(work),
+        "estimated_arithmetic_flops": work,
+    }
+
+
+def _summary_row(
+    rate: float,
+    index: int,
+    *,
+    rows_mismatch: bool = False,
+    margin_mismatch: bool = False,
+    reference_certified: bool = True,
+    margin_accepted: bool = True,
+) -> dict[str, object]:
+    code = PlanarCode(5, 5)
+    zero_error = np.zeros(82, dtype=np.uint8)
+    zero_syndrome = np.zeros(40, dtype=np.uint8)
+    order = confirmation.arm_order(index)
+    policies: list[dict[str, object]] = []
+    actions_by_policy: dict[str, list[dict[str, object]]] = {}
+    for policy_id in order:
+        if policy_id == "fixed_rows_tol003":
+            action_ids = ["rows_tol003"]
+            selected_class = 1 if rows_mismatch else 0
+            gate = None
+            costs = [10]
+        elif policy_id == "margin_columns_chi8":
+            action_ids = ["columns_tol01", "rows_tol01"]
+            if not margin_accepted:
+                action_ids.append("columns_chi8")
+            selected_class = 1 if margin_mismatch else 0
+            gate = margin_accepted
+            costs = [10, 10, 100][: len(action_ids)]
+        else:
+            action_ids = ["columns_chi8"]
+            selected_class = 0
+            gate = None
+            costs = [100]
+        policy_actions = [
+            _summary_action(f"{policy_id}/{action_id}", action_id, cost)
+            for action_id, cost in zip(action_ids, costs, strict=True)
+        ]
+        selected_action = policy_actions[0] if gate is not False else policy_actions[-1]
+        if selected_class == 1:
+            selected_action["masses"] = [0.1, 0.8, 0.06, 0.04]
+            selected_action["probabilities"] = [0.1, 0.8, 0.06, 0.04]
+            selected_action["selected_class"] = 1
+            if gate is True:
+                for probe in policy_actions[:2]:
+                    probe["masses"] = [0.1, 0.8, 0.06, 0.04]
+                    probe["probabilities"] = [0.1, 0.8, 0.06, 0.04]
+                    probe["selected_class"] = 1
+        if gate is False:
+            policy_actions[1]["masses"] = [0.1, 0.8, 0.06, 0.04]
+            policy_actions[1]["probabilities"] = [0.1, 0.8, 0.06, 0.04]
+            policy_actions[1]["selected_class"] = 1
+        actions_by_policy[policy_id] = policy_actions
+        mismatch = not reference_certified or selected_class != 0
+        recovery = logical_class_recovery(code, zero_syndrome, selected_class)
+        score = score_recovery(code, zero_error, zero_syndrome, recovery)
+        policies.append(
+            {
+                "policy_id": policy_id,
+                "action_invocation_ids": [a["invocation_id"] for a in policy_actions],
+                "gate_accepted": gate,
+                "selected_class": selected_class,
+                "recovery_bsf": recovery.tolist(),
+                "syndrome_valid": True,
+                "logical_signature": score["logical_signature"].tolist(),
+                "physical_failure": bool(score["logical_failure"]),
+                "valid_recovery": True,
+                "class_mismatch": mismatch,
+                "outcome_discordance": mismatch,
+                "estimated_arithmetic_flops": sum(costs),
+            }
+        )
+    reference_order = ["columns", "rows"] if index % 2 == 0 else ["rows", "columns"]
+    reference_actions = [
+        _summary_action(f"reference/exact_{mode}", f"exact_{mode}", 50)
+        for mode in reference_order
+    ]
+    if not reference_certified:
+        reference_actions[-1]["masses"] = [0.1, 0.8, 0.06, 0.04]
+        reference_actions[-1]["probabilities"] = [0.1, 0.8, 0.06, 0.04]
+        reference_actions[-1]["selected_class"] = 1
+    return {
+        "shot_id": f"d5/p{rate:.6f}/i{index:06d}",
+        "error_rate": rate,
+        "shot_index": index,
+        "sampler_seed": 100_000 + int(rate * 100) * 10_000 + index,
+        "error_bsf": [0] * 82,
+        "syndrome": [0] * 40,
+        "arm_order": list(order),
+        "reference_order": reference_order,
+        "actions": [
+            action
+            for policy_id in order
+            for action in actions_by_policy[policy_id]
+        ]
+        + reference_actions,
+        "policies": policies,
+        "reference": {
+            "action_invocation_ids": [a["invocation_id"] for a in reference_actions],
+            "certified": reference_certified,
+            "certificate": (
+                {
+                    "selected_class": 0,
+                    "maximum_probability_discrepancy": 0.0,
+                    "maximum_log_ratio_discrepancy": 0.0,
+                    "probability_margins": [0.7, 0.7],
+                }
+                if reference_certified
+                else None
+            ),
+            "exception_type": None if reference_certified else "ValueError",
+            "exception_message": None if reference_certified else "uncertified",
+            "probabilities": [0.8, 0.1, 0.06, 0.04] if reference_certified else None,
+            "selected_class": 0 if reference_certified else None,
+            "recovery_bsf": [0] * 82 if reference_certified else None,
+            "syndrome_valid": reference_certified,
+            "logical_signature": [0, 0] if reference_certified else None,
+            "physical_failure": False if reference_certified else None,
+            "estimated_arithmetic_flops": 100,
+        },
+    }
+
+
+def _summary_rows(*, fixture: bool = False) -> list[dict[str, object]]:
+    count = 2 if fixture else 2048
+    return [_summary_row(rate, index) for rate in (0.1, 0.15) for index in range(count)]
 
 
 def _write_json(path: Path, payload: object) -> Path:
@@ -376,6 +554,268 @@ def test_shot_config_rejects_changed_identity(
     payload[key] = value
     with pytest.raises(ValueError):
         load_shot_config(_write_json(tmp_path / "shots.json", payload), fixture=False)
+
+
+def test_summary_builds_exact_eight_primary_rows_and_rejects_three_events() -> None:
+    rows = _summary_rows()
+    for index in range(3):
+        rows[index] = _summary_row(0.1, index, rows_mismatch=True)
+
+    summary = summarize(rows, fixture=False)
+
+    assert len(summary["primary"]) == 8
+    target = summary["primary"][0]
+    assert target["events"] == 3 and target["shots"] == 2048
+    assert target["upper_bound"] == pytest.approx(0.005205093018026918)
+    assert target["gate_passed"] is False
+    assert summary["decision"]["policy_gate_status"]["fixed_rows_tol003"] == (
+        "failed_discrepancy_budget"
+    )
+    assert summary["decision"]["policy_gate_status"]["margin_columns_chi8"] == (
+        "gates_passed_pending_replay"
+    )
+
+
+@pytest.mark.parametrize("events", [0, 1, 2, 3])
+def test_summary_primary_event_budget_matches_exact_cp_boundary(events: int) -> None:
+    rows = _summary_rows()
+    for index in range(events):
+        rows[index] = _summary_row(0.1, index, margin_mismatch=True)
+
+    target = summarize(rows, fixture=False)["primary"][4]
+
+    assert target["events"] == events
+    assert target["gate_passed"] is (events <= 2)
+
+
+def test_summary_has_frozen_nested_schema_and_equal_rate_work_estimands() -> None:
+    rows = _summary_rows()
+    for index in range(100):
+        rows[index] = _summary_row(0.1, index, margin_accepted=False)
+    for index in range(400):
+        offset = 2048 + index
+        rows[offset] = _summary_row(0.15, index, margin_accepted=False)
+
+    summary = summarize(rows, fixture=False)
+
+    assert set(summary) == {
+        "sample_counts", "invalid_counts", "primary", "policies", "comparator",
+        "coverage", "paired_physical", "work", "decision",
+    }
+    assert set(summary["sample_counts"][0]) == {
+        "error_rate", "expected", "observed", "complete",
+    }
+    assert set(summary["invalid_counts"][0]) == {
+        "error_rate", "reference_uncertified", "invalid_recoveries", "invalid_actions",
+        "unmetered_actions",
+    }
+    assert set(summary["primary"][0]) == {
+        "policy_id", "error_rate", "endpoint", "events", "shots", "alpha",
+        "upper_bound", "threshold", "gate_passed",
+    }
+    assert set(summary["policies"][0]) == {
+        "policy_id", "error_rate", "shots", "valid_recoveries", "physical_failures",
+        "physical_failure_rate",
+    }
+    assert set(summary["comparator"][0]) == {
+        "error_rate", "shots", "class_mismatches", "outcome_discordances",
+        "class_mismatch_rate", "outcome_discordance_rate",
+    }
+    assert set(summary["coverage"][0]) == {
+        "error_rate", "shots", "accepted", "escalated", "accepted_class_mismatches",
+        "accepted_outcome_discordances", "coverage", "accepted_class_mismatch_rate",
+        "accepted_outcome_discordance_rate",
+    }
+    assert set(summary["paired_physical"][0]) == {
+        "error_rate", "left", "right", "shots", "both_succeed", "left_only_fails",
+        "right_only_fails", "both_fail", "uncertified_reference",
+    }
+    assert set(summary["work"]) == {"by_rate", "equal_rate", "bootstrap"}
+    assert set(summary["work"]["by_rate"][0]) == {
+        "error_rate", "shots", "policy_totals", "policy_means", "reference_total",
+        "study_total", "total_work_ratios",
+    }
+    assert set(summary["work"]["equal_rate"]) == {
+        "policy_means", "reference_mean", "study_mean", "total_work_ratios",
+    }
+    assert set(summary["work"]["bootstrap"]) == {
+        "status", "estimand", "replicates", "seed", "bit_generator", "quantile_method",
+        "estimate", "lower_bound", "threshold", "passed", "unavailable_reason",
+    }
+    assert set(summary["decision"]) == {
+        "execution_eligible", "policy_gate_status", "both_policy_gates_passed",
+        "margin_work_gate_passed", "reasons",
+    }
+    assert [row["policy_id"] for row in summary["primary"]] == [
+        "fixed_rows_tol003", "fixed_rows_tol003", "fixed_rows_tol003", "fixed_rows_tol003",
+        "margin_columns_chi8", "margin_columns_chi8", "margin_columns_chi8",
+        "margin_columns_chi8",
+    ]
+    assert [row["accepted"] for row in summary["coverage"]] == [1948, 1648]
+    by_rate = summary["work"]["by_rate"]
+    assert by_rate[0]["policy_means"]["margin_columns_chi8"] == pytest.approx(
+        (1948 * 20 + 100 * 120) / 2048
+    )
+    assert by_rate[1]["policy_means"]["margin_columns_chi8"] == pytest.approx(
+        (1648 * 20 + 400 * 120) / 2048
+    )
+    assert summary["work"]["equal_rate"]["policy_means"]["margin_columns_chi8"] == (
+        pytest.approx(
+            (
+                by_rate[0]["policy_means"]["margin_columns_chi8"]
+                + by_rate[1]["policy_means"]["margin_columns_chi8"]
+            )
+            / 2
+        )
+    )
+    assert summary["work"]["bootstrap"]["estimate"] == pytest.approx(
+        ((1948 * 0.8 + 100 * -0.2) / 2048 + (1648 * 0.8 + 400 * -0.2) / 2048) / 2
+    )
+
+
+def test_fixture_summary_is_noninferential_and_keeps_numerical_rows_visible() -> None:
+    summary = summarize(_summary_rows(fixture=True), fixture=True)
+
+    assert len(summary["primary"]) == 8
+    assert all(row["shots"] == 2 for row in summary["primary"])
+    assert summary["decision"]["execution_eligible"] is False
+    assert summary["decision"]["policy_gate_status"] == {
+        "fixed_rows_tol003": "fixture_only",
+        "margin_columns_chi8": "fixture_only",
+    }
+    assert summary["work"]["bootstrap"]["status"] == "fixture_only"
+
+
+def test_uncertified_reference_forces_events_blocks_status_and_stays_out_of_pairs() -> None:
+    rows = _summary_rows()
+    rows[0] = _summary_row(0.1, 0, reference_certified=False)
+
+    summary = summarize(rows, fixture=False)
+
+    assert [row["events"] for row in summary["primary"] if row["error_rate"] == 0.1] == [
+        1, 1, 1, 1,
+    ]
+    assert summary["coverage"][0]["accepted_class_mismatches"] == 1
+    assert summary["coverage"][0]["accepted_outcome_discordances"] == 1
+    assert summary["decision"]["execution_eligible"] is False
+    assert set(summary["decision"]["policy_gate_status"].values()) == {"blocked_execution"}
+    reference_pairs = [row for row in summary["paired_physical"] if row["right"] == "reference"]
+    assert all(row["uncertified_reference"] == (1 if row["error_rate"] == 0.1 else 0) for row in reference_pairs)
+    assert all(
+        row["both_succeed"] + row["left_only_fails"] + row["right_only_fails"]
+        + row["both_fail"] + row["uncertified_reference"] == 2048
+        for row in reference_pairs
+    )
+
+
+def test_zero_coverage_uses_null_conditional_rates() -> None:
+    rows = [
+        _summary_row(rate, index, margin_accepted=False)
+        for rate in (0.1, 0.15)
+        for index in range(2048)
+    ]
+
+    summary = summarize(rows, fixture=False)
+
+    assert all(row["accepted"] == 0 for row in summary["coverage"])
+    assert all(row["accepted_class_mismatch_rate"] is None for row in summary["coverage"])
+    assert all(row["accepted_outcome_discordance_rate"] is None for row in summary["coverage"])
+
+
+def test_invalid_probe_with_valid_fallback_is_counted_as_action_not_recovery() -> None:
+    rows = _summary_rows()
+    row = _summary_row(0.1, 0, margin_accepted=False)
+    probe = next(
+        action for action in row["actions"]
+        if action["invocation_id"] == "margin_columns_chi8/columns_tol01"
+    )
+    probe.update(
+        valid=False,
+        exception_type="InvalidCosetMassError",
+        exception_message="invalid",
+        masses=None,
+        probabilities=None,
+        selected_class=None,
+    )
+    rows[0] = row
+
+    summary = summarize(rows, fixture=False)
+
+    invalid = summary["invalid_counts"][0]
+    assert invalid["invalid_actions"]["margin_columns_chi8/columns_tol01"] == 1
+    assert invalid["invalid_recoveries"]["margin_columns_chi8"] == 0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_shot", "duplicate_index", "missing_action", "missing_trace"],
+)
+def test_result_validator_rejects_incomplete_or_unmetered_rows(mutation: str) -> None:
+    rows = _summary_rows(fixture=True)
+    if mutation == "missing_shot":
+        rows.pop()
+    elif mutation == "duplicate_index":
+        rows[-1] = deepcopy(rows[-2])
+    elif mutation == "missing_action":
+        rows[0]["actions"].pop()
+    elif mutation == "missing_trace":
+        del rows[0]["actions"][0]["work"]["decomposition_attempts"]
+    with pytest.raises((TypeError, ValueError)):
+        validate_result_rows(rows, fixture=True)
+
+
+def test_unknown_work_is_retained_and_blocks_positive_execution_status() -> None:
+    rows = _summary_rows()
+    action = rows[0]["actions"][0]
+    policy = rows[0]["policies"][0]
+    action["estimated_arithmetic_flops"] = None
+    action["work"] = None
+    policy["estimated_arithmetic_flops"] = None
+
+    summary = summarize(rows, fixture=False)
+
+    assert summary["invalid_counts"][0]["unmetered_actions"][action["invocation_id"]] == 1
+    assert summary["work"]["by_rate"][0]["policy_totals"][policy["policy_id"]] is None
+    assert summary["decision"]["execution_eligible"] is False
+    assert set(summary["decision"]["policy_gate_status"].values()) == {"blocked_execution"}
+
+
+def test_invalid_contributing_probe_suppresses_only_secondary_work_claim() -> None:
+    rows = _summary_rows()
+    row = _summary_row(0.1, 0, margin_accepted=False)
+    probe = next(
+        action for action in row["actions"]
+        if action["invocation_id"] == "margin_columns_chi8/columns_tol01"
+    )
+    probe.update(
+        valid=False,
+        exception_type="InvalidCosetMassError",
+        exception_message="invalid",
+        masses=None,
+        probabilities=None,
+        selected_class=None,
+    )
+    rows[0] = row
+
+    summary = summarize(rows, fixture=False)
+
+    assert summary["decision"]["execution_eligible"] is True
+    assert summary["work"]["bootstrap"]["status"] == "available"
+    assert summary["work"]["bootstrap"]["passed"] is False
+    assert summary["decision"]["margin_work_gate_passed"] is False
+
+
+def test_validator_recomputes_persisted_events_and_logical_scores() -> None:
+    rows = _summary_rows(fixture=True)
+    rows[0]["policies"][0]["class_mismatch"] = True
+    with pytest.raises(ValueError, match="event"):
+        validate_result_rows(rows, fixture=True)
+
+    rows = _summary_rows(fixture=True)
+    rows[0]["policies"][0]["logical_signature"] = [1, 0]
+    rows[0]["policies"][0]["physical_failure"] = False
+    with pytest.raises(ValueError, match="logical|physical"):
+        validate_result_rows(rows, fixture=True)
 
 
 def test_fixture_cannot_derive_production_seed(monkeypatch: pytest.MonkeyPatch) -> None:
