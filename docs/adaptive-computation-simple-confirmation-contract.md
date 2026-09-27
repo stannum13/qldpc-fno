@@ -383,6 +383,10 @@ overwrite an output. An exception leaves no published partial directory;
 preserve an out-of-band failure receipt and retire abandoned staging as
 non-scientific. An output with incomplete membership cannot masquerade as a
 completed study. No resume-by-skipping or post-outcome source repair is allowed.
+The exclusive sibling lock is a permanent one-shot reservation and audit marker,
+not a temporary mutex: retain its inode and provenance-bound content after both
+success and failure. Never delete or reclaim a stale lock. Because destinations
+are immutable, any retry uses a reviewed fresh sibling destination.
 An engineering interruption can be replayed from the identical immutable input
 under unchanged approved source; any scientific change needs a new reviewed
 version/domain. Publish no positive verdict until the full run and replay finish.

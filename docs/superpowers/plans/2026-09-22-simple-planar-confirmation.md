@@ -587,8 +587,10 @@ validators, existing sampler and provenance helpers. **Produces:** `preflight`,
   write a unique `tempfile.TemporaryDirectory(dir=out.parent)` staging tree,
   serialize all complete files, flush/fsync files and staging directory, validate
   all hashes/schemas, recheck source/input provenance, and atomically rename.
-  Use `finally` to release only the lock inode owned by this process. A stale
-  lock is an engineering review condition, not permission to overwrite output.
+  Retain the acquired lock inode permanently as a provenance-bound one-shot
+  reservation/audit marker after success or failure. Never unlink or reclaim a
+  stale lock; it is an engineering review condition, not permission to overwrite
+  output. Immutable retries use a fresh sibling destination.
 - [ ] Preserve an external failure receipt with exception type, approved
   source/input hashes, intended destination, and stage; omit partial scientific
   verdicts. No automatic retry, output overwrite, or resume by omission.
