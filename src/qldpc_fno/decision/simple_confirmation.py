@@ -132,6 +132,7 @@ _TRUNCATION_KEYS = {
     "index", "requested_chi", "requested_tol", "sweep_index", "input_bond_dimension",
     "input_elements", "spectral_summaries", "output_bond_dimension", "output_elements",
     "normalization_factor", "cumulative_estimated_arithmetic_flops",
+    "cumulative_einsum_estimated_flops", "cumulative_dense_decomposition_flops",
 }
 _SPECTRUM_KEYS = {
     "matrix_rows", "matrix_columns", "singular_value_count", "retained_rank",
@@ -532,6 +533,7 @@ def _validate_work(
     chi: int | None,
     tolerance: float | None,
     action_valid: bool,
+    action_exception: str | None,
 ) -> int | None:
     if value is None:
         return None
@@ -579,6 +581,7 @@ def _validate_work(
     truncations = work["truncation_events"]
     if not isinstance(truncations, list):
         raise TypeError("work.truncation_events must be a list")
+    previous_cumulative = {"arithmetic": 0, "einsum": 0, "dense": 0}
     for event_index, raw in enumerate(truncations):
         event = _exact_fields(raw, _TRUNCATION_KEYS, "truncation event")
         if event["index"] != event_index:
@@ -586,8 +589,26 @@ def _validate_work(
         for field in (
             "index", "input_bond_dimension", "input_elements", "output_bond_dimension",
             "output_elements", "cumulative_estimated_arithmetic_flops",
+            "cumulative_einsum_estimated_flops",
+            "cumulative_dense_decomposition_flops",
         ):
             _strict_int(event[field], f"truncation.{field}")
+        cumulative = {
+            "arithmetic": event["cumulative_estimated_arithmetic_flops"],
+            "einsum": event["cumulative_einsum_estimated_flops"],
+            "dense": event["cumulative_dense_decomposition_flops"],
+        }
+        if cumulative["arithmetic"] != cumulative["einsum"] + cumulative["dense"]:
+            raise ValueError("truncation cumulative arithmetic does not reconcile")
+        if any(cumulative[name] < previous_cumulative[name] for name in cumulative):
+            raise ValueError("truncation cumulative work is not in canonical event order")
+        if (
+            cumulative["arithmetic"] > total
+            or cumulative["einsum"] > work["einsum_estimated_flops"]
+            or cumulative["dense"] > dense
+        ):
+            raise ValueError("truncation cumulative work exceeds the action totals")
+        previous_cumulative = cumulative
         observed_element_lower_bound = max(
             observed_element_lower_bound,
             event["input_elements"],
@@ -622,6 +643,13 @@ def _validate_work(
             if spectrum["requested_chi"] is not None:
                 _strict_int(spectrum["requested_chi"], "spectrum.requested_chi", minimum=1)
             _nullable_positive(spectrum["requested_tol"], "spectrum.requested_tol")
+            if (
+                type(spectrum["requested_chi"]) is not type(event["requested_chi"])
+                or type(spectrum["requested_tol"]) is not type(event["requested_tol"])
+                or spectrum["requested_chi"] != event["requested_chi"]
+                or spectrum["requested_tol"] != event["requested_tol"]
+            ):
+                raise ValueError("spectral parameters differ from the truncation event")
             discarded = _finite_number(
                 spectrum["discarded_squared_weight_fraction"], "discarded fraction"
             )
@@ -643,6 +671,7 @@ def _validate_work(
     sweep_work = 0
     previous_stop = 0
     scopes: list[dict] = []
+    sweep_failure_present = False
     for sweep_index, (raw, expected_label) in enumerate(
         zip(sweeps, expected_labels, strict=True)
     ):
@@ -682,6 +711,7 @@ def _validate_work(
                 raise ValueError("sweep failure fields must be strings")
             if action_valid or failure["exception_type"] not in {"ValueError", "LinAlgError"}:
                 raise ValueError("sweep failure is not a declared numerical action failure")
+            sweep_failure_present = True
         sweep_work += sweep["estimated_arithmetic_flops"]
         if not (
             sweep["truncation_event_start"] == previous_stop
@@ -720,6 +750,12 @@ def _validate_work(
         raise ValueError("peak observed array scope trace does not reconcile")
     if scoped_peak < observed_element_lower_bound:
         raise ValueError("peak observed array trace is below a recorded shape")
+    if not action_valid:
+        expected_exception = (
+            "InvalidContractionError" if sweep_failure_present else "InvalidCosetMassError"
+        )
+        if action_exception != expected_exception:
+            raise ValueError("action exception type does not match sweep failure presence")
     return total
 
 
@@ -754,6 +790,7 @@ def _validate_action(value: object, expected_invocation: str) -> dict:
         chi=chi,
         tolerance=tolerance,
         action_valid=valid,
+        action_exception=exception_type,
     )
     recorded_work = action["estimated_arithmetic_flops"]
     if recorded_work is not None:

@@ -528,6 +528,8 @@ and `summarize`, including all nested schemas and pending-replay decisions.
   `terminal_trace_counters` evidence, and reconcile the global observed-array
   peak as the maximum across those scopes. These trace fields do not alter the
   frozen arithmetic-work estimand.
+  Require truncation-event cumulative einsum plus dense-decomposition FLOPs to
+  equal cumulative arithmetic FLOPs and remain nondecreasing in event order.
 - [ ] Construct primary rows using the ordered product of two selected policies,
   two rates, and two endpoint names. Gate on all 2,048 physical shots. Construct
   comparator/coverage/paired counts and all work sections using the frozen

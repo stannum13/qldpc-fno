@@ -143,6 +143,11 @@ def test_trace_scope_counters_exactly_reconstruct_global_counters() -> None:
     assert max(scope["peak_observed_array_elements"] for scope in scopes) == work[
         "peak_observed_array_elements"
     ]
+    for event in work["truncation_events"]:
+        assert event["cumulative_estimated_arithmetic_flops"] == (
+            event["cumulative_einsum_estimated_flops"]
+            + event["cumulative_dense_decomposition_flops"]
+        )
 
 
 def test_svd_retry_charges_both_attempts_and_only_summarizes_success(

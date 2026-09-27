@@ -345,6 +345,9 @@ plus `pairwise_contractions` and `estimated_arithmetic_flops` for operations
 outside a named 2-D sweep. Global additive counters must equal the sum of all
 sweep and terminal scopes, and the global peak must equal their maximum. This
 adds audit evidence without changing the arithmetic-work definition.
+Each truncation event also records cumulative einsum and dense-decomposition
+FLOPs; their sum must equal its cumulative arithmetic FLOPs, and all cumulative
+components must be nondecreasing in canonical event order.
 
 The immutable run status is `complete_pending_replay` (or
 `reduced_non_scientific` for fixtures). Before independent replay, a numerical

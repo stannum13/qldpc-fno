@@ -208,6 +208,12 @@ def _trace_mps_work() -> Iterator[dict[str, object]]:
         event["output_elements"] = _array_elements(result[0])
         event["normalization_factor"] = float(result[1])
         event["cumulative_estimated_arithmetic_flops"] = cumulative_flops()
+        event["cumulative_einsum_estimated_flops"] = int(
+            trace["einsum_estimated_flops"]
+        )
+        event["cumulative_dense_decomposition_flops"] = int(
+            trace["estimated_dense_decomposition_flops"]
+        )
         truncation_events = trace["truncation_events"]
         assert isinstance(truncation_events, list)
         truncation_events.append(event)

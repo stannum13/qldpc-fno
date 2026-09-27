@@ -1009,6 +1009,92 @@ def test_validator_requires_exact_scope_trace_closure(
         validate_result_rows(rows, fixture=True)
 
 
+@pytest.mark.parametrize(
+    ("action_exception", "sweep_failure"),
+    [
+        ("InvalidContractionError", None),
+        ("InvalidCosetMassError", {"exception_type": "ValueError", "message": "numeric"}),
+    ],
+)
+def test_validator_binds_action_exception_to_sweep_failure_presence(
+    action_exception: str, sweep_failure: dict[str, str] | None
+) -> None:
+    rows = _summary_rows(fixture=True)
+    row = _summary_row(0.1, 0, margin_accepted=False)
+    action = next(
+        item for item in row["actions"]
+        if item["invocation_id"] == "margin_columns_chi8/columns_tol01"
+    )
+    action.update(
+        valid=False,
+        exception_type=action_exception,
+        exception_message="numeric",
+        masses=None,
+        probabilities=None,
+        selected_class=None,
+    )
+    if sweep_failure is not None:
+        action["work"]["contraction_sweeps"][0]["failure"] = sweep_failure
+    rows[0] = row
+
+    with pytest.raises(ValueError, match="exception|sweep failure"):
+        validate_result_rows(rows, fixture=True)
+
+
+def _add_synthetic_truncation(action: dict, *, spectrum_tol: float, cumulative: int) -> None:
+    work = action["work"]
+    event = {
+        "index": 0,
+        "requested_chi": action["chi"],
+        "requested_tol": action["tol"],
+        "sweep_index": 0,
+        "input_bond_dimension": 1,
+        "input_elements": 1,
+        "spectral_summaries": [
+            {
+                "matrix_rows": 1,
+                "matrix_columns": 1,
+                "singular_value_count": 1,
+                "retained_rank": 1,
+                "requested_chi": action["chi"],
+                "requested_tol": spectrum_tol,
+                "discarded_squared_weight_fraction": 0.0,
+                "spectral_entropy": 0.0,
+            }
+        ],
+        "output_bond_dimension": 1,
+        "output_elements": 1,
+        "normalization_factor": 1.0,
+        "cumulative_estimated_arithmetic_flops": cumulative,
+        "cumulative_einsum_estimated_flops": 0,
+        "cumulative_dense_decomposition_flops": 0,
+    }
+    work["truncation_calls"] = 1
+    work["truncation_events"] = [event]
+    work["contraction_sweeps"][0]["truncation_event_stop"] = 1
+    work["contraction_sweeps"][1]["truncation_event_start"] = 1
+    work["contraction_sweeps"][1]["truncation_event_stop"] = 1
+    work["peak_observed_array_elements"] = 1
+
+
+def test_validator_rejects_spectral_parameters_not_inherited_from_action() -> None:
+    rows = _summary_rows(fixture=True)
+    action = rows[0]["actions"][0]
+    _add_synthetic_truncation(action, spectrum_tol=0.01, cumulative=0)
+
+    with pytest.raises(ValueError, match="spectral|parameter"):
+        validate_result_rows(rows, fixture=True)
+
+
+def test_validator_rejects_unreconciled_cumulative_event_work() -> None:
+    rows = _summary_rows(fixture=True)
+    action = rows[0]["actions"][0]
+    _add_synthetic_truncation(action, spectrum_tol=0.003, cumulative=1)
+
+    with pytest.raises(ValueError, match="cumulative|reconcile"):
+        validate_result_rows(rows, fixture=True)
+
+
 def test_fixture_cannot_derive_production_seed(monkeypatch: pytest.MonkeyPatch) -> None:
     def forbidden_hash(*args, **kwargs):
         pytest.fail("must reject scientific test coordinates before hashing")
